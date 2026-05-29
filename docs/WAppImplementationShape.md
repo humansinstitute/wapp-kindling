@@ -38,6 +38,8 @@ The goal is not to automate the whole business-development machine in the first 
 
 ## Required Screen Families
 
+Forms should use full-width controls with action buttons in a footer row. Long free-text prompts and copyable drafts need stable textarea sizing so buttons never sit beside or overlap the text input.
+
 Early screens should include:
 
 - Action hub: the starting "what will we do today?" screen.

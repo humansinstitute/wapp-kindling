@@ -271,6 +271,12 @@ button:disabled {
   min-width: 0;
 }
 
+.kindlingActionForm {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+}
+
 .kindlingPanel h2 {
   margin: 0 0 14px;
   font-size: 19px;
@@ -307,7 +313,6 @@ button:disabled {
 
 .kindlingPanel label + label,
 .compactForm input + input,
-.kindlingPanel textarea + button,
 .kindlingPanel select + .kindlingFacts,
 .kindlingFacts + .rowActions {
   margin-top: 10px;
@@ -318,8 +323,37 @@ button:disabled {
   font-size: 12px;
 }
 
+.kindlingActionForm > input,
+.kindlingActionForm > select,
+.kindlingActionForm > textarea,
+.kindlingActionForm > label,
+.kindlingActionForm > .formActions,
+.kindlingPanel > .formActions {
+  margin-top: 10px;
+}
+
+.kindlingActionForm h2 + input,
+.kindlingActionForm h2 + select,
+.kindlingActionForm h2 + textarea,
+.kindlingActionForm h2 + label {
+  margin-top: 0;
+}
+
+.formActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
 .kindlingPanel button[type="submit"],
 .rowActions button:last-child {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
+.formActions button[type="submit"],
+.formActions button[data-copy-draft] {
   background: var(--accent);
   border-color: var(--accent);
   color: white;
@@ -515,7 +549,8 @@ button:disabled {
 }
 
 input,
-select {
+select,
+textarea {
   width: 100%;
   border: 1px solid var(--line-strong);
   border-radius: 8px;
@@ -524,6 +559,11 @@ select {
   color: var(--ink);
   outline: none;
   transition: border-color 140ms ease, box-shadow 140ms ease, background 140ms ease;
+}
+
+textarea {
+  display: block;
+  line-height: 1.45;
 }
 
 input:focus,
@@ -801,13 +841,23 @@ textarea:focus {
 }
 
 textarea {
-  min-height: 44px;
+  min-height: 160px;
   max-height: 180px;
   resize: vertical;
-  border: 1px solid var(--line-strong);
-  border-radius: 8px;
-  padding: 11px 12px;
-  outline: none;
+}
+
+#servicePrompt {
+  min-height: 220px;
+  max-height: 420px;
+}
+
+#editCompanyNotes {
+  min-height: 120px;
+}
+
+.pitchText {
+  min-height: 260px;
+  max-height: 520px;
 }
 
 .composer button {
@@ -815,6 +865,11 @@ textarea {
   background: var(--accent);
   border-color: var(--accent);
   color: white;
+}
+
+.composer textarea {
+  min-height: 44px;
+  max-height: 180px;
 }
 
 @media (max-width: 760px) {

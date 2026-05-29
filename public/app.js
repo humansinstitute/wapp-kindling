@@ -326,21 +326,28 @@ function renderKindlingView(data, company, canEdit) {
           <div><dt>Rationale</dt><dd>${escapeHtml(data.profile?.version?.rationale || "Use the workspace to create the first version.")}</dd></div>
         </dl>
       </div>
-      <form class="kindlingPanel" data-form="service">
+      <form class="kindlingPanel kindlingActionForm" data-form="service">
         <h2>Develop service offering</h2>
-        <textarea id="servicePrompt" rows="9">${escapeHtml(servicePromptValue())}</textarea>
-        <button type="submit" ${canEdit ? "" : "disabled"}>Run service role</button>
+        <label>
+          <span>Research prompt</span>
+          <textarea id="servicePrompt" rows="9">${escapeHtml(servicePromptValue())}</textarea>
+        </label>
+        <div class="formActions">
+          <button type="submit" ${canEdit ? "" : "disabled"}>Run service role</button>
+        </div>
       </form>
     </section>
   `;
 
   if (state.activeKindlingView === "targets") return `
     <section class="kindlingGrid two">
-      <form class="kindlingPanel" data-form="scan">
+      <form class="kindlingPanel kindlingActionForm" data-form="scan">
         <h2>Build target list</h2>
         <label><span>Industry</span><input id="scanIndustry" value="B2B services" /></label>
         <label><span>Location</span><input id="scanLocation" value="Perth" /></label>
-        <button type="submit" ${canEdit ? "" : "disabled"}>Run scan role</button>
+        <div class="formActions">
+          <button type="submit" ${canEdit ? "" : "disabled"}>Run scan role</button>
+        </div>
       </form>
       <div class="kindlingPanel">
         <h2>Recent scan jobs</h2>
@@ -371,7 +378,7 @@ function renderKindlingView(data, company, canEdit) {
         ${renderCompanyFilters()}
         ${renderCompanyTable(data.companies || [])}
       </div>
-      <form class="kindlingPanel" data-form="company-profile">
+      <form class="kindlingPanel kindlingActionForm" data-form="company-profile">
         <h2>Company profile</h2>
         ${company ? renderCompanyEditor(company, canEdit) : "<p>No company selected.</p>"}
       </form>
@@ -484,7 +491,9 @@ function renderCompanyEditor(company, canEdit) {
       ${["unknown", "unique", "possible_duplicate", "duplicate"].map((value) => `<option value="${value}" ${company.duplicateStatus === value ? "selected" : ""}>${value}</option>`).join("")}
     </select>
     <textarea id="editCompanyNotes" rows="5" placeholder="Notes">${escapeHtml(company.profile?.notes || company.profile?.fitNotes || "")}</textarea>
-    <button type="submit" ${canEdit ? "" : "disabled"}>Save profile</button>
+    <div class="formActions">
+      <button type="submit" ${canEdit ? "" : "disabled"}>Save profile</button>
+    </div>
   `;
 }
 
@@ -492,7 +501,9 @@ function renderLatestDraft(drafts, company) {
   const draft = drafts.find((item) => item.companyId === company?.id) || drafts[0];
   if (!draft) return "<p>No draft yet. Select a company and run Draft pitch.</p>";
   return `<textarea class="pitchText" readonly rows="12">${escapeHtml(draft.pitchText)}</textarea>
-    <button type="button" data-copy-draft>Copy</button>`;
+    <div class="formActions">
+      <button type="button" data-copy-draft>Copy</button>
+    </div>`;
 }
 
 async function startKindlingPipeline(path, body = {}) {
