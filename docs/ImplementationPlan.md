@@ -1,5 +1,71 @@
 # Implementation Plan
 
+## Pipeline Handoff Brief
+
+This document is suitable as the brief for a software implementation loop pipeline.
+
+Repository: `/Users/mini/code/wapp-kindling`
+
+Objective: turn the existing chat WApp starter into the first full-path Kindling WApp. The first release should prove the full user workflow with local SQLite records and webhook-capable Autopilot pipeline stubs.
+
+Implementation rule: build the full thin path first, then deepen each screen and pipeline role iteratively. Do not build a large speculative schema. Add the minimum tables, fields, API routes, and UI state required for each next vertical slice.
+
+Primary validation commands:
+
+```bash
+bun run check
+bun test
+bun src/server.ts
+```
+
+Current starter shape:
+
+- Runtime: Bun TypeScript server.
+- Backend entry point: `src/server.ts`.
+- SQLite setup: `src/db.ts` using `bun:sqlite`.
+- Current pipeline trigger helper: `src/pipeline.ts`.
+- Frontend: static app in `public/index.html`, `public/app.js`, and `public/styles.css`.
+- Existing behavior: Nostr login, access rules, chat records, default pipeline selection, chat pipeline trigger, and webhook callback.
+
+Hard constraints:
+
+- Keep WApp data local in SQLite.
+- Keep pipeline definitions in Autopilot, not in this WApp.
+- Normal users interact with the WApp, not with pipeline internals.
+- Pipeline settings are admin-only.
+- Each required Autopilot pipeline role can start as a stub, but it must accept a trigger and post a valid webhook callback.
+- Autopilot agents must use WApp APIs for app data. They should not directly read or write the WApp SQLite database.
+- Company manual create requires only `name`.
+- Build target list uses free-text industry and location fields, not dropdowns.
+- The first outreach artifact is a copyable pitch suitable for pasting into email. Do not implement email sending in the first version.
+
+First deliverable: a locally runnable WApp where the user can move through the full thin path:
+
+1. Action hub.
+2. Service offering workspace.
+3. Target list builder.
+4. Company list and manual company CRUD.
+5. Company profile.
+6. Enrichment request.
+7. Today's targets priority list.
+8. Copyable pitch workflow.
+
+All four minimum pipeline roles should be triggerable through role configuration and able to complete through stub callbacks:
+
+- Develop service offering.
+- Scan target list.
+- Enrich company.
+- Draft outreach.
+
+Definition of done for the first implementation loop:
+
+- `bun run check` passes.
+- The app starts locally.
+- Admin can configure pipeline roles.
+- Stub callbacks can update local records for the four minimum roles.
+- The full thin path can be reviewed in the browser without using hidden database edits.
+- The implementation updates this plan if it intentionally changes scope, schema, or pipeline contracts.
+
 ## Direction
 
 Build the full thin path first, then deepen each part iteratively.
@@ -112,8 +178,49 @@ The first demo is successful when:
 
 Each slice should leave the app usable and reviewable.
 
-## Open Implementation Questions
+## First Schema Direction
 
-- What stack changes are needed in the current WApp starter before the first schema migration?
-- Which Autopilot pipeline definitions should be created first as stubs?
-- What is the exact webhook payload contract for each minimum pipeline role?
+Start with only the tables needed for the full thin path:
+
+- `pipeline_roles`: role key, display name, active pipeline slug or ID, enabled state, expected output kind, updated timestamp.
+- `kindling_pipeline_runs`: role key, local request ID, Autopilot run ID, status, webhook token, trigger payload JSON, result payload JSON, timestamps.
+- `market_profiles`: active profile metadata and current version pointer.
+- `market_profile_versions`: version number, structured JSON, summary, rationale, source references, timestamps.
+- `companies`: name, optional location, optional industry, optional website, data ring, duplicate status, enrichment status, confidence, timestamps.
+- `sources`: company ID, source type, URL or identifier, summary, confidence, timestamps.
+- `activities`: target type, target ID, actor, action type, summary, payload JSON, timestamps.
+- `discovery_jobs`: free-text industry, free-text location, status, counts, timestamps.
+- `enrichment_requests`: company ID, status, request kind, summary, timestamps.
+- `target_rankings`: company ID, rank, reason, score JSON, created timestamp.
+- `outreach_drafts`: company ID, pitch text, status, source run ID, timestamps.
+
+Keep JSON columns for early flexibility where the exact structure is still evolving.
+
+## Webhook Contract Direction
+
+Use one common callback endpoint shape for all minimum roles. The WApp can branch by `roleKey` and `requestId`.
+
+```json
+{
+  "requestId": "local-request-id",
+  "roleKey": "scan_target_list",
+  "runId": "autopilot-run-id",
+  "status": "ok",
+  "response": "Short user-facing summary",
+  "records": {},
+  "metadata": {}
+}
+```
+
+Minimum role outputs:
+
+- `develop_service_offering`: creates a market profile version with structured profile JSON, summary, and rationale.
+- `scan_target_list`: updates a discovery job and creates company/source/activity records.
+- `enrich_company`: updates company fields, sources, activities, and enrichment status.
+- `draft_outreach`: creates an outreach draft with copyable pitch text.
+
+## Remaining Implementation Questions
+
+- Should the existing chat route stay available as a developer/testing surface, or be replaced entirely by Kindling screens?
+- What should the first admin seed values be for pipeline role slugs?
+- Should stub callbacks be implemented as local WApp mock mode only, Autopilot stub pipelines only, or both during development?
