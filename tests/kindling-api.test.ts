@@ -133,6 +133,21 @@ describe("Kindling API contracts", () => {
     expect(payload.triggerRequest.url).toBe("http://127.0.0.1:9/api/pipelines/definitions");
   });
 
+  test("preserves configured Autopilot URL in settings after save", async () => {
+    const saved = await api("/api/settings", {
+      method: "PUT",
+      body: {
+        autopilotUrl: "https://rick.runwingman.com",
+        defaultPipeline: "chat-wapp-agent-response",
+      },
+    });
+    expect(saved.res.status).toBe(200);
+    expect(saved.payload.settings.autopilotUrl).toBe("https://rick.runwingman.com");
+
+    const loaded = await api("/api/settings");
+    expect(loaded.payload.settings.autopilotUrl).toBe("https://rick.runwingman.com");
+  });
+
   test("accepts documented service offering webhook callback", async () => {
     seedKindlingRun("develop_service_offering", "profile-request", "profile-token");
     const { res } = await api("/api/kindling/pipeline-webhook", {

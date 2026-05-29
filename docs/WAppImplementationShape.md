@@ -77,6 +77,8 @@ The Settings screen should let an admin/operator set the target Autopilot URL, r
 
 Pipeline discovery failures should be reported as JSON errors inside the WApp using a non-502 status such as `424 Failed Dependency`. The WApp should not allow an unreachable or misconfigured Autopilot URL to surface as a platform/proxy 502.
 
+The Settings screen should preserve the configured Autopilot URL exactly as the admin entered it. If a public Rick URL or old local default must be translated to the local Autopilot URL for server-side NIP-98 calls, do that only at call time so the UI does not appear to reject or rewrite the saved setting.
+
 Initial admin seed values should use the Autopilot trigger keys documented in [Autopilot Pipeline Contracts](./AutopilotPipelineContracts.md):
 
 - `develop_service_offering` -> `kindling-develop-service-offering`

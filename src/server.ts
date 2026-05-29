@@ -68,7 +68,7 @@ function toServerAutopilotUrl(value: string) {
 
 function getAppSettings(): AppSettings {
   return {
-    autopilotUrl: toServerAutopilotUrl(getSetting("autopilotUrl") || WINGMAN_URL),
+    autopilotUrl: (getSetting("autopilotUrl") || WINGMAN_URL).replace(/\/$/, ""),
     defaultPipeline: getSetting("defaultPipeline") || PIPELINE_NAME,
   };
 }
@@ -221,7 +221,7 @@ function buildKindlingTriggerRequest(input: {
   const settings = getAppSettings();
   const role = getPipelineRole(input.roleKey);
   const pipelineName = role?.activePipelineSlug || input.roleKey;
-  const url = new URL(`/api/pipelines/triggers/http/${encodeURIComponent(pipelineName)}`, settings.autopilotUrl);
+  const url = new URL(`/api/pipelines/triggers/http/${encodeURIComponent(pipelineName)}`, toServerAutopilotUrl(settings.autopilotUrl));
   return {
     url: url.toString(),
     method: "POST" as const,
@@ -724,7 +724,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     const defaultPipeline = body.defaultPipeline === undefined ? null : normalizePipelineName(body.defaultPipeline);
     if (body.autopilotUrl !== undefined && !autopilotUrl) return json({ error: "autopilotUrl must be a valid http(s) URL" }, 400);
     if (body.defaultPipeline !== undefined && !defaultPipeline) return json({ error: "defaultPipeline is required" }, 400);
-    if (autopilotUrl) setSetting("autopilotUrl", toServerAutopilotUrl(autopilotUrl));
+    if (autopilotUrl) setSetting("autopilotUrl", autopilotUrl);
     if (defaultPipeline) setSetting("defaultPipeline", defaultPipeline);
     return json({ settings: getAppSettings() });
   }
@@ -1180,7 +1180,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
       history,
       webhookUrl,
       webhookToken,
-      autopilotUrl: settings.autopilotUrl,
+      autopilotUrl: toServerAutopilotUrl(settings.autopilotUrl),
       pipelineName: settings.defaultPipeline,
     });
     db.query(`
