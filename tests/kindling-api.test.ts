@@ -109,7 +109,7 @@ describe("Kindling API contracts", () => {
     expect(payload.triggerRequest.body.input.roleKey).toBe("scan_target_list");
   });
 
-  test("returns JSON when Autopilot pipeline discovery is unreachable", async () => {
+  test("returns non-502 JSON when Autopilot pipeline discovery is unreachable", async () => {
     const { res, payload } = await api("/api/autopilot/pipelines", {
       method: "POST",
       body: {
@@ -117,9 +117,20 @@ describe("Kindling API contracts", () => {
         autopilotAuthorization: "Nostr test",
       },
     });
-    expect(res.status).toBe(502);
+    expect(res.status).toBe(424);
     expect(payload.error).toContain("Autopilot pipeline list failed");
     expect(payload.url).toBe("http://127.0.0.1:9/api/pipelines/definitions");
+  });
+
+  test("maps public Rick Autopilot URL to the local server URL", async () => {
+    const { res, payload } = await api("/api/autopilot/pipelines", {
+      method: "POST",
+      body: {
+        autopilotUrl: "https://rick.runwingman.com",
+      },
+    });
+    expect(res.status).toBe(202);
+    expect(payload.triggerRequest.url).toBe("http://127.0.0.1:9/api/pipelines/definitions");
   });
 
   test("accepts documented service offering webhook callback", async () => {

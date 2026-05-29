@@ -53,9 +53,22 @@ function requireSession(req: Request) {
   return session;
 }
 
+function toServerAutopilotUrl(value: string) {
+  const trimmed = value.replace(/\/$/, "");
+  try {
+    const parsed = new URL(trimmed);
+    const oldLocalDefault = ["localhost", "127.0.0.1"].includes(parsed.hostname) && parsed.port === "3021";
+    const rickPublicAutopilot = parsed.hostname === "rick.runwingman.com";
+    if (oldLocalDefault || rickPublicAutopilot) return WINGMAN_URL;
+  } catch {
+    return trimmed;
+  }
+  return trimmed;
+}
+
 function getAppSettings(): AppSettings {
   return {
-    autopilotUrl: (getSetting("autopilotUrl") || WINGMAN_URL).replace(/\/$/, ""),
+    autopilotUrl: toServerAutopilotUrl(getSetting("autopilotUrl") || WINGMAN_URL),
     defaultPipeline: getSetting("defaultPipeline") || PIPELINE_NAME,
   };
 }
@@ -711,7 +724,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     const defaultPipeline = body.defaultPipeline === undefined ? null : normalizePipelineName(body.defaultPipeline);
     if (body.autopilotUrl !== undefined && !autopilotUrl) return json({ error: "autopilotUrl must be a valid http(s) URL" }, 400);
     if (body.defaultPipeline !== undefined && !defaultPipeline) return json({ error: "defaultPipeline is required" }, 400);
-    if (autopilotUrl) setSetting("autopilotUrl", autopilotUrl);
+    if (autopilotUrl) setSetting("autopilotUrl", toServerAutopilotUrl(autopilotUrl));
     if (defaultPipeline) setSetting("defaultPipeline", defaultPipeline);
     return json({ settings: getAppSettings() });
   }
@@ -758,7 +771,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
       ? getAppSettings().autopilotUrl
       : normalizeAutopilotUrl(body.autopilotUrl);
     if (!autopilotUrl) return json({ error: "autopilotUrl must be a valid http(s) URL" }, 400);
-    const request = buildAutopilotPipelinesRequest(autopilotUrl);
+    const request = buildAutopilotPipelinesRequest(toServerAutopilotUrl(autopilotUrl));
     const autopilotAuthorization = String(body.autopilotAuthorization ?? "").trim();
     if (!autopilotAuthorization) {
       return json({ requiresAutopilotAuth: true, triggerRequest: request, settings: getAppSettings() }, 202);
@@ -778,12 +791,12 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
       } catch {
         payload = { error: text.slice(0, 500) };
       }
-      if (!res.ok) return json({ error: `Autopilot pipeline list failed (${res.status}): ${String(payload.error ?? res.statusText)}`, status: res.status }, 502);
+      if (!res.ok) return json({ error: `Autopilot pipeline list failed (${res.status}): ${String(payload.error ?? res.statusText)}`, status: res.status }, 424);
       const definitions = Array.isArray(payload.definitions) ? payload.definitions : Array.isArray(payload.pipelines) ? payload.pipelines : [];
       return json({ pipelines: definitions, raw: payload });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      return json({ error: `Autopilot pipeline list failed: ${message}`, url: request.url }, 502);
+      return json({ error: `Autopilot pipeline list failed: ${message}`, url: request.url }, 424);
     }
   }
 

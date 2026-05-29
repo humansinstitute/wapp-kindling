@@ -3,7 +3,7 @@ export const DB_PATH = process.env.CHAT_WAPP_DB_PATH || "data/chat-wapp.sqlite";
 export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const CHALLENGE_TTL_MS = 5 * 60 * 1000;
 export const PIPELINE_NAME = process.env.CHAT_WAPP_PIPELINE_NAME || "chat-wapp-agent-response";
-export const WINGMAN_URL = (process.env.WINGMAN_URL || "http://127.0.0.1:3021").replace(/\/$/, "");
+export const WINGMAN_URL = (process.env.WINGMAN_URL || "http://localhost:3256").replace(/\/$/, "");
 export const HTTP_TRIGGER_TOKEN = process.env.WINGMEN_PIPELINE_HTTP_TRIGGER_TOKEN || "";
 export const ALLOW_MOCK = process.env.CHAT_WAPP_ALLOW_MOCK !== "0";
 export const PUBLIC_ORIGIN = (process.env.CHAT_WAPP_PUBLIC_ORIGIN || "").replace(/\/$/, "");
