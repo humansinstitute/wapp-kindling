@@ -625,9 +625,9 @@ function applyKindlingCallback(body: Record<string, unknown>, token: string) {
   return { ok: true as const };
 }
 
-function buildAutopilotPipelinesRequest(settings = getAppSettings()) {
+function buildAutopilotPipelinesRequest(autopilotUrl = getAppSettings().autopilotUrl) {
   return {
-    url: new URL("/api/pipelines/definitions", settings.autopilotUrl).toString(),
+    url: new URL("/api/pipelines/definitions", autopilotUrl).toString(),
     method: "GET" as const,
   };
 }
@@ -754,21 +754,37 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     const session = requireSession(req);
     if (!session) return json({ error: "unauthorized" }, 401);
     const body = await readJson(req);
-    const request = buildAutopilotPipelinesRequest();
+    const autopilotUrl = body.autopilotUrl === undefined || String(body.autopilotUrl).trim() === ""
+      ? getAppSettings().autopilotUrl
+      : normalizeAutopilotUrl(body.autopilotUrl);
+    if (!autopilotUrl) return json({ error: "autopilotUrl must be a valid http(s) URL" }, 400);
+    const request = buildAutopilotPipelinesRequest(autopilotUrl);
     const autopilotAuthorization = String(body.autopilotAuthorization ?? "").trim();
     if (!autopilotAuthorization) {
       return json({ requiresAutopilotAuth: true, triggerRequest: request, settings: getAppSettings() }, 202);
     }
-    const res = await fetch(request.url, {
-      method: "GET",
-      headers: {
-        accept: "application/json",
-        authorization: autopilotAuthorization,
-      },
-    });
-    const payload = await res.json().catch(() => ({})) as Record<string, unknown>;
-    if (!res.ok) return json({ error: String(payload.error ?? res.statusText), status: res.status }, 502);
-    return json({ pipelines: payload.definitions ?? [], raw: payload });
+    try {
+      const res = await fetch(request.url, {
+        method: "GET",
+        headers: {
+          accept: "application/json",
+          authorization: autopilotAuthorization,
+        },
+      });
+      const text = await res.text();
+      let payload: Record<string, unknown> = {};
+      try {
+        payload = text ? JSON.parse(text) as Record<string, unknown> : {};
+      } catch {
+        payload = { error: text.slice(0, 500) };
+      }
+      if (!res.ok) return json({ error: `Autopilot pipeline list failed (${res.status}): ${String(payload.error ?? res.statusText)}`, status: res.status }, 502);
+      const definitions = Array.isArray(payload.definitions) ? payload.definitions : Array.isArray(payload.pipelines) ? payload.pipelines : [];
+      return json({ pipelines: definitions, raw: payload });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return json({ error: `Autopilot pipeline list failed: ${message}`, url: request.url }, 502);
+    }
   }
 
   if (pathname === "/api/kindling/summary" && req.method === "GET") {

@@ -71,7 +71,9 @@ Initial pipeline roles:
 - Monitor and score.
 - Draft outreach.
 
-The app should let an admin/operator load available Autopilot pipelines, select the active pipeline for each role, and store those selections locally. Normal users should not need to choose pipelines during ordinary use. This follows the WApp starter pattern where a chat pipeline can be selected, but expands it into role-specific pipeline configuration.
+The Settings screen should let an admin/operator set the target Autopilot URL, refresh available Autopilot pipelines from that selected URL, select the active pipeline for each Kindling role, and store those selections locally. Normal users should not need to choose pipelines during ordinary use. This follows the WApp starter pattern where a chat pipeline can be selected, but expands it into role-specific pipeline configuration.
+
+Pipeline discovery failures should be reported as JSON errors inside the WApp. The WApp should not allow an unreachable or misconfigured Autopilot URL to surface as a platform/proxy 502.
 
 Initial admin seed values should use the Autopilot trigger keys documented in [Autopilot Pipeline Contracts](./AutopilotPipelineContracts.md):
 

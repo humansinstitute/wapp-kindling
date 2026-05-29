@@ -552,6 +552,53 @@ textarea:focus {
   letter-spacing: 0;
 }
 
+.settingsRoleHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.settingsRoleHeader h3,
+.settingsRoleHeader p {
+  margin: 0;
+}
+
+.settingsRoleHeader h3 {
+  font-size: 15px;
+  letter-spacing: 0;
+}
+
+.settingsRoleHeader p {
+  color: var(--muted);
+  font-size: 12px;
+  text-align: right;
+}
+
+.muted {
+  color: var(--muted);
+}
+
+.settingsRoleList {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.settingsRoleRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+  padding-top: 10px;
+  border-top: 1px solid rgba(203, 198, 186, 0.58);
+}
+
+.settingsRoleRow label {
+  margin-top: 0;
+}
+
 .settingsPanel label {
   display: grid;
   gap: 6px;
@@ -797,6 +844,10 @@ textarea {
   }
 
   .roleRow {
+    grid-template-columns: 1fr;
+  }
+
+  .settingsRoleRow {
     grid-template-columns: 1fr;
   }
 

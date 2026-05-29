@@ -109,6 +109,19 @@ describe("Kindling API contracts", () => {
     expect(payload.triggerRequest.body.input.roleKey).toBe("scan_target_list");
   });
 
+  test("returns JSON when Autopilot pipeline discovery is unreachable", async () => {
+    const { res, payload } = await api("/api/autopilot/pipelines", {
+      method: "POST",
+      body: {
+        autopilotUrl: "http://127.0.0.1:9",
+        autopilotAuthorization: "Nostr test",
+      },
+    });
+    expect(res.status).toBe(502);
+    expect(payload.error).toContain("Autopilot pipeline list failed");
+    expect(payload.url).toBe("http://127.0.0.1:9/api/pipelines/definitions");
+  });
+
   test("accepts documented service offering webhook callback", async () => {
     seedKindlingRun("develop_service_offering", "profile-request", "profile-token");
     const { res } = await api("/api/kindling/pipeline-webhook", {

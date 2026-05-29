@@ -43,7 +43,10 @@ function api(path, options = {}) {
 }
 
 function setStatus(text) {
-  $("status").textContent = text;
+  const shellStatus = $("status");
+  if (shellStatus) shellStatus.textContent = text;
+  const settingsStatus = $("settingsStatus");
+  if (settingsStatus) settingsStatus.textContent = text;
 }
 
 function loadProfileCache() {
@@ -219,11 +222,16 @@ async function loadChats() {
 }
 
 async function loadSettings() {
-  const payload = await api("/api/settings");
+  const [payload, roles] = await Promise.all([
+    api("/api/settings"),
+    api("/api/kindling/pipeline-roles"),
+  ]);
   state.settings = payload.settings;
   state.accessRules = payload.accessRules || [];
+  state.pipelineRoles = roles.pipelineRoles || [];
   renderSettings();
   renderPipelineOptions();
+  renderSettingsRoleMappings();
   renderAccessRules();
 }
 
@@ -642,9 +650,19 @@ function renderSettings() {
   $("autopilotUrlInput").value = state.settings?.autopilotUrl || "";
   $("pipelineInput").value = state.settings?.defaultPipeline || "";
   const canEdit = Boolean(state.me?.access?.edit);
-  for (const id of ["autopilotUrlInput", "pipelineInput", "pipelineSelect", "saveSettingsButton", "accessNpubInput", "accessRoleSelect", "addAccessButton"]) {
+  for (const id of ["autopilotUrlInput", "pipelineInput", "pipelineSelect", "loadPipelinesButton", "saveSettingsButton", "accessNpubInput", "accessRoleSelect", "addAccessButton"]) {
     $(id).disabled = !canEdit;
   }
+}
+
+function pipelineSlug(pipeline) {
+  return pipeline?.slug || pipeline?.name || pipeline?.id || pipeline?.key || "";
+}
+
+function pipelineLabel(pipeline) {
+  const slug = pipelineSlug(pipeline);
+  const label = pipeline?.title || pipeline?.label || pipeline?.displayName || pipeline?.name || slug;
+  return `${label}${pipeline?.version ? ` v${pipeline.version}` : ""}`;
 }
 
 function renderPipelineOptions() {
@@ -655,10 +673,64 @@ function renderPipelineOptions() {
   empty.textContent = state.pipelines.length ? "Select a pipeline" : "No pipelines loaded";
   select.appendChild(empty);
   for (const pipeline of state.pipelines) {
+    const slug = pipelineSlug(pipeline);
+    if (!slug) continue;
     const option = document.createElement("option");
-    option.value = pipeline.name || pipeline.slug || pipeline.id;
-    option.textContent = `${pipeline.name || pipeline.slug || pipeline.id}${pipeline.version ? ` v${pipeline.version}` : ""}`;
+    option.value = slug;
+    option.textContent = pipelineLabel(pipeline);
     select.appendChild(option);
+  }
+}
+
+function renderSettingsRoleMappings() {
+  const list = $("settingsRoleList");
+  if (!list) return;
+  list.innerHTML = "";
+  const canEdit = Boolean(state.me?.access?.edit);
+  const roles = state.pipelineRoles || [];
+  if (!roles.length) {
+    list.innerHTML = `<p class="muted">No Kindling pipeline roles are configured.</p>`;
+    return;
+  }
+  for (const role of roles) {
+    const row = document.createElement("div");
+    row.className = "settingsRoleRow";
+
+    const label = document.createElement("label");
+    const caption = document.createElement("span");
+    caption.textContent = role.displayName;
+    const select = document.createElement("select");
+    select.dataset.settingsRoleSlug = role.roleKey;
+    select.disabled = !canEdit;
+
+    const current = role.activePipelineSlug || "";
+    const currentOption = document.createElement("option");
+    currentOption.value = current;
+    currentOption.textContent = current || "Select a pipeline";
+    select.appendChild(currentOption);
+
+    for (const pipeline of state.pipelines) {
+      const slug = pipelineSlug(pipeline);
+      if (!slug || slug === current) continue;
+      const option = document.createElement("option");
+      option.value = slug;
+      option.textContent = pipelineLabel(pipeline);
+      select.appendChild(option);
+    }
+
+    label.append(caption, select);
+
+    const enabled = document.createElement("label");
+    enabled.className = "roleEnabled";
+    const checkbox = document.createElement("input");
+    checkbox.type = "checkbox";
+    checkbox.dataset.settingsRoleEnabled = role.roleKey;
+    checkbox.checked = role.enabled !== false;
+    checkbox.disabled = !canEdit;
+    enabled.append(checkbox, document.createTextNode(" Enabled"));
+
+    row.append(label, enabled);
+    list.appendChild(row);
   }
 }
 
@@ -805,28 +877,56 @@ async function saveSettings() {
       }),
     });
     state.settings = payload.settings;
+    if (state.me?.access?.edit) {
+      const roles = collectSettingsRoleMappings();
+      const rolePayload = await api("/api/kindling/pipeline-roles", {
+        method: "PUT",
+        body: JSON.stringify({ roles }),
+      });
+      state.pipelineRoles = rolePayload.pipelineRoles || state.pipelineRoles;
+    }
     renderSettings();
+    renderPipelineOptions();
+    renderSettingsRoleMappings();
     setStatus("Settings saved");
   } catch (error) {
     setStatus(error.message);
   }
 }
 
+function collectSettingsRoleMappings() {
+  return Array.from(document.querySelectorAll("[data-settings-role-slug]")).map((select) => {
+    const roleKey = select.dataset.settingsRoleSlug;
+    const enabled = document.querySelector(`[data-settings-role-enabled="${CSS.escape(roleKey)}"]`);
+    return {
+      roleKey,
+      activePipelineSlug: select.value.trim(),
+      pipelineLabel: select.options[select.selectedIndex]?.textContent?.trim() || select.value.trim(),
+      enabled: enabled ? enabled.checked : true,
+    };
+  });
+}
+
 async function loadPipelines() {
   try {
     setStatus("Authorizing pipeline list");
-    const prepared = await api("/api/autopilot/pipelines", { method: "POST", body: "{}" });
+    const autopilotUrl = $("autopilotUrlInput").value.trim();
+    const prepared = await api("/api/autopilot/pipelines", {
+      method: "POST",
+      body: JSON.stringify({ autopilotUrl }),
+    });
     let payload = prepared;
     if (prepared.requiresAutopilotAuth && prepared.triggerRequest) {
       const autopilotAuthorization = await signNip98Request(prepared.triggerRequest);
       payload = await api("/api/autopilot/pipelines", {
         method: "POST",
-        body: JSON.stringify({ autopilotAuthorization }),
+        body: JSON.stringify({ autopilotUrl, autopilotAuthorization }),
       });
     }
     state.pipelines = payload.pipelines || [];
     savePipelinesCache();
     renderPipelineOptions();
+    renderSettingsRoleMappings();
     setStatus(`Loaded ${state.pipelines.length} pipelines`);
   } catch (error) {
     setStatus(error.message);

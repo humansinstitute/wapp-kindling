@@ -49,10 +49,15 @@
                 <input id="autopilotUrlInput" type="url" placeholder="http://127.0.0.1:3256" />
               </label>
               <label>
-                <span>Default pipeline</span>
+                <span>Default chat pipeline</span>
                 <select id="pipelineSelect"></select>
                 <input id="pipelineInput" type="text" placeholder="chat-wapp-agent-response" />
               </label>
+              <div class="settingsRoleHeader">
+                <h3>Kindling pipeline roles</h3>
+                <p id="settingsStatus">Ready</p>
+              </div>
+              <div id="settingsRoleList" class="settingsRoleList"></div>
               <div class="settingsActions">
                 <button id="loadPipelinesButton" type="button">Refresh Pipelines</button>
                 <button id="saveSettingsButton" type="button">Save</button>
