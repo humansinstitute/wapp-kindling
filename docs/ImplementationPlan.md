@@ -155,11 +155,14 @@ Seed Autopilot stubs now exist for the minimum role set:
 - `enrich_company` -> `kindling-enrich-company-stub`
 - `draft_outreach` -> `kindling-draft-outreach-stub`
 
-The first real service-offering profile update pipeline also exists:
+First-pass working pipelines now exist for the minimum role set:
 
 - `develop_service_offering` -> `kindling-develop-service-offering`
+- `scan_target_list` -> `kindling-scan-target-list`
+- `enrich_company` -> `kindling-enrich-company`
+- `draft_outreach` -> `kindling-draft-outreach`
 
-See [Autopilot Pipeline Contracts](./AutopilotPipelineContracts.md) for trigger payloads, webhook payloads, and stub result shapes.
+See [Autopilot Pipeline Contracts](./AutopilotPipelineContracts.md) for trigger payloads, webhook payloads, fallback stubs, and result shapes.
 
 ## First Full-Path Demo
 

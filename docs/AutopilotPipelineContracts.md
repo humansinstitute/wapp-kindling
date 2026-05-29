@@ -2,16 +2,16 @@
 
 Kindling calls Autopilot pipelines by role. The WApp owns screens, local SQLite state, run records, webhook tokens, and final application state. Autopilot owns pipeline definitions and long-running agent work.
 
-The first Autopilot support set is stubbed so the WApp can exercise the full workflow before real research and enrichment steps are added. The service-offering/profile role now also has a first real pipeline that can replace its stub when the WApp is ready to use profile patches.
+The first Autopilot support set started as stubs so the WApp could exercise the full workflow before real research and enrichment steps were added. The minimum role set now has first-pass working pipelines, with the original stubs retained as fallbacks.
 
 ## Seed Pipeline Roles
 
 | Role key | Recommended trigger key | Stub fallback trigger key | Discovered slug | Output kind |
 | --- | --- | --- | --- | --- |
 | `develop_service_offering` | `kindling-develop-service-offering` | `kindling-develop-service-offering-stub` | `kindling-develop-service-offering.v1` | `market_profile_update` |
-| `scan_target_list` | `kindling-scan-target-list-stub` | `kindling-scan-target-list-stub` | `kindling-scan-target-list-stub.v1` | `target_scan_result` |
-| `enrich_company` | `kindling-enrich-company-stub` | `kindling-enrich-company-stub` | `kindling-enrich-company-stub.v1` | `company_enrichment` |
-| `draft_outreach` | `kindling-draft-outreach-stub` | `kindling-draft-outreach-stub` | `kindling-draft-outreach-stub.v1` | `outreach_draft` |
+| `scan_target_list` | `kindling-scan-target-list` | `kindling-scan-target-list-stub` | `kindling-scan-target-list.v1` | `target_scan_result` |
+| `enrich_company` | `kindling-enrich-company` | `kindling-enrich-company-stub` | `kindling-enrich-company.v1` | `company_enrichment` |
+| `draft_outreach` | `kindling-draft-outreach` | `kindling-draft-outreach-stub` | `kindling-draft-outreach.v1` | `outreach_draft` |
 
 These are user-scoped Autopilot definitions for Pete's workspace. The WApp can trigger by default trigger key because the Autopilot HTTP trigger route accepts the definition name, while the pipeline discovery list will show the versioned slug or opaque definition ID. The WApp should store the selected value as admin-editable configuration rather than hard-coded behavior.
 
@@ -69,7 +69,7 @@ The WApp should treat `requestId` as the local join key and use the Autopilot tr
 
 ## Profile Update Pipeline
 
-`kindling-develop-service-offering` is the first non-stub role pipeline. It has two steps:
+`kindling-develop-service-offering` has two steps:
 
 1. `synthesise-profile-update`: an agent step that interprets the latest user message, prior conversation history, and `localContext.activeProfileVersion`.
 2. `deliver-profile-update`: a deterministic function that normalises the agent output and posts the WApp callback.
@@ -113,6 +113,73 @@ It returns:
 - `result.confidence`
 
 The profile patch includes `title`, `summary`, `positioningStatement`, `services`, `idealCustomerProfile`, `problemsSolved`, `buyingTriggers`, `differentiators`, `outreachVoice`, `exclusions`, `assumptions`, and `confidence`.
+
+## Target Scan Pipeline
+
+`kindling-scan-target-list` has two steps:
+
+1. `discover-target-companies`: an agent step that uses the free-text industry/location brief and available source tools to produce source-backed candidate companies. If source-backed discovery is unavailable, it returns a search plan and warnings rather than inventing records.
+2. `deliver-target-scan`: a deterministic function that normalises the result and posts the WApp callback.
+
+It returns:
+
+- `result.outputKind = "target_scan_result"`
+- `result.industry`
+- `result.location`
+- `result.originalRequest`
+- `result.normalisedLocations`
+- `result.coverage`
+- `result.companies`
+- `result.possibleDuplicates`
+- `result.searchSlices`
+- `result.activities`
+- `result.warnings`
+- `result.confidence`
+
+The scan remains company-discovery only. People-finding, deeper profiling, scoring, and outreach stay in later stages.
+
+## Company Enrichment Pipeline
+
+`kindling-enrich-company` has two steps:
+
+1. `enrich-company-profile`: an agent step that uses supplied company context, known sources, and available source tools to propose company-level profile updates.
+2. `deliver-company-enrichment`: a deterministic function that normalises the result and posts the WApp callback.
+
+It returns:
+
+- `result.outputKind = "company_enrichment"`
+- `result.companyId`
+- `result.companyName`
+- `result.profilePatch`
+- `result.fieldsUpdated`
+- `result.sources`
+- `result.activities`
+- `result.confidence`
+- `result.gaps`
+- `result.warnings`
+
+The enrichment pipeline avoids person discovery for now. It focuses on source-backed company facts and records missing fields as gaps.
+
+## Outreach Draft Pipeline
+
+`kindling-draft-outreach` has two steps:
+
+1. `draft-copyable-outreach`: an agent step that uses the selected company and active market profile to draft a concise first-contact pitch.
+2. `deliver-outreach-draft`: a deterministic function that normalises the result and posts the WApp callback.
+
+It returns:
+
+- `result.outputKind = "outreach_draft"`
+- `result.companyId`
+- `result.companyName`
+- `result.subject`
+- `result.body`
+- `result.openingLine`
+- `result.callToAction`
+- `result.rationale`
+- `result.personalisationInputs`
+- `result.warnings`
+- `result.confidence`
 
 ## Stub Result Shapes
 
@@ -165,14 +232,20 @@ They share one deterministic callback function:
 
 - `~/.wingmen/pipelines/users/honest-ivory-thicket/functions/kindling-stub-webhook.v1.ts`
 
-Current profile-update pipeline:
+Current first-pass working pipelines:
 
 - `~/.wingmen/pipelines/users/honest-ivory-thicket/definitions/kindling-develop-service-offering.v1.json`
 - `~/.wingmen/pipelines/users/honest-ivory-thicket/functions/kindling-deliver-profile-update.v1.ts`
+- `~/.wingmen/pipelines/users/honest-ivory-thicket/definitions/kindling-scan-target-list.v1.json`
+- `~/.wingmen/pipelines/users/honest-ivory-thicket/functions/kindling-deliver-target-scan.v1.ts`
+- `~/.wingmen/pipelines/users/honest-ivory-thicket/definitions/kindling-enrich-company.v1.json`
+- `~/.wingmen/pipelines/users/honest-ivory-thicket/functions/kindling-deliver-company-enrichment.v1.ts`
+- `~/.wingmen/pipelines/users/honest-ivory-thicket/definitions/kindling-draft-outreach.v1.json`
+- `~/.wingmen/pipelines/users/honest-ivory-thicket/functions/kindling-deliver-outreach-draft.v1.ts`
 
 ## Expansion Path
 
-Keep the public role slugs stable until there is a reason to split production and test pipelines. Replace the internals progressively:
+Keep the public role trigger keys stable until there is a reason to split production and test pipelines. Replace the internals progressively:
 
 1. Add validation and WApp NIP-98 context reads.
 2. Add planning/extraction agent steps.

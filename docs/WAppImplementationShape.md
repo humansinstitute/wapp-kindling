@@ -76,11 +76,11 @@ The app should let an admin/operator load available Autopilot pipelines, select 
 Initial admin seed values should use the Autopilot trigger keys documented in [Autopilot Pipeline Contracts](./AutopilotPipelineContracts.md):
 
 - `develop_service_offering` -> `kindling-develop-service-offering`
-- `scan_target_list` -> `kindling-scan-target-list-stub`
-- `enrich_company` -> `kindling-enrich-company-stub`
-- `draft_outreach` -> `kindling-draft-outreach-stub`
+- `scan_target_list` -> `kindling-scan-target-list`
+- `enrich_company` -> `kindling-enrich-company`
+- `draft_outreach` -> `kindling-draft-outreach`
 
-The service-offering role can fall back to `kindling-develop-service-offering-stub` while profile patch handling is being debugged.
+Each role can fall back to its `*-stub` pipeline while WApp callback handling is being debugged.
 
 Pipeline configuration records should store:
 
