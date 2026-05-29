@@ -8,3 +8,5 @@ export const HTTP_TRIGGER_TOKEN = process.env.WINGMEN_PIPELINE_HTTP_TRIGGER_TOKE
 export const ALLOW_MOCK = process.env.CHAT_WAPP_ALLOW_MOCK !== "0";
 export const PUBLIC_ORIGIN = (process.env.CHAT_WAPP_PUBLIC_ORIGIN || "").replace(/\/$/, "");
 export const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || "chat-wapp-local-demo";
+export const WAPP_OWNER_NPUB = process.env.WAPP_OWNER_NPUB || "";
+export const WAPP_ALLOWED_NPUBS_JSON = process.env.WAPP_ALLOWED_NPUBS_JSON || "[]";

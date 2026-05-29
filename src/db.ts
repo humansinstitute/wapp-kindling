@@ -67,10 +67,25 @@ CREATE TABLE IF NOT EXISTS pipeline_runs (
   updated_at INTEGER NOT NULL,
   FOREIGN KEY (chat_id) REFERENCES chats(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS app_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS access_rules (
+  pubkey TEXT NOT NULL,
+  npub TEXT NOT NULL,
+  role TEXT NOT NULL CHECK(role IN ('read', 'edit')),
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (pubkey, role)
+);
 `);
 
 for (const migration of [
   "ALTER TABLE pipeline_runs ADD COLUMN trigger_payload_json TEXT",
+  "DELETE FROM access_rules WHERE role = 'login'",
 ]) {
   try {
     db.query(migration).run();
@@ -104,6 +119,20 @@ export type Message = {
   createdAt: number;
 };
 
+export type AppSettings = {
+  autopilotUrl: string;
+  defaultPipeline: string;
+};
+
+export type AccessRole = "read" | "edit";
+
+export type AccessRule = {
+  pubkey: string;
+  npub: string;
+  role: AccessRole;
+  createdAt: number;
+};
+
 export function mapChat(row: Record<string, unknown>): Chat {
   return {
     id: String(row.id),
@@ -123,6 +152,28 @@ export function mapMessage(row: Record<string, unknown>): Message {
     content: String(row.content),
     status: String(row.status) as Message["status"],
     runId: row.run_id ? String(row.run_id) : null,
+    createdAt: Number(row.created_at),
+  };
+}
+
+export function getSetting(key: string): string | null {
+  const row = db.query("SELECT value FROM app_settings WHERE key = ?1").get(key) as { value: string } | null;
+  return row?.value ?? null;
+}
+
+export function setSetting(key: string, value: string): void {
+  db.query(`
+    INSERT INTO app_settings(key, value, updated_at)
+    VALUES (?1, ?2, ?3)
+    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+  `).run(key, value, Date.now());
+}
+
+export function mapAccessRule(row: Record<string, unknown>): AccessRule {
+  return {
+    pubkey: String(row.pubkey),
+    npub: String(row.npub),
+    role: String(row.role) as AccessRole,
     createdAt: Number(row.created_at),
   };
 }

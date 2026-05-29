@@ -1,8 +1,12 @@
+import { sha256 } from "@noble/hashes/sha256";
+import { bytesToHex } from "@noble/hashes/utils";
 import { nip19, verifyEvent, type Event } from "nostr-tools";
-import { CHALLENGE_TTL_MS, SESSION_TTL_MS } from "./config.ts";
-import { db, type Session } from "./db.ts";
+import { CHALLENGE_TTL_MS, SESSION_TTL_MS, WAPP_ALLOWED_NPUBS_JSON, WAPP_OWNER_NPUB } from "./config.ts";
+import { db, mapAccessRule, type AccessRole, type AccessRule, type Session } from "./db.ts";
 
 const HEX_PUBKEY = /^[0-9a-f]{64}$/;
+const NIP98_KIND = 27235;
+const NIP98_MAX_AGE_SECONDS = 5 * 60;
 
 export function normalizePubkey(value: string): string | null {
   const trimmed = value.trim();
@@ -20,6 +24,64 @@ export function normalizePubkey(value: string): string | null {
 
 export function pubkeyToNpub(pubkey: string): string {
   return nip19.npubEncode(pubkey);
+}
+
+function normaliseNpubsFromJson(value: string): string[] {
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.map(String).filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+function initialAllowedPubkeys(): Set<string> {
+  const pubkeys = new Set<string>();
+  for (const npub of [WAPP_OWNER_NPUB, ...normaliseNpubsFromJson(WAPP_ALLOWED_NPUBS_JSON)]) {
+    const pubkey = normalizePubkey(npub);
+    if (pubkey) pubkeys.add(pubkey);
+  }
+  return pubkeys;
+}
+
+export function getAccessRules(): AccessRule[] {
+  const rows = db.query("SELECT * FROM access_rules ORDER BY role ASC, npub ASC").all() as Record<string, unknown>[];
+  return rows.map(mapAccessRule);
+}
+
+export function hasConfiguredAccessRules(): boolean {
+  const row = db.query("SELECT COUNT(*) AS count FROM access_rules").get() as { count: number } | null;
+  return Number(row?.count ?? 0) > 0;
+}
+
+export function addAccessRule(pubkey: string, role: AccessRole): AccessRule {
+  const now = Date.now();
+  const npub = pubkeyToNpub(pubkey);
+  db.query(`
+    INSERT INTO access_rules(pubkey, npub, role, created_at)
+    VALUES (?1, ?2, ?3, ?4)
+    ON CONFLICT(pubkey, role) DO UPDATE SET npub = excluded.npub
+  `).run(pubkey, npub, role, now);
+  return { pubkey, npub, role, createdAt: now };
+}
+
+export function removeAccessRule(pubkey: string, role: AccessRole): void {
+  db.query("DELETE FROM access_rules WHERE pubkey = ?1 AND role = ?2").run(pubkey, role);
+}
+
+export function hasAccess(pubkey: string, role: AccessRole): boolean {
+  const ownerPubkey = normalizePubkey(WAPP_OWNER_NPUB);
+  if (ownerPubkey && ownerPubkey === pubkey) return true;
+  if (initialAllowedPubkeys().has(pubkey) && role === "read") return true;
+  if (!hasConfiguredAccessRules()) return true;
+  const roles: AccessRole[] = role === "read" ? ["read", "edit"] : ["edit"];
+  const placeholders = roles.map((_, index) => `?${index + 2}`).join(", ");
+  const row = db.query(`SELECT 1 FROM access_rules WHERE pubkey = ?1 AND role IN (${placeholders}) LIMIT 1`).get(pubkey, ...roles);
+  return Boolean(row);
+}
+
+export function canLogin(pubkey: string): boolean {
+  return hasAccess(pubkey, "read");
 }
 
 export function createChallenge(pubkey: string) {
@@ -46,6 +108,9 @@ export function verifyLoginEvent(event: Event) {
   if (Math.abs(event.created_at * 1000 - Date.now()) > CHALLENGE_TTL_MS) {
     return { ok: false as const, error: "Event timestamp out of range" };
   }
+  if (!canLogin(event.pubkey)) {
+    return { ok: false as const, error: "This npub is not allowed to log in to this WApp" };
+  }
 
   const now = Date.now();
   const npub = pubkeyToNpub(event.pubkey);
@@ -62,6 +127,54 @@ export function verifyLoginEvent(event: Event) {
     .run(token, event.pubkey, expiresAt, now);
 
   return { ok: true as const, token, pubkey: event.pubkey, npub, expiresAt };
+}
+
+function decodeNip98Token(raw: string | null): Event | null {
+  if (!raw) return null;
+  const [scheme, token] = raw.split(" ");
+  if (scheme !== "Nostr" || !token) return null;
+  try {
+    return JSON.parse(atob(token)) as Event;
+  } catch {
+    return null;
+  }
+}
+
+function sha256Hex(value: string): string {
+  return bytesToHex(sha256(new TextEncoder().encode(value)));
+}
+
+function normaliseUrlForNip98(value: string): string | null {
+  try {
+    const url = new URL(value);
+    return url.toString();
+  } catch {
+    return null;
+  }
+}
+
+export async function verifyNip98Request(req: Request, url: URL): Promise<{ ok: true; pubkey: string; npub: string } | { ok: false; error: string }> {
+  const event = decodeNip98Token(req.headers.get("authorization"));
+  if (!event) return { ok: false, error: "NIP-98 authorization required" };
+  if (event.kind !== NIP98_KIND) return { ok: false, error: "Invalid NIP-98 event kind" };
+  if (!normalizePubkey(event.pubkey)) return { ok: false, error: "Invalid NIP-98 pubkey" };
+  if (!verifyEvent(event)) return { ok: false, error: "Invalid NIP-98 signature" };
+
+  const eventUrl = event.tags.find((tag) => tag[0] === "u")?.[1];
+  const eventMethod = event.tags.find((tag) => tag[0] === "method")?.[1];
+  if (!eventUrl || normaliseUrlForNip98(eventUrl) !== url.toString()) return { ok: false, error: "NIP-98 URL mismatch" };
+  if (!eventMethod || eventMethod.toUpperCase() !== req.method.toUpperCase()) return { ok: false, error: "NIP-98 method mismatch" };
+  if (Math.abs(Math.floor(Date.now() / 1000) - Number(event.created_at)) > NIP98_MAX_AGE_SECONDS) {
+    return { ok: false, error: "NIP-98 event expired" };
+  }
+
+  if (["POST", "PUT", "PATCH"].includes(req.method.toUpperCase())) {
+    const payload = event.tags.find((tag) => tag[0] === "payload")?.[1];
+    const expected = sha256Hex(await req.clone().text());
+    if (!payload || payload !== expected) return { ok: false, error: "NIP-98 payload mismatch" };
+  }
+
+  return { ok: true, pubkey: event.pubkey, npub: pubkeyToNpub(event.pubkey) };
 }
 
 export function getBearerToken(req: Request): string | null {

@@ -9,6 +9,8 @@ export type PipelineStartInput = {
   history: Array<Pick<Message, "role" | "content" | "createdAt">>;
   webhookUrl: string;
   webhookToken: string;
+  autopilotUrl?: string;
+  pipelineName?: string;
 };
 
 export type PipelineStartResult = {
@@ -38,7 +40,9 @@ export type PipelineTriggerRequest = {
 };
 
 export function buildPipelineTriggerRequest(input: PipelineStartInput): PipelineTriggerRequest {
-  const url = new URL(`/api/pipelines/triggers/http/${encodeURIComponent(PIPELINE_NAME)}`, WINGMAN_URL);
+  const autopilotUrl = (input.autopilotUrl || WINGMAN_URL).replace(/\/$/, "");
+  const pipelineName = input.pipelineName || PIPELINE_NAME;
+  const url = new URL(`/api/pipelines/triggers/http/${encodeURIComponent(pipelineName)}`, autopilotUrl);
   return {
     url: url.toString(),
     method: "POST",

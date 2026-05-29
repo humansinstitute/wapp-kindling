@@ -1,9 +1,23 @@
+const PROFILE_CACHE_KEY = "chat_wapp_profiles_v1";
+const PIPELINES_CACHE_KEY = "chat_wapp_pipelines_v1";
+const PROFILE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+const PROFILE_RELAYS = [
+  "wss://relay.damus.io",
+  "wss://nos.lol",
+  "wss://relay.primal.net",
+];
+
 const state = {
   token: localStorage.getItem("chat_wapp_token") || "",
   me: null,
   chats: [],
+  settings: null,
+  accessRules: [],
+  pipelines: loadPipelinesCache(),
   activeChatId: localStorage.getItem("chat_wapp_chat") || "",
   pollTimer: null,
+  route: window.location.pathname,
+  profiles: loadProfileCache(),
 };
 
 const $ = (id) => document.getElementById(id);
@@ -23,13 +37,99 @@ function api(path, options = {}) {
   });
 }
 
-function showAuthed(authed) {
-  $("login").classList.toggle("hidden", authed);
-  $("shell").classList.toggle("hidden", !authed);
-}
-
 function setStatus(text) {
   $("status").textContent = text;
+}
+
+function loadProfileCache() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(PROFILE_CACHE_KEY) || "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function loadPipelinesCache() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(PIPELINES_CACHE_KEY) || "[]");
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function savePipelinesCache() {
+  localStorage.setItem(PIPELINES_CACHE_KEY, JSON.stringify(state.pipelines));
+}
+
+function saveProfileCache() {
+  localStorage.setItem(PROFILE_CACHE_KEY, JSON.stringify(state.profiles));
+}
+
+function cachedProfile(pubkey) {
+  const entry = state.profiles[pubkey];
+  if (!entry || Date.now() - Number(entry.cachedAt || 0) > PROFILE_CACHE_TTL_MS) return null;
+  return entry;
+}
+
+function displayNameForRule(rule, profile) {
+  return profile?.displayName || profile?.name || `${rule.npub.slice(0, 12)}...${rule.npub.slice(-6)}`;
+}
+
+function profileInitial(rule, profile) {
+  return displayNameForRule(rule, profile).slice(0, 1).toUpperCase();
+}
+
+function appRoute() {
+  return ["/act", "/chat", "/settings"].includes(window.location.pathname) ? window.location.pathname : "/";
+}
+
+function navigate(path) {
+  if (window.location.pathname !== path) history.pushState({}, "", path);
+  state.route = path;
+  void renderRoute();
+}
+
+function showOnly(id) {
+  for (const sectionId of ["login", "home", "actPage", "settingsPage", "shell"]) {
+    $(sectionId).classList.toggle("hidden", sectionId !== id);
+  }
+}
+
+function stopPolling() {
+  if (state.pollTimer) clearInterval(state.pollTimer);
+  state.pollTimer = null;
+}
+
+async function renderRoute() {
+  state.route = appRoute();
+  if (!state.token || !state.me) {
+    stopPolling();
+    showOnly("login");
+    return;
+  }
+
+  if (state.route === "/chat") {
+    showOnly("shell");
+    await loadChatScreen();
+    startPolling();
+    return;
+  }
+
+  stopPolling();
+  if (state.route === "/settings") {
+    showOnly("settingsPage");
+    await loadSettings();
+    return;
+  }
+
+  if (state.route === "/act") {
+    showOnly("actPage");
+    return;
+  }
+
+  showOnly("home");
 }
 
 async function login() {
@@ -57,6 +157,7 @@ async function login() {
     state.token = result.token;
     state.me = result;
     localStorage.setItem("chat_wapp_token", result.token);
+    if (window.location.pathname !== "/") history.pushState({}, "", "/");
     await bootApp();
   } catch (error) {
     $("loginError").textContent = error.message;
@@ -67,14 +168,7 @@ async function bootApp() {
   try {
     state.me = await api("/api/me");
     $("npub").textContent = state.me.npub;
-    showAuthed(true);
-    await loadChats();
-    if (!state.activeChatId || !state.chats.find((chat) => chat.id === state.activeChatId)) {
-      if (state.chats[0]) state.activeChatId = state.chats[0].id;
-      else await newChat();
-    }
-    await loadActiveChat();
-    startPolling();
+    await renderRoute();
   } catch {
     logout();
   }
@@ -86,14 +180,258 @@ function logout() {
   state.activeChatId = "";
   localStorage.removeItem("chat_wapp_token");
   localStorage.removeItem("chat_wapp_chat");
-  showAuthed(false);
-  if (state.pollTimer) clearInterval(state.pollTimer);
+  stopPolling();
+  showOnly("login");
+}
+
+async function loadChatScreen() {
+  await loadChats();
+  if (!state.activeChatId || !state.chats.find((chat) => chat.id === state.activeChatId)) {
+    if (state.chats[0]) state.activeChatId = state.chats[0].id;
+    else await newChat();
+  }
+  await loadActiveChat();
 }
 
 async function loadChats() {
   const payload = await api("/api/chats");
   state.chats = payload.chats || [];
   renderChats();
+}
+
+async function loadSettings() {
+  const payload = await api("/api/settings");
+  state.settings = payload.settings;
+  state.accessRules = payload.accessRules || [];
+  renderSettings();
+  renderPipelineOptions();
+  renderAccessRules();
+}
+
+function renderSettings() {
+  $("autopilotUrlInput").value = state.settings?.autopilotUrl || "";
+  $("pipelineInput").value = state.settings?.defaultPipeline || "";
+  const canEdit = Boolean(state.me?.access?.edit);
+  for (const id of ["autopilotUrlInput", "pipelineInput", "pipelineSelect", "saveSettingsButton", "accessNpubInput", "accessRoleSelect", "addAccessButton"]) {
+    $(id).disabled = !canEdit;
+  }
+}
+
+function renderPipelineOptions() {
+  const select = $("pipelineSelect");
+  select.innerHTML = "";
+  const empty = document.createElement("option");
+  empty.value = "";
+  empty.textContent = state.pipelines.length ? "Select a pipeline" : "No pipelines loaded";
+  select.appendChild(empty);
+  for (const pipeline of state.pipelines) {
+    const option = document.createElement("option");
+    option.value = pipeline.name || pipeline.slug || pipeline.id;
+    option.textContent = `${pipeline.name || pipeline.slug || pipeline.id}${pipeline.version ? ` v${pipeline.version}` : ""}`;
+    select.appendChild(option);
+  }
+}
+
+function renderAccessRules() {
+  const list = $("accessList");
+  list.innerHTML = "";
+  const canEdit = Boolean(state.me?.access?.edit);
+  for (const rule of state.accessRules) {
+    const item = document.createElement("div");
+    item.className = "accessItem";
+    item.dataset.pubkey = rule.pubkey;
+    const profile = cachedProfile(rule.pubkey);
+    const identity = document.createElement("div");
+    identity.className = "accessIdentity";
+    const avatar = document.createElement("div");
+    avatar.className = "accessAvatar";
+    if (profile?.picture) {
+      const img = document.createElement("img");
+      img.src = profile.picture;
+      img.alt = "";
+      avatar.appendChild(img);
+    } else {
+      avatar.textContent = profileInitial(rule, profile);
+    }
+    const label = document.createElement("div");
+    label.className = "accessLabel";
+    const name = document.createElement("strong");
+    name.textContent = displayNameForRule(rule, profile);
+    const meta = document.createElement("span");
+    meta.textContent = `${rule.role === "edit" ? "Edit" : "Read"} - ${rule.npub}`;
+    label.append(name, meta);
+    identity.append(avatar, label);
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = "Remove";
+    button.disabled = !canEdit;
+    button.addEventListener("click", () => removeAccessRule(rule));
+    item.append(identity, button);
+    list.appendChild(item);
+    if (!profile) {
+      void resolveProfile(rule).then(() => updateAccessRuleProfile(rule));
+    }
+  }
+}
+
+function updateAccessRuleProfile(rule) {
+  const item = $(`accessList`).querySelector(`[data-pubkey="${CSS.escape(rule.pubkey)}"]`);
+  const profile = cachedProfile(rule.pubkey);
+  if (!item || !profile) return;
+  const avatar = item.querySelector(".accessAvatar");
+  const name = item.querySelector(".accessLabel strong");
+  if (avatar) {
+    avatar.innerHTML = "";
+    if (profile.picture) {
+      const img = document.createElement("img");
+      img.src = profile.picture;
+      img.alt = "";
+      avatar.appendChild(img);
+    } else {
+      avatar.textContent = profileInitial(rule, profile);
+    }
+  }
+  if (name) name.textContent = displayNameForRule(rule, profile);
+}
+
+async function resolveProfile(rule) {
+  const existing = cachedProfile(rule.pubkey);
+  if (existing) return existing;
+  const profile = await fetchNostrProfile(rule.pubkey).catch(() => null);
+  const normalized = {
+    pubkey: rule.pubkey,
+    name: typeof profile?.name === "string" ? profile.name : "",
+    displayName: typeof profile?.display_name === "string" ? profile.display_name : typeof profile?.displayName === "string" ? profile.displayName : "",
+    picture: typeof profile?.picture === "string" ? profile.picture : "",
+    cachedAt: Date.now(),
+  };
+  state.profiles[rule.pubkey] = normalized;
+  saveProfileCache();
+  return normalized;
+}
+
+async function fetchNostrProfile(pubkey) {
+  const attempts = PROFILE_RELAYS.map((relay) => fetchProfileFromRelay(relay, pubkey));
+  const result = await Promise.any(attempts);
+  return result;
+}
+
+function fetchProfileFromRelay(relayUrl, pubkey) {
+  return new Promise((resolve, reject) => {
+    const subId = `profile-${pubkey.slice(0, 8)}-${Math.random().toString(16).slice(2)}`;
+    let bestEvent = null;
+    let settled = false;
+    const socket = new WebSocket(relayUrl);
+    const timer = setTimeout(() => {
+      finish(bestEvent ? parseProfileEvent(bestEvent) : null);
+    }, 2500);
+
+    function finish(value, error) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      try {
+        socket.send(JSON.stringify(["CLOSE", subId]));
+      } catch {}
+      try {
+        socket.close();
+      } catch {}
+      if (error || !value) reject(error || new Error("profile not found"));
+      else resolve(value);
+    }
+
+    socket.addEventListener("open", () => {
+      socket.send(JSON.stringify(["REQ", subId, { kinds: [0], authors: [pubkey], limit: 1 }]));
+    });
+    socket.addEventListener("message", (event) => {
+      let message;
+      try {
+        message = JSON.parse(event.data);
+      } catch {
+        return;
+      }
+      if (!Array.isArray(message)) return;
+      if (message[0] === "EVENT" && message[1] === subId && message[2]?.kind === 0) {
+        if (!bestEvent || Number(message[2].created_at || 0) > Number(bestEvent.created_at || 0)) bestEvent = message[2];
+      }
+      if (message[0] === "EOSE" && message[1] === subId) finish(bestEvent ? parseProfileEvent(bestEvent) : null);
+    });
+    socket.addEventListener("error", () => finish(null, new Error(`relay failed: ${relayUrl}`)));
+  });
+}
+
+function parseProfileEvent(event) {
+  const profile = JSON.parse(event.content || "{}");
+  return profile && typeof profile === "object" && !Array.isArray(profile) ? profile : null;
+}
+
+async function saveSettings() {
+  try {
+    const payload = await api("/api/settings", {
+      method: "PUT",
+      body: JSON.stringify({
+        autopilotUrl: $("autopilotUrlInput").value.trim(),
+        defaultPipeline: $("pipelineInput").value.trim(),
+      }),
+    });
+    state.settings = payload.settings;
+    renderSettings();
+    setStatus("Settings saved");
+  } catch (error) {
+    setStatus(error.message);
+  }
+}
+
+async function loadPipelines() {
+  try {
+    setStatus("Authorizing pipeline list");
+    const prepared = await api("/api/autopilot/pipelines", { method: "POST", body: "{}" });
+    let payload = prepared;
+    if (prepared.requiresAutopilotAuth && prepared.triggerRequest) {
+      const autopilotAuthorization = await signNip98Request(prepared.triggerRequest);
+      payload = await api("/api/autopilot/pipelines", {
+        method: "POST",
+        body: JSON.stringify({ autopilotAuthorization }),
+      });
+    }
+    state.pipelines = payload.pipelines || [];
+    savePipelinesCache();
+    renderPipelineOptions();
+    setStatus(`Loaded ${state.pipelines.length} pipelines`);
+  } catch (error) {
+    setStatus(error.message);
+  }
+}
+
+async function addAccess() {
+  try {
+    const payload = await api("/api/access-rules", {
+      method: "POST",
+      body: JSON.stringify({
+        npub: $("accessNpubInput").value.trim(),
+        role: $("accessRoleSelect").value,
+      }),
+    });
+    state.accessRules = payload.accessRules || [];
+    $("accessNpubInput").value = "";
+    renderAccessRules();
+    setStatus("Access updated");
+  } catch (error) {
+    setStatus(error.message);
+  }
+}
+
+async function removeAccessRule(rule) {
+  try {
+    const payload = await api(`/api/access-rules/${encodeURIComponent(rule.role)}/${encodeURIComponent(rule.npub)}`, {
+      method: "DELETE",
+    });
+    state.accessRules = payload.accessRules || [];
+    renderAccessRules();
+    setStatus("Access updated");
+  } catch (error) {
+    setStatus(error.message);
+  }
 }
 
 function renderChats() {
@@ -178,16 +516,18 @@ async function sendMessage(event) {
 
 async function signNip98Request(triggerRequest) {
   if (!window.nostr) throw new Error("No Nostr browser extension was found.");
-  const bodyJson = JSON.stringify(triggerRequest.body);
-  const payloadHash = await sha256Hex(bodyJson);
+  const tags = [
+    ["u", triggerRequest.url],
+    ["method", triggerRequest.method || "POST"],
+  ];
+  if (triggerRequest.body !== undefined) {
+    const bodyJson = JSON.stringify(triggerRequest.body);
+    tags.push(["payload", await sha256Hex(bodyJson)]);
+  }
   const event = await window.nostr.signEvent({
     kind: 27235,
     created_at: Math.floor(Date.now() / 1000),
-    tags: [
-      ["u", triggerRequest.url],
-      ["method", triggerRequest.method || "POST"],
-      ["payload", payloadHash],
-    ],
+    tags,
     content: "",
   });
   return `Nostr ${base64Utf8(JSON.stringify(event))}`;
@@ -211,7 +551,7 @@ function base64Utf8(value) {
 function startPolling() {
   if (state.pollTimer) clearInterval(state.pollTimer);
   state.pollTimer = setInterval(async () => {
-    if (state.activeChatId && state.token) {
+    if (state.route === "/chat" && state.activeChatId && state.token) {
       await loadActiveChat().catch(() => undefined);
       await loadChats().catch(() => undefined);
     }
@@ -221,6 +561,16 @@ function startPolling() {
 $("loginButton").addEventListener("click", login);
 $("logoutButton").addEventListener("click", logout);
 $("newChatButton").addEventListener("click", newChat);
+$("homeActButton").addEventListener("click", () => navigate("/act"));
+$("homeChatButton").addEventListener("click", () => navigate("/chat"));
+$("homeSettingsButton").addEventListener("click", () => navigate("/settings"));
+$("settingsHomeButton").addEventListener("click", () => navigate("/"));
+$("saveSettingsButton").addEventListener("click", saveSettings);
+$("loadPipelinesButton").addEventListener("click", loadPipelines);
+$("addAccessButton").addEventListener("click", addAccess);
+$("pipelineSelect").addEventListener("change", () => {
+  if ($("pipelineSelect").value) $("pipelineInput").value = $("pipelineSelect").value;
+});
 $("composer").addEventListener("submit", sendMessage);
 $("messageInput").addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey) {
@@ -229,5 +579,9 @@ $("messageInput").addEventListener("keydown", (event) => {
   }
 });
 
+window.addEventListener("popstate", () => {
+  void renderRoute();
+});
+
 if (state.token) bootApp();
-else showAuthed(false);
+else showOnly("login");

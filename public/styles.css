@@ -1,13 +1,19 @@
 :root {
   color-scheme: light;
-  --bg: #f6f7f4;
+  --bg: #f4f1ea;
   --panel: #ffffff;
-  --ink: #1d2724;
-  --muted: #68746f;
-  --line: #dce2dd;
-  --accent: #176b5c;
-  --accent-2: #d64f2f;
+  --panel-soft: #fbfaf6;
+  --ink: #17211e;
+  --muted: #66716d;
+  --line: #dedbd2;
+  --line-strong: #cbc6ba;
+  --accent: #157565;
+  --accent-dark: #0d4f45;
+  --accent-2: #c85f39;
+  --gold: #b98a37;
   --pending: #8b6f20;
+  --shadow: 0 22px 60px rgba(23, 33, 30, 0.1);
+  --shadow-soft: 0 10px 30px rgba(23, 33, 30, 0.08);
 }
 
 * {
@@ -23,21 +29,27 @@ body {
 }
 
 button,
-textarea {
+textarea,
+input,
+select {
   font: inherit;
 }
 
 button {
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-strong);
   background: var(--panel);
   color: var(--ink);
   border-radius: 8px;
-  padding: 9px 12px;
+  padding: 10px 14px;
   cursor: pointer;
+  font-weight: 650;
+  transition: transform 140ms ease, box-shadow 140ms ease, border-color 140ms ease, background 140ms ease;
 }
 
 button:hover {
   border-color: var(--accent);
+  box-shadow: var(--shadow-soft);
+  transform: translateY(-1px);
 }
 
 button:disabled {
@@ -83,6 +95,115 @@ button:disabled {
   color: #9b2d1f;
 }
 
+.home {
+  min-height: 100vh;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding: 28vh 24px 24px;
+  text-align: center;
+  position: relative;
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 50% 18%, rgba(255, 255, 255, 0.9) 0, rgba(255, 255, 255, 0) 34%),
+    radial-gradient(circle at 22% 80%, rgba(21, 117, 101, 0.14) 0, rgba(21, 117, 101, 0) 38%),
+    radial-gradient(circle at 82% 72%, rgba(200, 95, 57, 0.12) 0, rgba(200, 95, 57, 0) 35%),
+    linear-gradient(180deg, #faf9f5 0%, var(--bg) 72%);
+}
+
+.home::before,
+.home::after {
+  content: none;
+}
+
+.homeInner {
+  display: grid;
+  gap: 44px;
+  justify-items: center;
+  position: relative;
+  z-index: 1;
+}
+
+.home h1 {
+  margin: 0;
+  max-width: 940px;
+  font-size: clamp(44px, 7.2vw, 92px);
+  line-height: 0.98;
+  letter-spacing: 0;
+  text-wrap: balance;
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.8);
+}
+
+.homeActions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 28px;
+  padding: 10px;
+  border: 1px solid rgba(203, 198, 186, 0.75);
+  border-radius: 18px;
+  background: rgba(251, 250, 246, 0.78);
+  box-shadow: var(--shadow-soft);
+  margin-top: 10px;
+}
+
+.homeActions button {
+  min-width: 172px;
+  min-height: 58px;
+  font-size: 16px;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+  box-shadow: 0 12px 26px rgba(21, 117, 101, 0.18);
+}
+
+.homeActions button:nth-child(2) {
+  background: var(--ink);
+  border-color: var(--ink);
+  box-shadow: 0 12px 26px rgba(23, 33, 30, 0.16);
+}
+
+.homeActions button:nth-child(3) {
+  background: var(--accent-2);
+  border-color: var(--accent-2);
+  box-shadow: 0 12px 26px rgba(200, 95, 57, 0.16);
+}
+
+.actPage {
+  min-height: 100vh;
+  background: var(--bg);
+}
+
+.settingsPage {
+  min-height: 100vh;
+  padding: 32px;
+}
+
+.settingsFrame {
+  max-width: 1040px;
+  margin: 0 auto;
+}
+
+.pageHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 22px;
+}
+
+.pageHeader h1 {
+  margin: 0;
+  font-size: 34px;
+  letter-spacing: 0;
+}
+
+.settingsGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
 .shell {
   min-height: 100vh;
   display: grid;
@@ -91,7 +212,7 @@ button:disabled {
 
 .sidebar {
   border-right: 1px solid var(--line);
-  background: #eef2ed;
+  background: rgba(238, 242, 237, 0.86);
   padding: 16px;
   display: flex;
   flex-direction: column;
@@ -125,6 +246,134 @@ button:disabled {
   background: var(--accent);
   border-color: var(--accent);
   color: white;
+}
+
+input,
+select {
+  width: 100%;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  padding: 11px 12px;
+  background: var(--panel);
+  color: var(--ink);
+  outline: none;
+  transition: border-color 140ms ease, box-shadow 140ms ease, background 140ms ease;
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 4px rgba(21, 117, 101, 0.12);
+}
+
+.settingsPanel {
+  border: 1px solid rgba(203, 198, 186, 0.8);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.82);
+  padding: 20px;
+  box-shadow: var(--shadow-soft);
+}
+
+.settingsPanel summary {
+  cursor: pointer;
+  font-weight: 650;
+}
+
+.settingsPanel h2 {
+  margin: 0;
+  font-size: 20px;
+  letter-spacing: 0;
+}
+
+.settingsPanel label {
+  display: grid;
+  gap: 6px;
+  margin-top: 14px;
+}
+
+.settingsPanel label span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.settingsActions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.settingsActions button:last-child,
+#addAccessButton {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
+.accessList {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.accessItem {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.accessIdentity {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 9px;
+  align-items: center;
+  min-width: 0;
+}
+
+.accessAvatar {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 50%;
+  background: #d9e7e2;
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.accessAvatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.accessLabel {
+  display: grid;
+  min-width: 0;
+}
+
+.accessLabel strong,
+.accessLabel span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.accessLabel strong {
+  font-size: 13px;
+}
+
+.accessLabel span {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .chatList {
@@ -169,7 +418,7 @@ button:disabled {
 .chatHeader {
   height: 70px;
   border-bottom: 1px solid var(--line);
-  background: var(--panel);
+  background: rgba(255, 255, 255, 0.88);
   padding: 14px 20px;
   display: flex;
   align-items: center;
@@ -242,9 +491,10 @@ textarea {
   min-height: 44px;
   max-height: 180px;
   resize: vertical;
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-strong);
   border-radius: 8px;
   padding: 11px 12px;
+  outline: none;
 }
 
 .composer button {
@@ -255,6 +505,24 @@ textarea {
 }
 
 @media (max-width: 760px) {
+  .home {
+    padding-top: 24vh;
+  }
+
+  .homeActions {
+    width: min(100%, 320px);
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .settingsPage {
+    padding: 16px;
+  }
+
+  .settingsGrid {
+    grid-template-columns: 1fr;
+  }
+
   .shell {
     grid-template-columns: 1fr;
   }

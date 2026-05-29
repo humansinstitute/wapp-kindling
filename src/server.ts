@@ -1,8 +1,21 @@
 import { join } from "node:path";
 import type { Event as NostrEvent } from "nostr-tools";
-import { cleanupExpiredAuthRows, createChallenge, getSession, normalizePubkey, pubkeyToNpub, verifyLoginEvent } from "./auth.ts";
-import { PORT, PUBLIC_ORIGIN } from "./config.ts";
-import { db, mapChat, mapMessage, type Message } from "./db.ts";
+import {
+  addAccessRule,
+  canLogin,
+  cleanupExpiredAuthRows,
+  createChallenge,
+  getAccessRules,
+  getSession,
+  hasAccess,
+  normalizePubkey,
+  pubkeyToNpub,
+  removeAccessRule,
+  verifyLoginEvent,
+  verifyNip98Request,
+} from "./auth.ts";
+import { PIPELINE_NAME, PORT, PUBLIC_ORIGIN, WINGMAN_URL } from "./config.ts";
+import { db, getSetting, mapChat, mapMessage, setSetting, type AccessRole, type AppSettings, type Message } from "./db.ts";
 import { buildPipelineTriggerRequest, startPreparedChatPipeline, type PipelineTriggerRequest } from "./pipeline.ts";
 
 const PUBLIC_DIR = join(import.meta.dir, "..", "public");
@@ -40,6 +53,45 @@ function requireSession(req: Request) {
   const session = getSession(req);
   if (!session) return null;
   return session;
+}
+
+function getAppSettings(): AppSettings {
+  return {
+    autopilotUrl: (getSetting("autopilotUrl") || WINGMAN_URL).replace(/\/$/, ""),
+    defaultPipeline: getSetting("defaultPipeline") || PIPELINE_NAME,
+  };
+}
+
+function normalizeAutopilotUrl(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  try {
+    const parsed = new URL(value.trim());
+    if (!["http:", "https:"].includes(parsed.protocol)) return null;
+    return parsed.toString().replace(/\/$/, "");
+  } catch {
+    return null;
+  }
+}
+
+function normalizePipelineName(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function buildAutopilotPipelinesRequest(settings = getAppSettings()) {
+  return {
+    url: new URL("/api/pipelines/definitions", settings.autopilotUrl).toString(),
+    method: "GET" as const,
+  };
+}
+
+function normalizeAccessRole(value: unknown): AccessRole | null {
+  return value === "read" || value === "edit" ? value : null;
+}
+
+function requireEditSession(req: Request) {
+  const session = requireSession(req);
+  if (!session) return null;
+  return hasAccess(session.pubkey, "edit") ? session : null;
 }
 
 function getChatForUser(chatId: string, pubkey: string) {
@@ -85,7 +137,90 @@ async function handleApi(req: Request, url: URL): Promise<Response | null> {
   if (pathname === "/api/me" && req.method === "GET") {
     const session = requireSession(req);
     if (!session) return json({ error: "unauthorized" }, 401);
-    return json({ pubkey: session.pubkey, npub: pubkeyToNpub(session.pubkey), expiresAt: session.expiresAt });
+    return json({
+      pubkey: session.pubkey,
+      npub: pubkeyToNpub(session.pubkey),
+      expiresAt: session.expiresAt,
+      access: {
+        login: canLogin(session.pubkey),
+        read: hasAccess(session.pubkey, "read"),
+        edit: hasAccess(session.pubkey, "edit"),
+      },
+    });
+  }
+
+  if (pathname === "/api/settings" && req.method === "GET") {
+    const session = requireSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    return json({ settings: getAppSettings(), accessRules: getAccessRules() });
+  }
+
+  if (pathname === "/api/settings" && req.method === "PUT") {
+    const session = requireEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const body = await readJson(req);
+    const autopilotUrl = body.autopilotUrl === undefined ? null : normalizeAutopilotUrl(body.autopilotUrl);
+    const defaultPipeline = body.defaultPipeline === undefined ? null : normalizePipelineName(body.defaultPipeline);
+    if (body.autopilotUrl !== undefined && !autopilotUrl) return json({ error: "autopilotUrl must be a valid http(s) URL" }, 400);
+    if (body.defaultPipeline !== undefined && !defaultPipeline) return json({ error: "defaultPipeline is required" }, 400);
+    if (autopilotUrl) setSetting("autopilotUrl", autopilotUrl);
+    if (defaultPipeline) setSetting("defaultPipeline", defaultPipeline);
+    return json({ settings: getAppSettings() });
+  }
+
+  if (pathname === "/api/access-rules" && req.method === "GET") {
+    const session = requireSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    return json({ accessRules: getAccessRules() });
+  }
+
+  if (pathname === "/api/access-rules" && req.method === "POST") {
+    const session = requireEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const body = await readJson(req);
+    const pubkey = normalizePubkey(String(body.npub ?? body.pubkey ?? ""));
+    const role = normalizeAccessRole(body.role);
+    if (!pubkey) return json({ error: "npub or pubkey is required" }, 400);
+    if (!role) return json({ error: "role must be read or edit" }, 400);
+    return json({ accessRule: addAccessRule(pubkey, role), accessRules: getAccessRules() }, 201);
+  }
+
+  const accessRuleMatch = pathname.match(/^\/api\/access-rules\/(read|edit)\/([^/]+)$/);
+  if (accessRuleMatch && req.method === "DELETE") {
+    const session = requireEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const role = normalizeAccessRole(accessRuleMatch[1]);
+    const pubkey = normalizePubkey(decodeURIComponent(accessRuleMatch[2]!));
+    if (!role || !pubkey) return json({ error: "valid role and npub/pubkey are required" }, 400);
+    removeAccessRule(pubkey, role);
+    return json({ ok: true, accessRules: getAccessRules() });
+  }
+
+  if (pathname === "/api/autopilot/pipelines-request" && req.method === "GET") {
+    const session = requireSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    return json({ triggerRequest: buildAutopilotPipelinesRequest(), settings: getAppSettings() });
+  }
+
+  if (pathname === "/api/autopilot/pipelines" && req.method === "POST") {
+    const session = requireSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    const body = await readJson(req);
+    const request = buildAutopilotPipelinesRequest();
+    const autopilotAuthorization = String(body.autopilotAuthorization ?? "").trim();
+    if (!autopilotAuthorization) {
+      return json({ requiresAutopilotAuth: true, triggerRequest: request, settings: getAppSettings() }, 202);
+    }
+    const res = await fetch(request.url, {
+      method: "GET",
+      headers: {
+        accept: "application/json",
+        authorization: autopilotAuthorization,
+      },
+    });
+    const payload = await res.json().catch(() => ({})) as Record<string, unknown>;
+    if (!res.ok) return json({ error: String(payload.error ?? res.statusText), status: res.status }, 502);
+    return json({ pipelines: payload.definitions ?? [], raw: payload });
   }
 
   if (pathname === "/api/chats" && req.method === "GET") {
@@ -151,6 +286,7 @@ async function handleApi(req: Request, url: URL): Promise<Response | null> {
       .map((msg) => ({ role: msg.role, content: msg.content, createdAt: msg.createdAt }));
 
     const webhookUrl = `${webhookOrigin(req)}/api/pipeline-webhook`;
+    const settings = getAppSettings();
     const triggerRequest = buildPipelineTriggerRequest({
       chatId,
       userPubkey: session.pubkey,
@@ -159,6 +295,8 @@ async function handleApi(req: Request, url: URL): Promise<Response | null> {
       history,
       webhookUrl,
       webhookToken,
+      autopilotUrl: settings.autopilotUrl,
+      pipelineName: settings.defaultPipeline,
     });
     db.query(`
       INSERT INTO pipeline_runs(
@@ -247,6 +385,82 @@ async function handleApi(req: Request, url: URL): Promise<Response | null> {
       .run(runId || null, now, String(run.id));
     db.query("UPDATE chats SET updated_at = ?1 WHERE id = ?2").run(now, chatId);
     return json({ ok: true });
+  }
+
+  if (pathname === "/api/nip98/me" && req.method === "GET") {
+    const verified = await verifyNip98Request(req, url);
+    if (!verified.ok) return json({ error: verified.error }, 401);
+    return json({
+      pubkey: verified.pubkey,
+      npub: verified.npub,
+      access: {
+        login: canLogin(verified.pubkey),
+        read: hasAccess(verified.pubkey, "read"),
+        edit: hasAccess(verified.pubkey, "edit"),
+      },
+    });
+  }
+
+  if (pathname === "/api/nip98/chats" && req.method === "GET") {
+    const verified = await verifyNip98Request(req, url);
+    if (!verified.ok) return json({ error: verified.error }, 401);
+    if (!hasAccess(verified.pubkey, "read")) return json({ error: "read access required" }, 403);
+    const rows = db.query(`
+      SELECT c.*, u.npub, (
+        SELECT content FROM messages m WHERE m.chat_id = c.id ORDER BY m.created_at DESC LIMIT 1
+      ) AS preview
+      FROM chats c
+      JOIN users u ON u.pubkey = c.pubkey
+      ORDER BY c.updated_at DESC
+      LIMIT 200
+    `).all() as Record<string, unknown>[];
+    return json({ chats: rows.map((row) => ({ ...mapChat(row), npub: String(row.npub), preview: String(row.preview ?? "") })) });
+  }
+
+  const nip98ChatMessagesMatch = pathname.match(/^\/api\/nip98\/chats\/([^/]+)\/messages$/);
+  if (nip98ChatMessagesMatch && req.method === "GET") {
+    const verified = await verifyNip98Request(req, url);
+    if (!verified.ok) return json({ error: verified.error }, 401);
+    if (!hasAccess(verified.pubkey, "read")) return json({ error: "read access required" }, 403);
+    const chatId = decodeURIComponent(nip98ChatMessagesMatch[1]!);
+    const chat = db.query("SELECT c.*, u.npub FROM chats c JOIN users u ON u.pubkey = c.pubkey WHERE c.id = ?1").get(chatId) as Record<string, unknown> | null;
+    if (!chat) return json({ error: "chat not found" }, 404);
+    const rows = db.query("SELECT * FROM messages WHERE chat_id = ?1 ORDER BY created_at ASC").all(chatId) as Record<string, unknown>[];
+    return json({ chat: { ...mapChat(chat), npub: String(chat.npub) }, messages: rows.map(mapMessage) });
+  }
+
+  if (nip98ChatMessagesMatch && req.method === "POST") {
+    const verified = await verifyNip98Request(req, url);
+    if (!verified.ok) return json({ error: verified.error }, 401);
+    if (!hasAccess(verified.pubkey, "edit")) return json({ error: "edit access required" }, 403);
+    const chatId = decodeURIComponent(nip98ChatMessagesMatch[1]!);
+    const chat = db.query("SELECT * FROM chats WHERE id = ?1").get(chatId) as Record<string, unknown> | null;
+    if (!chat) return json({ error: "chat not found" }, 404);
+    const body = await readJson(req);
+    const role = ["assistant", "system", "user"].includes(String(body.role)) ? String(body.role) : "system";
+    const content = String(body.content ?? "").trim();
+    if (!content) return json({ error: "content is required" }, 400);
+    const now = Date.now();
+    const id = crypto.randomUUID();
+    db.query("INSERT INTO messages(id, chat_id, pubkey, role, content, status, run_id, created_at) VALUES (?1, ?2, ?3, ?4, ?5, 'complete', ?6, ?7)")
+      .run(id, chatId, String(chat.pubkey), role, content, String(body.runId ?? ""), now);
+    db.query("UPDATE chats SET updated_at = ?1 WHERE id = ?2").run(now, chatId);
+    return json({ message: mapMessage(db.query("SELECT * FROM messages WHERE id = ?1").get(id) as Record<string, unknown>) }, 201);
+  }
+
+  const nip98ChatMatch = pathname.match(/^\/api\/nip98\/chats\/([^/]+)$/);
+  if (nip98ChatMatch && req.method === "PATCH") {
+    const verified = await verifyNip98Request(req, url);
+    if (!verified.ok) return json({ error: verified.error }, 401);
+    if (!hasAccess(verified.pubkey, "edit")) return json({ error: "edit access required" }, 403);
+    const chatId = decodeURIComponent(nip98ChatMatch[1]!);
+    const body = await readJson(req);
+    const title = String(body.title ?? "").trim();
+    if (!title) return json({ error: "title is required" }, 400);
+    updateChatTitle(chatId, title);
+    const row = db.query("SELECT * FROM chats WHERE id = ?1").get(chatId) as Record<string, unknown> | null;
+    if (!row) return json({ error: "chat not found" }, 404);
+    return json({ chat: mapChat(row) });
   }
 
   return null;

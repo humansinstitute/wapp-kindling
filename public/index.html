@@ -17,6 +17,62 @@
         <p class="error" id="loginError"></p>
       </section>
 
+      <section class="home hidden" id="home">
+        <div class="homeInner">
+          <h1>What would you like to do today?</h1>
+          <div class="homeActions">
+            <button id="homeActButton" type="button">Act</button>
+            <button id="homeChatButton" type="button">Chat</button>
+            <button id="homeSettingsButton" type="button">Settings</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="actPage hidden" id="actPage"></section>
+
+      <section class="settingsPage hidden" id="settingsPage">
+        <div class="settingsFrame">
+          <header class="pageHeader">
+            <h1>Settings</h1>
+            <button id="settingsHomeButton" type="button">Home</button>
+          </header>
+          <section class="settingsGrid">
+            <div class="settingsPanel">
+              <h2>Autopilot</h2>
+              <label>
+                <span>Autopilot URL</span>
+                <input id="autopilotUrlInput" type="url" placeholder="http://127.0.0.1:3256" />
+              </label>
+              <label>
+                <span>Default pipeline</span>
+                <select id="pipelineSelect"></select>
+                <input id="pipelineInput" type="text" placeholder="chat-wapp-agent-response" />
+              </label>
+              <div class="settingsActions">
+                <button id="loadPipelinesButton" type="button">Refresh Pipelines</button>
+                <button id="saveSettingsButton" type="button">Save</button>
+              </div>
+            </div>
+            <div class="settingsPanel">
+              <h2>Access</h2>
+              <label>
+                <span>Npub</span>
+                <input id="accessNpubInput" type="text" placeholder="npub1..." />
+              </label>
+              <label>
+                <span>Role</span>
+                <select id="accessRoleSelect">
+                  <option value="read">Read</option>
+                  <option value="edit">Edit</option>
+                </select>
+              </label>
+              <button id="addAccessButton" type="button">Add access</button>
+              <div id="accessList" class="accessList"></div>
+            </div>
+          </section>
+        </div>
+      </section>
+
       <section class="shell hidden" id="shell">
         <aside class="sidebar">
           <div class="sidebarTop">
