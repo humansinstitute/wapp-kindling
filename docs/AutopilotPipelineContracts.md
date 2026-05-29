@@ -2,16 +2,16 @@
 
 Kindling calls Autopilot pipelines by role. The WApp owns screens, local SQLite state, run records, webhook tokens, and final application state. Autopilot owns pipeline definitions and long-running agent work.
 
-The first Autopilot support set is stubbed so the WApp can exercise the full workflow before real research and enrichment steps are added.
+The first Autopilot support set is stubbed so the WApp can exercise the full workflow before real research and enrichment steps are added. The service-offering/profile role now also has a first real pipeline that can replace its stub when the WApp is ready to use profile patches.
 
 ## Seed Pipeline Roles
 
-| Role key | Default trigger key | Discovered slug | Output kind |
-| --- | --- | --- | --- |
-| `develop_service_offering` | `kindling-develop-service-offering-stub` | `kindling-develop-service-offering-stub.v1` | `market_profile_update` |
-| `scan_target_list` | `kindling-scan-target-list-stub` | `kindling-scan-target-list-stub.v1` | `target_scan_result` |
-| `enrich_company` | `kindling-enrich-company-stub` | `kindling-enrich-company-stub.v1` | `company_enrichment` |
-| `draft_outreach` | `kindling-draft-outreach-stub` | `kindling-draft-outreach-stub.v1` | `outreach_draft` |
+| Role key | Recommended trigger key | Stub fallback trigger key | Discovered slug | Output kind |
+| --- | --- | --- | --- | --- |
+| `develop_service_offering` | `kindling-develop-service-offering` | `kindling-develop-service-offering-stub` | `kindling-develop-service-offering.v1` | `market_profile_update` |
+| `scan_target_list` | `kindling-scan-target-list-stub` | `kindling-scan-target-list-stub` | `kindling-scan-target-list-stub.v1` | `target_scan_result` |
+| `enrich_company` | `kindling-enrich-company-stub` | `kindling-enrich-company-stub` | `kindling-enrich-company-stub.v1` | `company_enrichment` |
+| `draft_outreach` | `kindling-draft-outreach-stub` | `kindling-draft-outreach-stub` | `kindling-draft-outreach-stub.v1` | `outreach_draft` |
 
 These are user-scoped Autopilot definitions for Pete's workspace. The WApp can trigger by default trigger key because the Autopilot HTTP trigger route accepts the definition name, while the pipeline discovery list will show the versioned slug or opaque definition ID. The WApp should store the selected value as admin-editable configuration rather than hard-coded behavior.
 
@@ -46,30 +46,77 @@ Role-specific fields can sit beside `message` and `localContext`. Examples:
 
 ## Webhook Payload
 
-The stub pipelines post one completion callback to the supplied webhook:
+Kindling pipelines post one completion callback to the supplied webhook:
 
 ```json
 {
   "requestId": "local-request-id",
-  "role": "scan_target_list",
+  "role": "develop_service_offering",
   "status": "ok",
-  "stub": true,
+  "stub": false,
   "generatedAt": "2026-05-29T00:00:00.000Z",
   "response": "Short user-facing summary",
   "result": {},
   "metadata": {
-    "source": "kindling-stub-pipeline",
-    "pipelineRole": "scan_target_list",
-    "stub": true
+    "source": "kindling-profile-update-pipeline",
+    "pipelineRole": "develop_service_offering",
+    "stub": false
   }
 }
 ```
 
-The WApp should treat `requestId` as the local join key and use the Autopilot trigger response to store the Autopilot `run.id`. The callback does not need to include the run ID in the first stub version.
+The WApp should treat `requestId` as the local join key and use the Autopilot trigger response to store the Autopilot `run.id`. The callback does not need to repeat the run ID.
+
+## Profile Update Pipeline
+
+`kindling-develop-service-offering` is the first non-stub role pipeline. It has two steps:
+
+1. `synthesise-profile-update`: an agent step that interprets the latest user message, prior conversation history, and `localContext.activeProfileVersion`.
+2. `deliver-profile-update`: a deterministic function that normalises the agent output and posts the WApp callback.
+
+The WApp should pass compact profile context rather than expecting Autopilot to read SQLite:
+
+```json
+{
+  "input": {
+    "pipelineRole": "develop_service_offering",
+    "requestId": "local-request-id",
+    "message": "We mostly help local service businesses tighten follow-up after initial enquiry.",
+    "history": [],
+    "localContext": {
+      "marketProfileId": "profile_123",
+      "activeProfileVersionId": "profile_version_4",
+      "activeProfileVersion": {},
+      "documents": [],
+      "recentChangeNotes": []
+    },
+    "webhook": {
+      "url": "http://localhost:PORT/api/pipeline-webhook",
+      "authHeader": "x-kindling-pipeline-token",
+      "token": "run-scoped-token"
+    }
+  }
+}
+```
+
+It returns:
+
+- `result.outputKind = "market_profile_update"`
+- `result.marketProfileId`
+- `result.activeProfileVersionId`
+- `result.profileVersionPatch`
+- `result.changeSummary`
+- `result.rationaleNotes`
+- `result.nextQuestions`
+- `result.evidence`
+- `result.warnings`
+- `result.confidence`
+
+The profile patch includes `title`, `summary`, `positioningStatement`, `services`, `idealCustomerProfile`, `problemsSolved`, `buyingTriggers`, `differentiators`, `outreachVoice`, `exclusions`, `assumptions`, and `confidence`.
 
 ## Stub Result Shapes
 
-`develop_service_offering` returns:
+The `develop_service_offering` stub fallback returns:
 
 - `result.outputKind = "market_profile_update"`
 - `result.profileVersionPatch`
@@ -117,6 +164,11 @@ Current stub definitions:
 They share one deterministic callback function:
 
 - `~/.wingmen/pipelines/users/honest-ivory-thicket/functions/kindling-stub-webhook.v1.ts`
+
+Current profile-update pipeline:
+
+- `~/.wingmen/pipelines/users/honest-ivory-thicket/definitions/kindling-develop-service-offering.v1.json`
+- `~/.wingmen/pipelines/users/honest-ivory-thicket/functions/kindling-deliver-profile-update.v1.ts`
 
 ## Expansion Path
 
