@@ -47,10 +47,15 @@ Early screens should include:
 - Company profile: polished profile, expandable evidence, activities, enrichment actions, people, signals, and outreach readiness.
 - Admin-only pipeline settings: role-to-pipeline mappings and default pipeline selection.
 - Outreach workspace: generated draft, evidence basis, service match, and review actions.
+- Today's targets: priority-ordered list of the best current targets.
 
 Manual CRUD should be available from day one for core records such as companies, sources, notes, profile fields, duplicate status, and activities. Pipeline-created records should not be the only editable records.
 
 Manual company creation should require only a company name. Location, industry, website, source links, notes, and confidence fields should be optional because Kindling is designed to support sparse records that improve over time.
+
+The first-class company list filters should be industry, location, data ring, duplicate status, has website, and enrichment status.
+
+The outreach workspace should produce a pitch that can be copied and pasted into an email. It should not send email in the first version.
 
 ## Pipeline Role Configuration
 
@@ -116,3 +121,19 @@ Likely API groups:
 - Outreach: create draft artifacts and update review state.
 
 The local SQLite database remains the source of truth for these records.
+
+## Implementation Plan Shape
+
+The implementation should be planned as a set of vertical slices rather than one large platform build:
+
+1. Local data model and migrations for pipeline roles, market profiles, companies, sources, activities, discovery jobs, enrichment status, and outreach drafts.
+2. Action hub and navigation shell.
+3. Admin-only pipeline role settings.
+4. Service offering workspace with split profile/chat layout and version records.
+5. Target list builder with free-text industry/location scan request and company list filters.
+6. Manual company CRUD and company profile screen.
+7. WApp NIP-98 APIs for Autopilot to read context and write companies, sources, activities, profile versions, enrichment results, and outreach drafts.
+8. Pipeline trigger/webhook integration for service offering, scan target list, enrichment, and outreach draft roles.
+9. Today's targets priority list and copyable pitch workflow.
+
+The first implementation plan should identify which of these slices are required for the first demo and which can be stubbed with local/manual data.

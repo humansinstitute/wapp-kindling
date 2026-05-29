@@ -111,6 +111,8 @@ Useful filters and groupings:
 - Industry and sub-industry.
 - Geography hierarchy, such as country, state, region, city, suburb, and custom search slice.
 - Data ring.
+- Duplicate status.
+- Enrichment status.
 - Source quality.
 - Has website.
 - Has possible duplicate.

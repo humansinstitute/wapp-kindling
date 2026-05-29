@@ -149,8 +149,8 @@ Initial action areas:
 
 - Build service offering: opens the positioning workspace, showing the current market profile, version history, change notes, and a chat interface for the interview pipeline.
 - Build target list: shows the current generated name database, including counts by industry, location, data ring, and confidence. The user can enter free-text location, industry, and optional targeting notes, then manually kick off a pipeline to discover initial company records.
-- Review today's targets: shows the current best outreach opportunities once enough monitoring and scoring data exists.
-- Act: prepares or reviews generated outreach for selected targets.
+- Review today's targets: shows the current best outreach opportunities as a priority-ordered list once enough monitoring and scoring data exists.
+- Act: prepares or reviews a copyable pitch for selected targets.
 
 These actions should live on an action hub framed around "what will we do today?" rather than on a passive dashboard.
 
@@ -169,10 +169,10 @@ Outreach preparation should:
 - Use the current company profile and source-backed facts.
 - Match the company against the user's market profile, services, benefits, and USPs.
 - Select the strongest relevant service angle rather than producing generic outreach.
-- Draft a deliberate first-view email or pitch.
+- Draft a deliberate pitch that can be copied and pasted into an email.
 - Support iteration on the draft before it is used.
 
-Sending outreach is not yet decided. The current assumption is that the WApp prepares high-quality drafts and pitch materials for review first, with direct sending considered later.
+Sending outreach is not part of the first version. The WApp prepares high-quality copyable pitch material for review first, with direct sending considered later.
 
 Today's targets should represent the best effort for the current day, not simply the highest static score. A strong trigger, such as a relevant manager actively publishing or engaging with AI content, can create a high-confidence outreach moment even if the broader company profile is still incomplete.
 
@@ -244,6 +244,5 @@ Pipeline choices should also not be hard-coded. Kindling should let an admin/ope
 
 - What fields must be known before a company can become one of today's targets?
 - What scoring criteria should matter most?
-- Should the WApp send outreach directly, or only prepare drafts for external review and sending?
 - How often should client records be revisited?
 - What does a successful first version need to do manually, semi-automatically, and automatically?

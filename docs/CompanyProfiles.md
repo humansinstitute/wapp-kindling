@@ -112,6 +112,8 @@ The polished profile should include:
 
 The outreach pipeline should use the full profile for reasoning, but present a polished profile for human review.
 
+The first outreach artifact should be a copyable pitch suitable for pasting into an email. The WApp should not send email directly in the first version.
+
 ## Confidence
 
 Confidence should account for:
