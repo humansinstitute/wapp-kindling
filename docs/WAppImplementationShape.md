@@ -39,11 +39,11 @@ The goal is not to automate the whole business-development machine in the first 
 Early screens should include:
 
 - Action hub: the starting "what will we do today?" screen.
-- Service offering workspace: profile, versions, documents, interview chat, change notes, and active pipeline status.
-- Target list builder: industry/location scan form, scan jobs, coverage view, and generated company list.
+- Service offering workspace: split layout with the current profile, versions, documents, and change notes on one side, and the interview chat, pipeline interaction, and run status on the other.
+- Target list builder: free-text industry/location research form, scan jobs, coverage view, and generated company list.
 - Company list: filtering, duplicate status, data rings, source quality, and manual record actions.
 - Company profile: polished profile, expandable evidence, activities, enrichment actions, people, signals, and outreach readiness.
-- Pipeline settings: role-to-pipeline mappings and default pipeline selection.
+- Admin-only pipeline settings: role-to-pipeline mappings and default pipeline selection.
 - Outreach workspace: generated draft, evidence basis, service match, and review actions.
 
 Manual CRUD should be available from day one for core records such as companies, sources, notes, profile fields, duplicate status, and activities. Pipeline-created records should not be the only editable records.
@@ -62,7 +62,7 @@ Initial pipeline roles:
 - Monitor and score.
 - Draft outreach.
 
-The app should let an operator load available Autopilot pipelines, select the active pipeline for each role, and store those selections locally. This follows the WApp starter pattern where a chat pipeline can be selected, but expands it into role-specific pipeline configuration.
+The app should let an admin/operator load available Autopilot pipelines, select the active pipeline for each role, and store those selections locally. Normal users should not need to choose pipelines during ordinary use. This follows the WApp starter pattern where a chat pipeline can be selected, but expands it into role-specific pipeline configuration.
 
 Pipeline configuration records should store:
 
@@ -76,6 +76,8 @@ Pipeline configuration records should store:
 - Last verified timestamp.
 
 The WApp should treat pipeline selection as configuration, not hard-coded application behavior.
+
+Pipeline settings should be admin-only. During early development this admin screen can be visible to builders and operators, but it should not be part of the normal user workflow.
 
 ## Business Rule Boundary
 

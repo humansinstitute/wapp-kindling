@@ -12,16 +12,16 @@ From the initial "what do we want to do today?" screen, the user can choose Buil
 
 The scan form should include:
 
-- Location.
-- Industry or niche.
+- Free-text location.
+- Free-text industry or niche.
 - Optional company size hints.
 - Optional targeting notes.
 - Optional source preferences.
 - Batch size or effort level.
 
-The first version should start with a structured form rather than a free-form instruction box. The core fields are industry and location. The WApp should send these fields to the configured Autopilot scan pipeline, which can expand, clean, and decompose the search into smaller slices.
+The first version should start with a simple research form rather than dropdown-heavy taxonomy controls. The core fields are free-text industry and free-text location. The WApp should send these fields to the configured Autopilot scan pipeline, which can expand, clean, and decompose the search into smaller slices.
 
-Location should be normalised. For the first owner deployment, the app should bias toward a standard list of Western Australian locations and allow the pipeline to clean user-entered locations into canonical records where possible. For example, "Perth", "Perth metro", "Fremantle", "Subiaco", and "Northbridge" should resolve to known geography nodes rather than being stored only as raw strings.
+Location should be normalised after entry, not forced through a dropdown before the scan starts. For the first owner deployment, the pipeline can clean user-entered locations toward canonical Western Australian geography records where possible. For example, "Perth", "Perth metro", "Fremantle", "Subiaco", and "Northbridge" can resolve to known geography nodes in the background while preserving the original research request text.
 
 The WApp should show current dataset counts before and after a scan:
 

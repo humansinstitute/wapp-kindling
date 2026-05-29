@@ -89,8 +89,11 @@ For the initial owner deployment, known service lines are:
 
 The workspace should include:
 
-- Current profile panel.
-- Chat panel for the positioning interview.
+- A split layout.
+- Current profile panel on the profile side.
+- Version history, source documents, and change notes on the profile side.
+- Chat panel for the positioning interview on the interaction side.
+- Pipeline run status and latest pipeline response on the interaction side.
 - Version selector.
 - Change summary attached to each pipeline response.
 - Source/reference document list.

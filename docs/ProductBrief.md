@@ -148,7 +148,7 @@ The first screen should answer "what do we want to do today?" and expose a small
 Initial action areas:
 
 - Build service offering: opens the positioning workspace, showing the current market profile, version history, change notes, and a chat interface for the interview pipeline.
-- Build target list: shows the current generated name database, including counts by industry, location, data ring, and confidence. The user can enter a location, industry, and optional targeting notes, then manually kick off a pipeline to discover initial company records.
+- Build target list: shows the current generated name database, including counts by industry, location, data ring, and confidence. The user can enter free-text location, industry, and optional targeting notes, then manually kick off a pipeline to discover initial company records.
 - Review today's targets: shows the current best outreach opportunities once enough monitoring and scoring data exists.
 - Act: prepares or reviews generated outreach for selected targets.
 
@@ -236,7 +236,7 @@ The first deployment user is the owner. The product should also be deployable fo
 
 For positioning, the WApp should show the current structured profile and provide a chat interface where the user can discuss, refine, and be interviewed about it. Each meaningful chat turn can trigger an Autopilot pipeline that reviews the existing profile, interprets the new input, asks the next useful question, and proposes concrete profile updates.
 
-Pipeline choices should also not be hard-coded. Kindling should let an operator select the Autopilot pipeline used for each role, such as service-offering development, target-list scanning, enrichment, duplicate cleanup, people discovery, scoring, and outreach drafting.
+Pipeline choices should also not be hard-coded. Kindling should let an admin/operator select the Autopilot pipeline used for each role, such as service-offering development, target-list scanning, enrichment, duplicate cleanup, people discovery, scoring, and outreach drafting.
 
 ## Open Questions
 
