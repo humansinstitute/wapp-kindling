@@ -141,6 +141,8 @@ Early pipeline candidates:
 
 Pipeline outputs should be proposed changes, scores, or artifacts that the WApp can display, store, diff, accept, reject, and revisit.
 
+The WApp implementation should specify the required pipeline roles and callback contracts, but the pipelines themselves are Autopilot pipelines. For the first full-path build, each minimum pipeline role can start as a stub that accepts the trigger and posts a valid webhook response back to the WApp.
+
 ## Initial Screen and Actions
 
 The first screen should answer "what do we want to do today?" and expose a small number of clear actions instead of starting as a passive dashboard.

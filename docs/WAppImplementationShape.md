@@ -136,4 +136,6 @@ The implementation should be planned as a set of vertical slices rather than one
 8. Pipeline trigger/webhook integration for service offering, scan target list, enrichment, and outreach draft roles.
 9. Today's targets priority list and copyable pitch workflow.
 
-The first implementation plan should identify which of these slices are required for the first demo and which can be stubbed with local/manual data.
+The first implementation should build the full thin path. Pipeline behavior can be stubbed at first, but the WApp should have the screens, role configuration, trigger plumbing, webhook callback handling, and local state updates needed to exercise the whole loop.
+
+See [Implementation Plan](./ImplementationPlan.md) for the first full-path demo, pipeline-stub strategy, and suggested build slices.
