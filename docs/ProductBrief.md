@@ -148,11 +148,15 @@ The first screen should answer "what do we want to do today?" and expose a small
 Initial action areas:
 
 - Build service offering: opens the positioning workspace, showing the current market profile, version history, change notes, and a chat interface for the interview pipeline.
-- Scan targets: shows the current generated name database, including counts by industry, location, data ring, and confidence. The user can enter a location, industry, and optional targeting notes, then manually kick off a pipeline to discover and enrich initial target records.
+- Build target list: shows the current generated name database, including counts by industry, location, data ring, and confidence. The user can enter a location, industry, and optional targeting notes, then manually kick off a pipeline to discover initial company records.
 - Review today's targets: shows the current best outreach opportunities once enough monitoring and scoring data exists.
 - Act: prepares or reviews generated outreach for selected targets.
 
-The first practical build should probably start with the Build service offering action, because target scoring and outreach quality depend on the configured market profile.
+These actions should live on an action hub framed around "what will we do today?" rather than on a passive dashboard.
+
+The first practical happy path is: define or improve the service offering, build a target list for one industry and location, enrich a small number of companies from that list, then draft one outreach email or pitch.
+
+See [WApp Implementation Shape](./WAppImplementationShape.md) for the first screen set, local SQLite choice, manual CRUD expectation, and pipeline-role configuration model.
 
 ## Target Outputs
 
@@ -202,6 +206,7 @@ Likely first-class records:
 - Positioning interview session
 - Positioning revision
 - Search priority
+- Pipeline role configuration
 - Discovery job
 - Discovery slice
 - Geography hierarchy node
@@ -225,9 +230,13 @@ Likely first-class records:
 
 The WApp should own the local user experience, records, scoring state, market profile, and review workflow. Autopilot pipelines can be used for research planning, deterministic tool orchestration, enrichment, scoring suggestions, summarisation, pitch generation, and outreach drafting, with results posted back to the WApp for review.
 
+The first implementation should keep WApp data in local SQLite. Autopilot should use WApp NIP-98 APIs rather than direct SQLite access.
+
 The first deployment user is the owner. The product should also be deployable for a second client, which means market positioning, services, benefits, target profiles, and scoring rules must not be hard-coded to the owner's business.
 
 For positioning, the WApp should show the current structured profile and provide a chat interface where the user can discuss, refine, and be interviewed about it. Each meaningful chat turn can trigger an Autopilot pipeline that reviews the existing profile, interprets the new input, asks the next useful question, and proposes concrete profile updates.
+
+Pipeline choices should also not be hard-coded. Kindling should let an operator select the Autopilot pipeline used for each role, such as service-offering development, target-list scanning, enrichment, duplicate cleanup, people discovery, scoring, and outreach drafting.
 
 ## Open Questions
 

@@ -98,6 +98,8 @@ The workspace should include:
 - A way to view earlier versions.
 - Later: a structured section diff for services, benefits, ICP, triggers, and outreach voice.
 
+The positioning/interview pipeline should be selected through the WApp's pipeline role settings. This workspace should call the active "develop service offering" pipeline role rather than hard-coding one pipeline slug in the screen.
+
 ## Pipeline Contract Sketch
 
 Input:

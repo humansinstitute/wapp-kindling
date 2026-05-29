@@ -8,6 +8,8 @@ Profiles start incomplete. The WApp should make it easy to see what is known, wh
 
 Company profiles are downstream of company discovery. The first scan can create sparse records at scale; profile enrichment should be a later stage that is kicked off manually or by a prioritisation pipeline for selected companies or segments.
 
+Manual create, read, update, and delete workflows should exist from the first implementation for core company profile records. Users should be able to add a company, correct fields, attach notes, adjust duplicate status, edit polished profile text, and request enrichment without waiting for a pipeline to create every record.
+
 ## Profile States
 
 Suggested states:

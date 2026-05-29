@@ -8,7 +8,7 @@ The first version should not only save names. When a company is found, the WApp 
 
 ## First Screen Flow
 
-From the initial "what do we want to do today?" screen, the user can choose Scan targets.
+From the initial "what do we want to do today?" screen, the user can choose Build target list.
 
 The scan form should include:
 
@@ -18,6 +18,10 @@ The scan form should include:
 - Optional targeting notes.
 - Optional source preferences.
 - Batch size or effort level.
+
+The first version should start with a structured form rather than a free-form instruction box. The core fields are industry and location. The WApp should send these fields to the configured Autopilot scan pipeline, which can expand, clean, and decompose the search into smaller slices.
+
+Location should be normalised. For the first owner deployment, the app should bias toward a standard list of Western Australian locations and allow the pipeline to clean user-entered locations into canonical records where possible. For example, "Perth", "Perth metro", "Fremantle", "Subiaco", and "Northbridge" should resolve to known geography nodes rather than being stored only as raw strings.
 
 The WApp should show current dataset counts before and after a scan:
 
