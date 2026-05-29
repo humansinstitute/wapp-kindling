@@ -1434,5 +1434,5 @@ if (import.meta.main) {
     },
   });
 
-  console.log(`chat-wapp listening on ${server.url}`);
+  console.log(`kindling-wapp listening on ${server.url}`);
 }

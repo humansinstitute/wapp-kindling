@@ -93,7 +93,7 @@ export function createChallenge(pubkey: string) {
     VALUES (?1, ?2, ?3, ?4)
     ON CONFLICT(pubkey) DO UPDATE SET nonce = excluded.nonce, expires_at = excluded.expires_at, created_at = excluded.created_at
   `).run(pubkey, nonce, expiresAt, now);
-  return { nonce, expiresAt, content: `chat-wapp-login:${nonce}` };
+  return { nonce, expiresAt, content: `kindling-login:${nonce}` };
 }
 
 export function verifyLoginEvent(event: Event) {
@@ -104,7 +104,7 @@ export function verifyLoginEvent(event: Event) {
     | null;
   if (!row) return { ok: false as const, error: "Challenge not found" };
   if (row.expires_at < Date.now()) return { ok: false as const, error: "Challenge expired" };
-  if (event.content !== `chat-wapp-login:${row.nonce}`) return { ok: false as const, error: "Challenge mismatch" };
+  if (event.content !== `kindling-login:${row.nonce}`) return { ok: false as const, error: "Challenge mismatch" };
   if (Math.abs(event.created_at * 1000 - Date.now()) > CHALLENGE_TTL_MS) {
     return { ok: false as const, error: "Event timestamp out of range" };
   }

@@ -1,47 +1,87 @@
 # Kindling WApp
 
-A demo WApp that logs in with a Nostr browser extension, stores chats in local SQLite, starts a Wingmen pipeline for each user message, and receives the agent answer through a webhook.
+Kindling is a local business-development WApp for shaping a service offering, building target lists, reviewing companies, and drafting outreach with Wingman Autopilot pipelines.
 
-It is also the starter pattern for Business WApps: the WApp owns local UI/data, Autopilot owns pipeline/agent execution, and both sides can talk over NIP-98 APIs.
+The WApp owns the user interface, Nostr login, access rules, business records, and local SQLite database. Autopilot owns the pipeline runs and agent work. Pipeline results return to Kindling through run-scoped webhooks and write APIs.
 
-Agents that need to build or integrate WApps can install or copy the bundled skill guide: `Wapps-skill.md`.
+## Product Flow
 
-## Flow
+The first screen asks what Kindling should do today:
 
-1. Browser signs a login challenge with `window.nostr`.
-2. Messages are stored in `data/chat-wapp.sqlite`.
-3. `POST /api/chats/:chatId/messages` starts the configured default pipeline.
-4. Pipeline input includes `message`, `history`, `chatId`, and `webhook`.
-5. The pipeline agent posts the answer to `POST /api/pipeline-webhook`.
+- Build service offering.
+- Build target list.
+- Review today's targets.
+- Act on a selected company.
 
-`CHAT_WAPP_ALLOW_MOCK=1` keeps the demo usable before the Autopilot HTTP trigger route is live. Set it to `0` once Autopilot is restarted with the HTTP trigger update.
+The first implementation keeps the workflow deliberately staged:
 
-## Local Settings
+1. Build or update the active service offering profile.
+2. Scan for companies from free-text industry and location prompts.
+3. Review and filter company records in Kindling.
+4. Enrich one selected company.
+5. Generate three copyable outreach draft variants for that company.
 
-Signed-in users with edit access can configure these from the sidebar:
+Company discovery is company-only. People finding, duplicate resolution, monitoring, and deeper scoring are separate pipeline roles so they can be added iteratively without overloading the scan step.
 
-- Autopilot base URL.
-- Default chat pipeline.
-- Read and edit npub groups.
+## Pipeline Roles
 
-Settings are stored in the local SQLite database. Until access rules are configured, the app stays in bootstrap mode so the first signed-in user can configure it. After rules exist, users can log in when they have read or edit access. Edit access can also configure settings and access rules. The configured `WAPP_OWNER_NPUB` always has read and edit access.
+Kindling stores role mappings locally so an admin can swap the active Autopilot pipeline behind each app action.
 
-## NIP-98 APIs
+| Role | Default pipeline | Result |
+| --- | --- | --- |
+| Develop service offering | `kindling-develop-service-offering` | Updates the active market profile. |
+| Scan target list | `kindling-scan-target-list` | Discovers companies, coverage, sources, warnings, and possible duplicates. |
+| Enrich company | `kindling-enrich-company` | Adds company research, positioning, confidence, and next actions. |
+| Draft outreach | `kindling-draft-outreach` | Produces three outreach draft variants for review and copy/paste. |
 
-Autopilot pipeline discovery uses the browser NIP-98 signer:
+Future roles are stubbed in the data model for duplicate resolution, people finding, and monitor-and-score workflows.
 
-- `POST /api/autopilot/pipelines` returns a NIP-98 signing request when no Autopilot authorization is provided.
-- The browser signs that request and retries the same WApp endpoint.
-- The WApp forwards the signed request to Autopilot `/api/pipelines/definitions`.
+## Local Run
 
-Agent-to-WApp API routes:
-
-```txt
-GET   /api/nip98/me
-GET   /api/nip98/chats
-GET   /api/nip98/chats/:chatId/messages
-POST  /api/nip98/chats/:chatId/messages
-PATCH /api/nip98/chats/:chatId
+```bash
+bun install
+PORT=4317 WINGMAN_URL=http://localhost:3256 CHAT_WAPP_ALLOW_MOCK=0 bun src/server.ts
 ```
 
-Read routes require API read access. Edit routes require API edit access. All NIP-98 requests verify event kind, signature, URL, method, timestamp, and payload hash for mutating methods.
+Open `http://localhost:4317/act`.
+
+You need a Nostr browser signer for login and for NIP-98 requests to Autopilot. Until access rules exist, the first signed-in user can bootstrap settings. After that, only configured read/edit npubs can use the app, and only edit users can change admin settings or role mappings.
+
+## Local Data
+
+The default SQLite path is `data/chat-wapp.sqlite`. The environment variable is still `CHAT_WAPP_DB_PATH` because this repo grew from the chat WApp starter.
+
+Important Kindling routes:
+
+```txt
+GET  /api/kindling/summary
+GET  /api/kindling/companies
+POST /api/kindling/companies
+POST /api/kindling/service-offering
+POST /api/kindling/target-scans
+POST /api/kindling/companies/:companyId/enrich
+POST /api/kindling/companies/:companyId/outreach
+POST /api/kindling/pipeline-webhook
+POST /api/kindling/pipeline-write/target-scan
+```
+
+The legacy chat route remains available from the Home screen as a developer/testing surface for generic pipeline chat.
+
+## Autopilot Integration
+
+Kindling triggers Autopilot with:
+
+```txt
+POST /api/pipelines/triggers/http/:pipelineSlug
+```
+
+When no server-side trigger token is configured, Kindling asks the browser to sign the Autopilot trigger as a NIP-98 request. Long-running work happens inside Autopilot; the WApp records a local run, shows high-level status, and applies the webhook or write callback when the pipeline finishes.
+
+Scan pipelines may call `POST /api/kindling/pipeline-write/target-scan` as companies are discovered, then call the normal webhook to close the run.
+
+## Validation
+
+```bash
+bun run check
+bun test
+```

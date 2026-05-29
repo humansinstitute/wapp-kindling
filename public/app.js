@@ -166,7 +166,7 @@ async function login() {
     const event = await window.nostr.signEvent({
       kind: 22242,
       created_at: Math.floor(Date.now() / 1000),
-      tags: [["challenge", challenge.nonce], ["client", "chat-wapp"]],
+      tags: [["challenge", challenge.nonce], ["client", "kindling-wapp"]],
       content: challenge.content,
     });
     const result = await api("/api/auth/verify", {
