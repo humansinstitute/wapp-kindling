@@ -10,6 +10,8 @@ Company profiles are downstream of company discovery. The first scan can create 
 
 Manual create, read, update, and delete workflows should exist from the first implementation for core company profile records. Users should be able to add a company, correct fields, attach notes, adjust duplicate status, edit polished profile text, and request enrichment without waiting for a pipeline to create every record.
 
+Only the company name should be mandatory when creating a company manually. Location, industry, website, source links, and profile detail can be added later by the user or by enrichment pipelines.
+
 ## Profile States
 
 Suggested states:

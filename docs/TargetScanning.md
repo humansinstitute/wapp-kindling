@@ -129,7 +129,8 @@ The top-level scan job view should show:
 - Possible duplicate count.
 - Parked or weak-source count.
 - Next recommended search slices.
-- Expandable agent/session notes.
+
+Normal users should see high-level scan status and resulting records. Agent/session notes and detailed pipeline logs should remain in Autopilot or admin/operator views for now.
 
 The default view should help the user choose the next structured slice of work, such as "engineering companies in Perth", "accountants in Subiaco", or "air conditioning businesses in Fremantle".
 

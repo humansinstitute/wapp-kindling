@@ -154,6 +154,8 @@ Initial action areas:
 
 These actions should live on an action hub framed around "what will we do today?" rather than on a passive dashboard.
 
+The four primary actions should have equal visual weight.
+
 The first practical happy path is: define or improve the service offering, build a target list for one industry and location, enrich a small number of companies from that list, then draft one outreach email or pitch.
 
 See [WApp Implementation Shape](./WAppImplementationShape.md) for the first screen set, local SQLite choice, manual CRUD expectation, and pipeline-role configuration model.

@@ -21,6 +21,8 @@ Initial actions:
 - Review today's targets.
 - Act.
 
+The four primary action buttons should have equal visual weight. The starting screen should not imply that one workflow is always more important than the others.
+
 The action hub can also show small status summaries, such as active market profile, total companies, active scans, enrichment backlog, and outreach-ready targets.
 
 ## First Happy Path
@@ -47,6 +49,8 @@ Early screens should include:
 - Outreach workspace: generated draft, evidence basis, service match, and review actions.
 
 Manual CRUD should be available from day one for core records such as companies, sources, notes, profile fields, duplicate status, and activities. Pipeline-created records should not be the only editable records.
+
+Manual company creation should require only a company name. Location, industry, website, source links, notes, and confidence fields should be optional because Kindling is designed to support sparse records that improve over time.
 
 ## Pipeline Role Configuration
 
@@ -91,6 +95,8 @@ Business rules that determine how Kindling behaves should live in the WApp when 
 - How scan jobs, activities, and pipeline runs are displayed.
 
 Autopilot should handle reasoning-heavy or long-running work, such as interpreting source documents, searching public data, extracting company details, proposing profile changes, and drafting outreach.
+
+Normal users should see high-level pipeline status only, such as queued, running, completed, failed, and the resulting app records or summaries. Pipeline internals, agent notes, and logs should stay in Autopilot or admin/operator surfaces for now. The user interacts with the WApp, not with the running pipeline.
 
 ## API Boundary
 
