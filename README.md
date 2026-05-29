@@ -4,6 +4,8 @@ A demo WApp that logs in with a Nostr browser extension, stores chats in local S
 
 It is also the starter pattern for Business WApps: the WApp owns local UI/data, Autopilot owns pipeline/agent execution, and both sides can talk over NIP-98 APIs.
 
+Agents that need to build or integrate WApps can install or copy the bundled skill guide: `Wapps-skill.md`.
+
 ## Flow
 
 1. Browser signs a login challenge with `window.nostr`.
