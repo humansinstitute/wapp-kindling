@@ -119,7 +119,15 @@ The profile patch includes `title`, `summary`, `positioningStatement`, `services
 `kindling-scan-target-list` has two steps:
 
 1. `discover-target-companies`: an agent step that uses the free-text industry/location brief and available source tools to produce source-backed candidate companies. If source-backed discovery is unavailable, it returns a search plan and warnings rather than inventing records.
-2. `deliver-target-scan`: a deterministic function that normalises the result and posts the WApp callback.
+2. `persist-target-scan`: a deterministic function that normalises the result, writes a companies JSON artifact, and delivers the same records to the WApp persistence path.
+
+The code step writes a JSON file before callback delivery so the discovered company batch is inspectable outside the agent transcript. By default artifacts are written under:
+
+```text
+~/.wingmen/pipelines/users/honest-ivory-thicket/artifacts/kindling/target-scans/
+```
+
+The WApp remains the owner of SQLite. The pipeline does not open the SQLite database directly. It sends the normalized companies to `localContext.writeApi` when configured, or to the normal webhook callback path. The WApp endpoint should perform the actual SQLite insert/update and duplicate marking.
 
 It returns:
 
@@ -130,6 +138,7 @@ It returns:
 - `result.normalisedLocations`
 - `result.coverage`
 - `result.companies`
+- `result.companiesArtifact`
 - `result.possibleDuplicates`
 - `result.searchSlices`
 - `result.activities`
@@ -162,16 +171,21 @@ The enrichment pipeline avoids person discovery for now. It focuses on source-ba
 
 ## Outreach Draft Pipeline
 
-`kindling-draft-outreach` has two steps:
+`kindling-draft-outreach` has five steps:
 
-1. `draft-copyable-outreach`: an agent step that uses the selected company and active market profile to draft a concise first-contact pitch.
-2. `deliver-outreach-draft`: a deterministic function that normalises the result and posts the WApp callback.
+1. `craft-outreach-positioning`: an agent reviews the company offerings, Kindling's research on the company, the active service profile, and any known signals. It produces unique selling points, positioning angles, safe personalisation inputs, claims to avoid, and evidence gaps.
+2. `draft-example-one`: a drafting agent creates a concise practical direct pitch from the positioning brief.
+3. `draft-example-two`: a drafting agent creates a consultative problem-led pitch from the same positioning brief.
+4. `draft-example-three`: a drafting agent creates a local plain-spoken pitch from the same positioning brief.
+5. `deliver-outreach-draft`: a deterministic function normalises the positioning and all three examples, then posts the WApp callback.
 
 It returns:
 
 - `result.outputKind = "outreach_draft"`
 - `result.companyId`
 - `result.companyName`
+- `result.positioning`
+- `result.variants`
 - `result.subject`
 - `result.body`
 - `result.openingLine`
@@ -180,6 +194,8 @@ It returns:
 - `result.personalisationInputs`
 - `result.warnings`
 - `result.confidence`
+
+`result.subject` and `result.body` remain as backward-compatible aliases for the first variant. The app should prefer `result.variants` and show all three draft examples for review.
 
 ## Stub Result Shapes
 
@@ -241,7 +257,7 @@ Current first-pass working pipelines:
 - `~/.wingmen/pipelines/users/honest-ivory-thicket/definitions/kindling-enrich-company.v1.json`
 - `~/.wingmen/pipelines/users/honest-ivory-thicket/functions/kindling-deliver-company-enrichment.v1.ts`
 - `~/.wingmen/pipelines/users/honest-ivory-thicket/definitions/kindling-draft-outreach.v1.json`
-- `~/.wingmen/pipelines/users/honest-ivory-thicket/functions/kindling-deliver-outreach-draft.v1.ts`
+- `~/.wingmen/pipelines/users/honest-ivory-thicket/functions/kindling-deliver-outreach-variants.v1.ts`
 
 ## Expansion Path
 

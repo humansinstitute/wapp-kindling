@@ -233,9 +233,9 @@ The WApp should store the Autopilot run ID from the trigger response. The callba
 Minimum role outputs:
 
 - `develop_service_offering`: creates a market profile version with structured profile JSON, summary, and rationale.
-- `scan_target_list`: updates a discovery job and creates company/source/activity records.
+- `scan_target_list`: writes a discovered companies JSON artifact, then asks the WApp persistence path to update a discovery job and create company/source/activity records in local SQLite.
 - `enrich_company`: updates company fields, sources, activities, and enrichment status.
-- `draft_outreach`: creates an outreach draft with copyable pitch text.
+- `draft_outreach`: reviews company offerings and research, crafts unique selling points and positioning, then creates three copyable outreach examples for app review.
 
 ## Remaining Implementation Questions
 

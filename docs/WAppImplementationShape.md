@@ -46,7 +46,7 @@ Early screens should include:
 - Company list: filtering, duplicate status, data rings, source quality, and manual record actions.
 - Company profile: polished profile, expandable evidence, activities, enrichment actions, people, signals, and outreach readiness.
 - Admin-only pipeline settings: role-to-pipeline mappings and default pipeline selection.
-- Outreach workspace: generated draft, evidence basis, service match, and review actions.
+- Outreach workspace: generated positioning review, evidence basis, service match, three draft examples, and review actions.
 - Today's targets: priority-ordered list of the best current targets.
 
 Manual CRUD should be available from day one for core records such as companies, sources, notes, profile fields, duplicate status, and activities. Pipeline-created records should not be the only editable records.
@@ -55,7 +55,7 @@ Manual company creation should require only a company name. Location, industry, 
 
 The first-class company list filters should be industry, location, data ring, duplicate status, has website, and enrichment status.
 
-The outreach workspace should produce a pitch that can be copied and pasted into an email. It should not send email in the first version.
+The outreach workspace should show the pipeline's positioning review plus three generated pitch examples that can be copied and pasted into email. It should not send email in the first version.
 
 ## Pipeline Role Configuration
 
@@ -122,7 +122,7 @@ Likely API groups:
 - Pipeline roles: list role configuration for debugging and verification.
 - Documents: read uploaded reference documents.
 - Market profiles: read current profile and create proposed versions.
-- Discovery jobs: create and update scan jobs and slices.
+- Discovery jobs: create and update scan jobs and slices; accept pipeline companies JSON artifacts and write discovered company batches into local SQLite.
 - Companies: create, update, list, and mark duplicates.
 - Sources: create and link source records.
 - Activities: append user, WApp, tool, or agent activities.
