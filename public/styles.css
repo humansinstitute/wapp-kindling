@@ -135,20 +135,21 @@ button:disabled {
 }
 
 .homeActions {
-  display: flex;
-  flex-wrap: wrap;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(220px, 1fr));
   justify-content: center;
-  gap: 28px;
+  gap: 12px;
   padding: 10px;
+  max-width: 760px;
   border: 1px solid rgba(203, 198, 186, 0.75);
-  border-radius: 18px;
-  background: rgba(251, 250, 246, 0.78);
+  border-radius: 8px;
+  background: rgba(251, 250, 246, 0.82);
   box-shadow: var(--shadow-soft);
   margin-top: 10px;
 }
 
 .homeActions button {
-  min-width: 172px;
+  min-width: 0;
   min-height: 58px;
   font-size: 16px;
   background: var(--accent);
@@ -157,21 +158,286 @@ button:disabled {
   box-shadow: 0 12px 26px rgba(21, 117, 101, 0.18);
 }
 
-.homeActions button:nth-child(2) {
-  background: var(--ink);
-  border-color: var(--ink);
-  box-shadow: 0 12px 26px rgba(23, 33, 30, 0.16);
+.homeUtilities {
+  display: flex;
+  gap: 10px;
+  justify-content: center;
 }
 
-.homeActions button:nth-child(3) {
-  background: var(--accent-2);
-  border-color: var(--accent-2);
-  box-shadow: 0 12px 26px rgba(200, 95, 57, 0.16);
+.homeUtilities button {
+  min-width: 120px;
+  background: rgba(255, 255, 255, 0.86);
 }
 
 .actPage {
   min-height: 100vh;
   background: var(--bg);
+}
+
+.kindlingShell {
+  min-height: 100vh;
+  padding: 28px;
+  display: grid;
+  gap: 18px;
+  align-content: start;
+}
+
+.kindlingHeader {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+}
+
+.kindlingHeader h1 {
+  margin: 0;
+  font-size: 32px;
+  letter-spacing: 0;
+}
+
+.kindlingHeaderActions,
+.rowActions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.kindlingTabs {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.kindlingTabs button {
+  white-space: nowrap;
+  background: rgba(255, 255, 255, 0.7);
+}
+
+.kindlingTabs button.active {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: white;
+}
+
+.kindlingStats {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.kindlingStats div,
+.kindlingPanel {
+  border: 1px solid rgba(203, 198, 186, 0.8);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.86);
+  box-shadow: var(--shadow-soft);
+}
+
+.kindlingStats div {
+  padding: 14px;
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.kindlingStats strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.kindlingStats span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.kindlingGrid {
+  display: grid;
+  gap: 14px;
+}
+
+.kindlingGrid.two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.kindlingGrid.companiesLayout {
+  grid-template-columns: 280px minmax(320px, 1fr) minmax(280px, 0.8fr);
+  align-items: start;
+}
+
+.kindlingPanel {
+  padding: 18px;
+  min-width: 0;
+}
+
+.kindlingPanel h2 {
+  margin: 0 0 14px;
+  font-size: 19px;
+  letter-spacing: 0;
+}
+
+.panelHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.panelHeader h2 {
+  margin: 0;
+}
+
+.panelHeader span {
+  color: var(--muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.kindlingPanel p {
+  color: var(--muted);
+}
+
+.kindlingPanel label,
+.compactForm {
+  display: grid;
+  gap: 8px;
+}
+
+.kindlingPanel label + label,
+.compactForm input + input,
+.kindlingPanel textarea + button,
+.kindlingPanel select + .kindlingFacts,
+.kindlingFacts + .rowActions {
+  margin-top: 10px;
+}
+
+.kindlingPanel label span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.kindlingPanel button[type="submit"],
+.rowActions button:last-child {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
+.kindlingFacts {
+  margin: 14px 0 0;
+  display: grid;
+  gap: 8px;
+}
+
+.kindlingFacts div {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr);
+  gap: 10px;
+}
+
+.kindlingFacts dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.kindlingFacts dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.compactList,
+.companyTable,
+.targetList,
+.roleList {
+  display: grid;
+  gap: 8px;
+}
+
+.companyFilters {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.filterActions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.filterActions button:first-child {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
+.compactList div,
+.roleRow {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  padding: 10px;
+  min-width: 0;
+}
+
+.compactList span {
+  display: block;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.companyTablePanel {
+  max-height: calc(100vh - 260px);
+  overflow: auto;
+}
+
+.companyTable button,
+.targetList button {
+  display: grid;
+  gap: 4px;
+  text-align: left;
+  width: 100%;
+  background: var(--panel-soft);
+}
+
+.companyTable button.active,
+.targetList button:hover {
+  border-color: var(--accent);
+  background: #eef6f3;
+}
+
+.companyTable span,
+.targetList span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.pitchText {
+  width: 100%;
+  margin-bottom: 10px;
+  background: #fbfbf8;
+}
+
+.roleRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.roleEnabled {
+  display: flex !important;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
+.roleEnabled input {
+  width: auto;
 }
 
 .settingsPage {
@@ -511,8 +777,31 @@ textarea {
 
   .homeActions {
     width: min(100%, 320px);
-    flex-direction: column;
+    grid-template-columns: 1fr;
     gap: 12px;
+  }
+
+  .kindlingShell {
+    padding: 16px;
+  }
+
+  .kindlingHeader,
+  .kindlingHeaderActions {
+    display: grid;
+  }
+
+  .kindlingStats,
+  .kindlingGrid.two,
+  .kindlingGrid.companiesLayout {
+    grid-template-columns: 1fr;
+  }
+
+  .roleRow {
+    grid-template-columns: 1fr;
+  }
+
+  .companyFilters {
+    grid-template-columns: 1fr;
   }
 
   .settingsPage {

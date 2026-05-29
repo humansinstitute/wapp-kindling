@@ -15,6 +15,11 @@ const state = {
   accessRules: [],
   pipelines: loadPipelinesCache(),
   activeChatId: localStorage.getItem("chat_wapp_chat") || "",
+  activeKindlingView: localStorage.getItem("kindling_view") || "service",
+  selectedCompanyId: localStorage.getItem("kindling_company") || "",
+  kindlingFilters: loadKindlingFilters(),
+  kindling: null,
+  kindlingStatus: "Ready",
   pollTimer: null,
   route: window.location.pathname,
   profiles: loadProfileCache(),
@@ -61,6 +66,19 @@ function loadPipelinesCache() {
 
 function savePipelinesCache() {
   localStorage.setItem(PIPELINES_CACHE_KEY, JSON.stringify(state.pipelines));
+}
+
+function loadKindlingFilters() {
+  try {
+    const parsed = JSON.parse(localStorage.getItem("kindling_company_filters") || "{}");
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function saveKindlingFilters() {
+  localStorage.setItem("kindling_company_filters", JSON.stringify(state.kindlingFilters));
 }
 
 function saveProfileCache() {
@@ -126,6 +144,7 @@ async function renderRoute() {
 
   if (state.route === "/act") {
     showOnly("actPage");
+    await loadKindlingScreen();
     return;
   }
 
@@ -206,6 +225,417 @@ async function loadSettings() {
   renderSettings();
   renderPipelineOptions();
   renderAccessRules();
+}
+
+async function loadKindlingScreen() {
+  const companyQuery = new URLSearchParams();
+  for (const [key, value] of Object.entries(state.kindlingFilters)) {
+    if (value) companyQuery.set(key, value);
+  }
+  const [summary, targets] = await Promise.all([
+    api("/api/kindling/summary"),
+    api("/api/kindling/todays-targets"),
+  ]);
+  const filtered = await api(`/api/kindling/companies${companyQuery.toString() ? `?${companyQuery}` : ""}`);
+  state.kindling = { ...summary, companies: filtered.companies || [], targets: targets.targets || [] };
+  if (!state.kindling.companies?.some((company) => company.id === state.selectedCompanyId)) {
+    state.selectedCompanyId = state.kindling.companies?.[0]?.id || "";
+  }
+  renderKindling();
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
+function selectedCompany() {
+  return state.kindling?.companies?.find((company) => company.id === state.selectedCompanyId) || state.kindling?.companies?.[0] || null;
+}
+
+function servicePromptValue() {
+  const profile = state.kindling?.profile?.version;
+  if (!profile) return "We help local service businesses find better-fit prospects, enrich sparse company records, and draft relevant first-touch outreach.";
+  return profile.structured?.offer || profile.summary || "";
+}
+
+function setKindlingStatus(text) {
+  state.kindlingStatus = text;
+  const node = $("kindlingStatus");
+  if (node) node.textContent = text;
+}
+
+function renderKindling() {
+  const data = state.kindling || {};
+  const company = selectedCompany();
+  const canEdit = Boolean(state.me?.access?.edit);
+  const views = [
+    ["service", "Service offering"],
+    ["targets", "Target list"],
+    ["companies", "Companies"],
+    ["today", "Today's targets"],
+    ["act", "Act"],
+  ];
+  if (canEdit) views.push(["admin", "Pipeline admin"]);
+  if (state.activeKindlingView === "admin" && !canEdit) state.activeKindlingView = "service";
+  $("actPage").innerHTML = `
+    <div class="kindlingShell">
+      <header class="kindlingHeader">
+        <div>
+          <div class="eyebrow">Kindling</div>
+          <h1>What will we do today?</h1>
+        </div>
+        <div class="kindlingHeaderActions">
+          <button type="button" data-action="home">Home</button>
+          <button type="button" data-action="refresh-kindling">Refresh</button>
+        </div>
+      </header>
+      <nav class="kindlingTabs">
+        ${views.map(([key, label]) => `<button type="button" data-kindling-view="${key}" class="${state.activeKindlingView === key ? "active" : ""}">${label}</button>`).join("")}
+      </nav>
+      <section class="kindlingStats">
+        <div><strong>${Number(data.counts?.companies || 0)}</strong><span>Companies</span></div>
+        <div><strong>${Number(data.counts?.outreachReady || 0)}</strong><span>Outreach ready</span></div>
+        <div><strong>${Number(data.counts?.activeRuns || 0)}</strong><span>Active runs</span></div>
+        <div><strong id="kindlingStatus">${escapeHtml(state.kindlingStatus)}</strong><span>Status</span></div>
+      </section>
+      ${renderKindlingView(data, company, canEdit)}
+    </div>
+  `;
+}
+
+function renderKindlingView(data, company, canEdit) {
+  if (state.activeKindlingView === "service") return `
+    <section class="kindlingGrid two">
+      <div class="kindlingPanel">
+        <h2>Current service profile</h2>
+        <p>${escapeHtml(data.profile?.version?.summary || "No service profile has been created yet.")}</p>
+        <dl class="kindlingFacts">
+          <div><dt>Version</dt><dd>${escapeHtml(data.profile?.version?.versionNumber || "New")}</dd></div>
+          <div><dt>Rationale</dt><dd>${escapeHtml(data.profile?.version?.rationale || "Use the workspace to create the first version.")}</dd></div>
+        </dl>
+      </div>
+      <form class="kindlingPanel" data-form="service">
+        <h2>Develop service offering</h2>
+        <textarea id="servicePrompt" rows="9">${escapeHtml(servicePromptValue())}</textarea>
+        <button type="submit" ${canEdit ? "" : "disabled"}>Run service role</button>
+      </form>
+    </section>
+  `;
+
+  if (state.activeKindlingView === "targets") return `
+    <section class="kindlingGrid two">
+      <form class="kindlingPanel" data-form="scan">
+        <h2>Build target list</h2>
+        <label><span>Industry</span><input id="scanIndustry" value="B2B services" /></label>
+        <label><span>Location</span><input id="scanLocation" value="Perth" /></label>
+        <button type="submit" ${canEdit ? "" : "disabled"}>Run scan role</button>
+      </form>
+      <div class="kindlingPanel">
+        <h2>Recent scan jobs</h2>
+        <div class="compactList">
+          ${(data.discoveryJobs || []).map((job) => `<div><strong>${escapeHtml(job.industry)}</strong><span>${escapeHtml(job.location)} - ${escapeHtml(job.status)} - ${Number(job.companyCount || 0)} companies</span></div>`).join("") || "<p>No scan jobs yet.</p>"}
+        </div>
+      </div>
+    </section>
+  `;
+
+  if (state.activeKindlingView === "companies") return `
+    <section class="kindlingGrid companiesLayout">
+      <div class="kindlingPanel">
+        <h2>Manual company</h2>
+        <form class="compactForm" data-form="company">
+          <input id="companyName" placeholder="Company name" />
+          <input id="companyIndustry" placeholder="Industry optional" />
+          <input id="companyLocation" placeholder="Location optional" />
+          <input id="companyWebsite" placeholder="Website optional" />
+          <button type="submit" ${canEdit ? "" : "disabled"}>Create company</button>
+        </form>
+      </div>
+      <div class="kindlingPanel companyTablePanel">
+        <div class="panelHeader">
+          <h2>Company list</h2>
+          <span>${Number(data.companies?.length || 0)} shown</span>
+        </div>
+        ${renderCompanyFilters()}
+        ${renderCompanyTable(data.companies || [])}
+      </div>
+      <form class="kindlingPanel" data-form="company-profile">
+        <h2>Company profile</h2>
+        ${company ? renderCompanyEditor(company, canEdit) : "<p>No company selected.</p>"}
+      </form>
+    </section>
+  `;
+
+  if (state.activeKindlingView === "today") return `
+    <section class="kindlingPanel">
+      <h2>Today's targets</h2>
+      <div class="targetList">
+        ${(data.targets || []).map((target) => `<button type="button" data-select-company="${escapeHtml(target.companyId)}"><strong>#${Number(target.rank || 0)} ${escapeHtml(target.name)}</strong><span>${escapeHtml(target.reason)} - ${escapeHtml(target.industry)} ${escapeHtml(target.location)}</span></button>`).join("") || "<p>No ranked targets yet. Run a scan or enrichment first.</p>"}
+      </div>
+    </section>
+  `;
+
+  if (state.activeKindlingView === "act") return `
+    <section class="kindlingGrid two">
+      <div class="kindlingPanel">
+        <h2>Selected target</h2>
+        <select id="activeCompanySelect">
+          ${(data.companies || []).map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === company?.id ? "selected" : ""}>${escapeHtml(item.name)}</option>`).join("")}
+        </select>
+        ${company ? `<dl class="kindlingFacts">
+          <div><dt>Industry</dt><dd>${escapeHtml(company.industry || "Unknown")}</dd></div>
+          <div><dt>Location</dt><dd>${escapeHtml(company.location || "Unknown")}</dd></div>
+          <div><dt>Enrichment</dt><dd>${escapeHtml(company.enrichmentStatus)}</dd></div>
+        </dl>` : "<p>Create or scan for a company first.</p>"}
+        <div class="rowActions">
+          <button type="button" data-action="enrich-company" ${canEdit && company ? "" : "disabled"}>Enrich</button>
+          <button type="button" data-action="draft-outreach" ${canEdit && company ? "" : "disabled"}>Draft pitch</button>
+        </div>
+      </div>
+      <div class="kindlingPanel">
+        <h2>Copyable pitch</h2>
+        ${renderLatestDraft(data.outreachDrafts || [], company)}
+      </div>
+    </section>
+  `;
+
+  return `
+    <form class="kindlingPanel" data-form="roles">
+      <h2>Pipeline role settings</h2>
+      <div class="roleList">
+        ${(data.pipelineRoles || []).map((role) => `
+          <div class="roleRow">
+            <label><span>${escapeHtml(role.displayName)}</span><input data-role-slug="${escapeHtml(role.roleKey)}" value="${escapeHtml(role.activePipelineSlug)}" /></label>
+            <label class="roleEnabled"><input type="checkbox" data-role-enabled="${escapeHtml(role.roleKey)}" ${role.enabled ? "checked" : ""} /> Enabled</label>
+          </div>
+        `).join("")}
+      </div>
+      <button type="submit" ${canEdit ? "" : "disabled"}>Save role mappings</button>
+    </form>
+  `;
+}
+
+function renderCompanyFilters() {
+  const filters = state.kindlingFilters;
+  const option = (value, label, current) => `<option value="${value}" ${current === value ? "selected" : ""}>${label}</option>`;
+  return `
+    <form class="companyFilters" data-form="company-filters">
+      <input id="filterIndustry" value="${escapeHtml(filters.industry || "")}" placeholder="Industry" />
+      <input id="filterLocation" value="${escapeHtml(filters.location || "")}" placeholder="Location" />
+      <select id="filterDataRing">
+        ${option("", "Any data ring", filters.dataRing || "")}
+        ${["seed", "manual", "agent", "enriched", "outreach_ready"].map((value) => option(value, value, filters.dataRing || "")).join("")}
+      </select>
+      <select id="filterDuplicate">
+        ${option("", "Any duplicate status", filters.duplicateStatus || "")}
+        ${["unknown", "unique", "possible_duplicate", "duplicate"].map((value) => option(value, value, filters.duplicateStatus || "")).join("")}
+      </select>
+      <select id="filterHasWebsite">
+        ${option("", "Any website status", filters.hasWebsite || "")}
+        ${option("yes", "Has website", filters.hasWebsite || "")}
+        ${option("no", "No website", filters.hasWebsite || "")}
+      </select>
+      <select id="filterEnrichment">
+        ${option("", "Any enrichment", filters.enrichmentStatus || "")}
+        ${["not_started", "queued", "complete", "failed"].map((value) => option(value, value, filters.enrichmentStatus || "")).join("")}
+      </select>
+      <div class="filterActions">
+        <button type="submit">Apply</button>
+        <button type="button" data-action="clear-company-filters">Clear</button>
+      </div>
+    </form>
+  `;
+}
+
+function renderCompanyTable(companies) {
+  if (!companies.length) return "<p>No companies yet.</p>";
+  return `<div class="companyTable">
+    ${companies.map((company) => `
+      <button type="button" data-select-company="${escapeHtml(company.id)}" class="${company.id === state.selectedCompanyId ? "active" : ""}">
+        <strong>${escapeHtml(company.name)}</strong>
+        <span>${escapeHtml(company.industry || "Unknown")} - ${escapeHtml(company.location || "Unknown")} - ${escapeHtml(company.dataRing)} - ${escapeHtml(company.enrichmentStatus)}</span>
+      </button>
+    `).join("")}
+  </div>`;
+}
+
+function renderCompanyEditor(company, canEdit) {
+  return `
+    <input id="editCompanyName" value="${escapeHtml(company.name)}" />
+    <input id="editCompanyIndustry" value="${escapeHtml(company.industry)}" placeholder="Industry" />
+    <input id="editCompanyLocation" value="${escapeHtml(company.location)}" placeholder="Location" />
+    <input id="editCompanyWebsite" value="${escapeHtml(company.website)}" placeholder="Website" />
+    <select id="editCompanyDataRing">
+      ${["seed", "manual", "enriched", "outreach_ready"].map((value) => `<option value="${value}" ${company.dataRing === value ? "selected" : ""}>${value}</option>`).join("")}
+    </select>
+    <select id="editCompanyDuplicate">
+      ${["unknown", "unique", "possible_duplicate", "duplicate"].map((value) => `<option value="${value}" ${company.duplicateStatus === value ? "selected" : ""}>${value}</option>`).join("")}
+    </select>
+    <textarea id="editCompanyNotes" rows="5" placeholder="Notes">${escapeHtml(company.profile?.notes || company.profile?.fitNotes || "")}</textarea>
+    <button type="submit" ${canEdit ? "" : "disabled"}>Save profile</button>
+  `;
+}
+
+function renderLatestDraft(drafts, company) {
+  const draft = drafts.find((item) => item.companyId === company?.id) || drafts[0];
+  if (!draft) return "<p>No draft yet. Select a company and run Draft pitch.</p>";
+  return `<textarea class="pitchText" readonly rows="12">${escapeHtml(draft.pitchText)}</textarea>
+    <button type="button" data-copy-draft>Copy</button>`;
+}
+
+async function startKindlingPipeline(path, body = {}) {
+  const payload = await api(path, {
+    method: "POST",
+    body: JSON.stringify({ ...body, deferAutopilotAuth: true }),
+  });
+  if (!payload.requiresAutopilotAuth) return payload;
+  const autopilotAuthorization = await signNip98Request(payload.triggerRequest);
+  const started = await api(`/api/kindling/pipeline-runs/${encodeURIComponent(payload.runId)}/start`, {
+    method: "POST",
+    body: JSON.stringify({ autopilotAuthorization }),
+  });
+  return { ...payload, started };
+}
+
+async function refreshKindlingSoon() {
+  await new Promise((resolve) => setTimeout(resolve, 900));
+  await loadKindlingScreen();
+}
+
+async function handleKindlingSubmit(event) {
+  const form = event.target.closest("form[data-form]");
+  if (!form) return;
+  event.preventDefault();
+  try {
+    if (form.dataset.form === "service") {
+      setKindlingStatus("Running service role");
+      await startKindlingPipeline("/api/kindling/service-offering", { prompt: $("servicePrompt").value.trim() });
+      await refreshKindlingSoon();
+      setKindlingStatus("Service profile updated");
+    }
+    if (form.dataset.form === "scan") {
+      setKindlingStatus("Running scan role");
+      await startKindlingPipeline("/api/kindling/target-scans", { industry: $("scanIndustry").value.trim(), location: $("scanLocation").value.trim() });
+      await refreshKindlingSoon();
+      setKindlingStatus("Target scan complete");
+    }
+    if (form.dataset.form === "company") {
+      setKindlingStatus("Creating company");
+      const payload = await api("/api/kindling/companies", {
+        method: "POST",
+        body: JSON.stringify({
+          name: $("companyName").value.trim(),
+          industry: $("companyIndustry").value.trim(),
+          location: $("companyLocation").value.trim(),
+          website: $("companyWebsite").value.trim(),
+        }),
+      });
+      state.selectedCompanyId = payload.company.id;
+      localStorage.setItem("kindling_company", state.selectedCompanyId);
+      await loadKindlingScreen();
+      setKindlingStatus("Company created");
+    }
+    if (form.dataset.form === "company-filters") {
+      state.kindlingFilters = {
+        industry: $("filterIndustry").value.trim(),
+        location: $("filterLocation").value.trim(),
+        dataRing: $("filterDataRing").value,
+        duplicateStatus: $("filterDuplicate").value,
+        hasWebsite: $("filterHasWebsite").value,
+        enrichmentStatus: $("filterEnrichment").value,
+      };
+      saveKindlingFilters();
+      await loadKindlingScreen();
+      setKindlingStatus("Company filters applied");
+    }
+    if (form.dataset.form === "company-profile" && selectedCompany()) {
+      setKindlingStatus("Saving profile");
+      await api(`/api/kindling/companies/${encodeURIComponent(selectedCompany().id)}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          name: $("editCompanyName").value.trim(),
+          industry: $("editCompanyIndustry").value.trim(),
+          location: $("editCompanyLocation").value.trim(),
+          website: $("editCompanyWebsite").value.trim(),
+          dataRing: $("editCompanyDataRing").value,
+          duplicateStatus: $("editCompanyDuplicate").value,
+          notes: $("editCompanyNotes").value.trim(),
+        }),
+      });
+      await loadKindlingScreen();
+      setKindlingStatus("Profile saved");
+    }
+    if (form.dataset.form === "roles") {
+      const roles = Array.from(form.querySelectorAll("[data-role-slug]")).map((input) => ({
+        roleKey: input.dataset.roleSlug,
+        activePipelineSlug: input.value.trim(),
+        pipelineLabel: input.value.trim(),
+        enabled: form.querySelector(`[data-role-enabled="${CSS.escape(input.dataset.roleSlug)}"]`)?.checked ?? true,
+      }));
+      await api("/api/kindling/pipeline-roles", { method: "PUT", body: JSON.stringify({ roles }) });
+      await loadKindlingScreen();
+      setKindlingStatus("Role mappings saved");
+    }
+  } catch (error) {
+    setKindlingStatus(error.message);
+  }
+}
+
+async function handleKindlingClick(event) {
+  const viewButton = event.target.closest("[data-kindling-view]");
+  if (viewButton) {
+    state.activeKindlingView = viewButton.dataset.kindlingView;
+    localStorage.setItem("kindling_view", state.activeKindlingView);
+    renderKindling();
+    return;
+  }
+  const selectButton = event.target.closest("[data-select-company]");
+  if (selectButton) {
+    state.selectedCompanyId = selectButton.dataset.selectCompany;
+    localStorage.setItem("kindling_company", state.selectedCompanyId);
+    state.activeKindlingView = "act";
+    localStorage.setItem("kindling_view", "act");
+    renderKindling();
+    return;
+  }
+  const action = event.target.closest("[data-action]")?.dataset.action;
+  if (action === "home") navigate("/");
+  if (action === "refresh-kindling") await loadKindlingScreen();
+  if (action === "clear-company-filters") {
+    state.kindlingFilters = {};
+    saveKindlingFilters();
+    await loadKindlingScreen();
+    setKindlingStatus("Company filters cleared");
+  }
+  if (action === "enrich-company" && selectedCompany()) {
+    setKindlingStatus("Running enrichment role");
+    await startKindlingPipeline(`/api/kindling/companies/${encodeURIComponent(selectedCompany().id)}/enrich`);
+    await refreshKindlingSoon();
+    setKindlingStatus("Enrichment complete");
+  }
+  if (action === "draft-outreach" && selectedCompany()) {
+    setKindlingStatus("Running outreach role");
+    await startKindlingPipeline(`/api/kindling/companies/${encodeURIComponent(selectedCompany().id)}/outreach`);
+    await refreshKindlingSoon();
+    setKindlingStatus("Draft ready");
+  }
+  if (event.target.closest("[data-copy-draft]")) {
+    const text = $("actPage").querySelector(".pitchText")?.value || "";
+    await navigator.clipboard.writeText(text);
+    setKindlingStatus("Pitch copied");
+  }
+}
+
+function handleKindlingChange(event) {
+  if (event.target.id === "activeCompanySelect") {
+    state.selectedCompanyId = event.target.value;
+    localStorage.setItem("kindling_company", state.selectedCompanyId);
+    renderKindling();
+  }
 }
 
 function renderSettings() {
@@ -562,6 +992,21 @@ $("loginButton").addEventListener("click", login);
 $("logoutButton").addEventListener("click", logout);
 $("newChatButton").addEventListener("click", newChat);
 $("homeActButton").addEventListener("click", () => navigate("/act"));
+$("homeServiceButton").addEventListener("click", () => {
+  state.activeKindlingView = "service";
+  localStorage.setItem("kindling_view", "service");
+  navigate("/act");
+});
+$("homeTargetsButton").addEventListener("click", () => {
+  state.activeKindlingView = "targets";
+  localStorage.setItem("kindling_view", "targets");
+  navigate("/act");
+});
+$("homeReviewButton").addEventListener("click", () => {
+  state.activeKindlingView = "today";
+  localStorage.setItem("kindling_view", "today");
+  navigate("/act");
+});
 $("homeChatButton").addEventListener("click", () => navigate("/chat"));
 $("homeSettingsButton").addEventListener("click", () => navigate("/settings"));
 $("settingsHomeButton").addEventListener("click", () => navigate("/"));
@@ -572,6 +1017,11 @@ $("pipelineSelect").addEventListener("change", () => {
   if ($("pipelineSelect").value) $("pipelineInput").value = $("pipelineSelect").value;
 });
 $("composer").addEventListener("submit", sendMessage);
+$("actPage").addEventListener("submit", handleKindlingSubmit);
+$("actPage").addEventListener("click", (event) => {
+  void handleKindlingClick(event);
+});
+$("actPage").addEventListener("change", handleKindlingChange);
 $("messageInput").addEventListener("keydown", (event) => {
   if (event.key === "Enter" && !event.shiftKey) {
     event.preventDefault();
