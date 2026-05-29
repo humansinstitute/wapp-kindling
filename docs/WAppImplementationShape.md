@@ -73,6 +73,13 @@ Initial pipeline roles:
 
 The app should let an admin/operator load available Autopilot pipelines, select the active pipeline for each role, and store those selections locally. Normal users should not need to choose pipelines during ordinary use. This follows the WApp starter pattern where a chat pipeline can be selected, but expands it into role-specific pipeline configuration.
 
+Initial admin seed values should use the Autopilot stub trigger keys documented in [Autopilot Pipeline Contracts](./AutopilotPipelineContracts.md):
+
+- `develop_service_offering` -> `kindling-develop-service-offering-stub`
+- `scan_target_list` -> `kindling-scan-target-list-stub`
+- `enrich_company` -> `kindling-enrich-company-stub`
+- `draft_outreach` -> `kindling-draft-outreach-stub`
+
 Pipeline configuration records should store:
 
 - Role key.

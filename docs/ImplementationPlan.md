@@ -148,6 +148,15 @@ Near-follow role set:
 
 The minimum role set should be stubbed for the first full-path demo. The near-follow roles can be stubbed or represented by manual/local actions until the workflow reaches them.
 
+Seed Autopilot stubs now exist for the minimum role set:
+
+- `develop_service_offering` -> `kindling-develop-service-offering-stub`
+- `scan_target_list` -> `kindling-scan-target-list-stub`
+- `enrich_company` -> `kindling-enrich-company-stub`
+- `draft_outreach` -> `kindling-draft-outreach-stub`
+
+See [Autopilot Pipeline Contracts](./AutopilotPipelineContracts.md) for trigger payloads, webhook payloads, and stub result shapes.
+
 ## First Full-Path Demo
 
 The first demo is successful when:
@@ -198,19 +207,21 @@ Keep JSON columns for early flexibility where the exact structure is still evolv
 
 ## Webhook Contract Direction
 
-Use one common callback endpoint shape for all minimum roles. The WApp can branch by `roleKey` and `requestId`.
+Use one common callback endpoint shape for all minimum roles. The WApp can branch by `role` and `requestId`.
 
 ```json
 {
   "requestId": "local-request-id",
-  "roleKey": "scan_target_list",
-  "runId": "autopilot-run-id",
+  "role": "scan_target_list",
   "status": "ok",
+  "stub": true,
   "response": "Short user-facing summary",
-  "records": {},
+  "result": {},
   "metadata": {}
 }
 ```
+
+The WApp should store the Autopilot run ID from the trigger response. The callback does not need to repeat it for the first stub version.
 
 Minimum role outputs:
 
@@ -222,5 +233,4 @@ Minimum role outputs:
 ## Remaining Implementation Questions
 
 - Should the existing chat route stay available as a developer/testing surface, or be replaced entirely by Kindling screens?
-- What should the first admin seed values be for pipeline role slugs?
-- Should stub callbacks be implemented as local WApp mock mode only, Autopilot stub pipelines only, or both during development?
+- Should local WApp mock mode remain available as a development fallback after the Autopilot stubs are configured?
