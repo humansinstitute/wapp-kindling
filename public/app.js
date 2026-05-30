@@ -441,7 +441,7 @@ function renderScanJobs(jobs) {
     ${jobs.map((job) => `
       <button type="button" data-scan-job="${escapeHtml(job.id)}" class="scanJobButton">
         <strong>${escapeHtml(job.industry)}</strong>
-        <span>${escapeHtml(job.location)} - ${escapeHtml(job.status)} - ${Number(job.companyCount || 0)} companies</span>
+        <span>${escapeHtml(job.location)} - ${escapeHtml(job.status)} - ${Number(job.companyCount || 0)} returned</span>
         <small>${Number(job.targetCount || 0)} target - ${escapeHtml(job.scanMode || "interactive")}</small>
       </button>
     `).join("")}
@@ -451,8 +451,14 @@ function renderScanJobs(jobs) {
 function renderScanJobModal() {
   const detail = state.scanJobDetail;
   if (!detail) return "";
-  const strategies = detail.strategies || [];
+  const searchedStrategies = detail.searchedStrategies || (detail.strategies || []).filter((strategy) => strategy.status !== "planned");
+  const plannedStrategies = detail.plannedStrategies || (detail.strategies || []).filter((strategy) => strategy.status === "planned");
   const companies = detail.outputs?.companies || [];
+  const targetCount = Number(detail.outputs?.targetCount || detail.input?.targetCount || detail.job?.targetCount || 0);
+  const returnedCompanies = Number(detail.outputs?.returnedCompanies || detail.outputs?.companyCount || 0);
+  const netNewCompanies = Number(detail.outputs?.netNewCompanies || 0);
+  const existingMatchedCompanies = Number(detail.outputs?.existingMatchedCompanies || 0);
+  const remainingTarget = Math.max(0, targetCount - returnedCompanies);
   return `
     <div class="modalBackdrop" data-action="close-scan-job">
       <section class="modalPanel scanJobModal" role="dialog" aria-modal="true" aria-label="Scan job details" data-modal-panel>
@@ -476,23 +482,39 @@ function renderScanJobModal() {
           <section>
             <h3>Outputs</h3>
             <dl class="kindlingFacts">
-              <div><dt>Companies</dt><dd>${Number(detail.outputs?.companyCount || 0)}</dd></div>
+              <div><dt>Returned</dt><dd>${returnedCompanies} companies</dd></div>
+              <div><dt>Net new</dt><dd>${netNewCompanies} companies</dd></div>
+              <div><dt>Existing</dt><dd>${existingMatchedCompanies} matched by dedupe</dd></div>
               <div><dt>Sources</dt><dd>${Number(detail.outputs?.sourceCount || 0)}</dd></div>
-              <div><dt>Strategies</dt><dd>${strategies.length}</dd></div>
+              <div><dt>Strategies</dt><dd>${searchedStrategies.length} run, ${plannedStrategies.length} planned</dd></div>
+              <div><dt>Remaining</dt><dd>${remainingTarget} of ${targetCount}</dd></div>
               <div><dt>Summary</dt><dd>${escapeHtml(detail.outputs?.summary || "No summary captured")}</dd></div>
             </dl>
+            ${remainingTarget > 0 ? `<p class="scanWarning">This was a partial slice, not a completed bulk scan.</p>` : ""}
           </section>
         </div>
         <section class="scanDetailSection">
-          <h3>Strategies used</h3>
+          <h3>Strategies run</h3>
           <div class="strategyList">
-            ${strategies.map((strategy, index) => `
+            ${searchedStrategies.map((strategy, index) => `
               <div>
                 <strong>Strategy ${index + 1}: ${escapeHtml(strategy.strategyType)}</strong>
                 <span>${escapeHtml(strategy.query || "No query captured")}</span>
                 <small>${escapeHtml(strategy.status)} - ${Number(strategy.resultCount || 0)} companies${strategy.notes ? ` - ${escapeHtml(strategy.notes)}` : ""}</small>
               </div>
             `).join("") || "<p>No strategy attempts recorded yet.</p>"}
+          </div>
+        </section>
+        <section class="scanDetailSection">
+          <h3>Planned next strategies</h3>
+          <div class="strategyList">
+            ${plannedStrategies.map((strategy, index) => `
+              <div>
+                <strong>Next ${index + 1}: ${escapeHtml(strategy.strategyType)}</strong>
+                <span>${escapeHtml(strategy.query || "No query captured")}</span>
+                <small>${escapeHtml(strategy.notes || "No notes captured")}</small>
+              </div>
+            `).join("") || "<p>No planned next strategies recorded.</p>"}
           </div>
         </section>
         <section class="scanDetailSection">

@@ -229,6 +229,9 @@ describe("Kindling API contracts", () => {
     expect(detail.payload.input).toMatchObject({ industry: "HVAC", location: "Perth", targetCount: 25 });
     expect(detail.payload.strategies[0]).toMatchObject({ strategyType: "google", query: "HVAC Perth", resultCount: 1 });
     expect(detail.payload.outputs.companyCount).toBe(1);
+    expect(detail.payload.outputs.netNewCompanies).toBe(1);
+    expect(detail.payload.outputs.remainingTarget).toBe(24);
+    expect(detail.payload.searchedStrategies).toHaveLength(1);
   });
 
   test("exposes scan context over NIP-98 for strategy planning", async () => {

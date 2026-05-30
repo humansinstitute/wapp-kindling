@@ -175,7 +175,9 @@ The top-level scan job view should show:
 - Parked or weak-source count.
 - Next recommended search slices.
 
-Recent scan jobs in the WApp should be clickable. The detail view should show the original input, target count, scan mode, strategies attempted, result count per strategy, output totals, and the companies produced by that scan. This makes strategy history auditable without forcing the user into Autopilot run logs.
+Recent scan jobs in the WApp should be clickable. The detail view should show the original input, target count, scan mode, strategies actually run, planned next strategies, result count per strategy, output totals, and the companies produced or matched by that scan. This makes strategy history auditable without forcing the user into Autopilot run logs.
+
+For large targets, the WApp should label undersized results as partial. A scan that targets 1,000 companies and returns 50-100 source-backed records is a useful slice, not a completed bulk scan. The UI should show returned records, net-new records, deduped existing matches, remaining target count, and planned next strategies separately.
 
 Normal users should see high-level scan status and resulting records. Agent/session notes and detailed pipeline logs should remain in Autopilot or admin/operator views for now.
 

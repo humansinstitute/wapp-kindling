@@ -230,16 +230,17 @@ function scanModeForTargetCount(targetCount: number) {
   return "interactive";
 }
 
-function listScanStrategyHistory(industry: string, location: string, limit = 30) {
+function listScanStrategyHistory(industry: string, location: string, limit = 30, includePlanned = false) {
   const rows = db.query(`
     SELECT sat.*
     FROM scan_strategy_attempts sat
-    WHERE lower(sat.industry) = lower(?1)
+    WHERE (lower(sat.industry) = lower(?1)
        OR lower(sat.location) = lower(?2)
-       OR lower(sat.industry || ' ' || sat.location) LIKE lower(?3)
+       OR lower(sat.industry || ' ' || sat.location) LIKE lower(?3))
+      AND (?5 = 1 OR sat.status != 'planned')
     ORDER BY sat.created_at DESC
     LIMIT ?4
-  `).all(industry, location, `%${industry} ${location}%`, limit) as Record<string, unknown>[];
+  `).all(industry, location, `%${industry} ${location}%`, limit, includePlanned ? 1 : 0) as Record<string, unknown>[];
   return rows.map((row) => ({
     strategyType: String(row.strategy_type),
     query: String(row.query),
@@ -298,6 +299,7 @@ function buildScanContext(industry: string, location: string, targetCount: numbe
       companyCount: Number(row.company_count ?? 0),
     })),
     priorScanStrategies: listScanStrategyHistory(industry, location, 50),
+    plannedNextStrategies: listScanStrategyHistory(industry, location, 50, true).filter((strategy) => strategy.status === "planned"),
     recentCompanies: recentCompanies.map(mapCompany),
   };
 }
@@ -438,32 +440,59 @@ function getDiscoveryJobDetail(jobId: string) {
     WHERE discovery_job_id = ?1
     ORDER BY created_at ASC
   `).all(jobId) as Record<string, unknown>[]).map(mapStrategyAttempt);
-  const companies = (db.query(`
-    SELECT DISTINCT c.*
+  const resultPayload = jsonParse<Record<string, unknown>>(run?.result_payload_json, {});
+  const result = objectRecord(resultPayload.result);
+  const returnedCompanies = Array.isArray(result.companies) ? result.companies as Record<string, unknown>[] : [];
+  const returnedWebsites = new Set(returnedCompanies.map((company) => String(company.website ?? "").trim().toLowerCase()).filter(Boolean));
+  const returnedNames = new Set(returnedCompanies.map((company) => String(company.name ?? "").trim().toLowerCase()).filter(Boolean));
+  const createdIds = new Set((db.query(`
+    SELECT c.id
     FROM companies c
-    LEFT JOIN activities a
+    JOIN activities a
       ON a.target_type = 'company'
      AND a.target_id = c.id
      AND a.action_type = 'company_created'
     WHERE json_extract(a.payload_json, '$.requestId') = ?1
-       OR (
-         lower(COALESCE(c.industry, '')) = lower(?2)
-         AND lower(COALESCE(c.location, '')) = lower(?3)
-       )
-    ORDER BY c.updated_at DESC, c.name ASC
-    LIMIT 100
-  `).all(job.id, job.industry, job.location) as Record<string, unknown>[]).map(mapCompany);
+  `).all(job.id) as Record<string, unknown>[]).map((row) => String(row.id)));
+  const allCompanies = (db.query("SELECT * FROM companies ORDER BY updated_at DESC, name ASC").all() as Record<string, unknown>[]);
+  const companies = allCompanies
+    .filter((company) => {
+      const id = String(company.id);
+      const website = String(company.website ?? "").trim().toLowerCase();
+      const name = String(company.name ?? "").trim().toLowerCase();
+      return createdIds.has(id) || (website && returnedWebsites.has(website)) || (name && returnedNames.has(name));
+    })
+    .slice(0, 120)
+    .map(mapCompany);
+  const companyIds = new Set(companies.map((company) => company.id));
+  const sourceRows = db.query("SELECT company_id FROM sources").all() as Record<string, unknown>[];
+  const sourceCount = sourceRows.filter((source) => companyIds.has(String(source.company_id))).length;
+  const returnedSourceCount = returnedCompanies.reduce((total, company) => {
+    const sources = Array.isArray(company.sources) ? company.sources : [];
+    return total + (sources.length || (String(company.website ?? "").trim() ? 1 : 0));
+  }, 0);
+  const searchedStrategies = strategies.filter((strategy) => strategy.status !== "planned");
+  const plannedStrategies = strategies.filter((strategy) => strategy.status === "planned");
+  const returnedCount = returnedCompanies.length || Number(resultPayload?.persistence && objectRecord(resultPayload.persistence).companiesArtifact ? objectRecord(objectRecord(resultPayload.persistence).companiesArtifact).count : 0) || job.companyCount;
+  const netNewCount = createdIds.size;
   return {
     job,
     input: scanJobInputFromRun(run, job),
     strategies,
+    searchedStrategies,
+    plannedStrategies,
     outputs: {
-      companyCount: job.companyCount,
-      sourceCount: job.sourceCount,
+      companyCount: returnedCount,
+      returnedCompanies: returnedCount,
+      netNewCompanies: netNewCount,
+      existingMatchedCompanies: Math.max(0, returnedCount - netNewCount),
+      sourceCount: returnedSourceCount || job.sourceCount || sourceCount,
       shownCompanies: companies.length,
       companies,
       summary: job.summary,
       run: run ? mapRun(run) : null,
+      targetCount: job.targetCount,
+      remainingTarget: Math.max(0, job.targetCount - returnedCount),
     },
   };
 }
@@ -717,9 +746,24 @@ function sourceAlreadyExists(companyId: string, url: string, summary: string) {
   return Boolean(row);
 }
 
+function normalizeDuplicateStatus(value: unknown) {
+  const status = String(value ?? "unknown");
+  return ["unknown", "unique", "possible_duplicate", "duplicate"].includes(status) ? status : "unknown";
+}
+
 function matchingCompanyCountForJob(requestId: string) {
-  const job = db.query("SELECT industry, location FROM discovery_jobs WHERE id = ?1").get(requestId) as Record<string, unknown> | null;
+  const job = db.query("SELECT industry, location, company_count FROM discovery_jobs WHERE id = ?1").get(requestId) as Record<string, unknown> | null;
   if (!job) return 0;
+  const created = db.query(`
+    SELECT COUNT(DISTINCT c.id) AS count
+    FROM companies c
+    JOIN activities a
+      ON a.target_type = 'company'
+     AND a.target_id = c.id
+     AND a.action_type = 'company_created'
+    WHERE json_extract(a.payload_json, '$.requestId') = ?1
+  `).get(requestId) as { count: number } | null;
+  if (Number(created?.count ?? 0) > 0) return Math.max(Number(created?.count ?? 0), Number(job.company_count ?? 0));
   const row = db.query(`
     SELECT COUNT(*) AS count
     FROM companies
@@ -734,6 +778,7 @@ function persistScanRecords(requestId: string, records: Record<string, unknown>,
   const companies = Array.isArray(records.companies) ? records.companies as Record<string, unknown>[] : [];
   let createdCompanies = 0;
   let updatedCompanies = 0;
+  let sourceRecords = 0;
   for (const company of companies) {
     const existing = findExistingScanCompany(company, records);
     const name = String(company.name ?? "").trim() || "Untitled company";
@@ -757,8 +802,8 @@ function persistScanRecords(requestId: string, records: Record<string, unknown>,
     } else {
       db.query(`
         INSERT INTO companies(id, name, location, industry, website, data_ring, duplicate_status, enrichment_status, confidence, profile_json, created_at, updated_at)
-        VALUES (?1, ?2, ?3, ?4, ?5, 'seed', 'unknown', 'not_started', ?6, '{}', ?7, ?7)
-      `).run(companyId, name, location, industry, website, confidence, now);
+        VALUES (?1, ?2, ?3, ?4, ?5, 'seed', ?6, 'not_started', ?7, '{}', ?8, ?8)
+      `).run(companyId, name, location, industry, website, normalizeDuplicateStatus(company.duplicateStatus), confidence, now);
       recordActivity("company", companyId, "pipeline", "company_created", `Created by scan ${requestId}`, { requestId });
       upsertTargetRanking(companyId, "New scan target with sparse but usable data.", { fit: confidence });
       createdCompanies += 1;
@@ -771,6 +816,17 @@ function persistScanRecords(requestId: string, records: Record<string, unknown>,
         INSERT INTO sources(id, company_id, source_type, url, summary, confidence, created_at)
         VALUES (?1, ?2, 'scan', ?3, ?4, ?5, ?6)
       `).run(crypto.randomUUID(), companyId, sourceUrl, sourceSummary, confidence, now);
+      sourceRecords += 1;
+    }
+  }
+
+  const possibleDuplicates = Array.isArray(records.possibleDuplicates) ? records.possibleDuplicates as Record<string, unknown>[] : [];
+  for (const duplicate of possibleDuplicates) {
+    for (const name of [duplicate.companyName, duplicate.possibleMatchName]) {
+      const companyName = String(name ?? "").trim();
+      if (!companyName) continue;
+      db.query("UPDATE companies SET duplicate_status = 'possible_duplicate', updated_at = ?1 WHERE lower(name) = lower(?2)")
+        .run(now, companyName);
     }
   }
 
@@ -813,10 +869,12 @@ function persistScanRecords(requestId: string, records: Record<string, unknown>,
     strategyAttempts += 1;
   }
 
-  const companyCount = matchingCompanyCountForJob(requestId);
-  db.query("UPDATE discovery_jobs SET status = ?1, company_count = ?2, source_count = ?2, summary = ?3, updated_at = ?4 WHERE id = ?5")
-    .run(jobStatus, companyCount, response || (jobStatus === "complete" ? "Scan complete" : "Scan batch written"), now, requestId);
-  return { createdCompanies, updatedCompanies, strategyAttempts, matchingCompanies: companyCount };
+  const job = db.query("SELECT target_count FROM discovery_jobs WHERE id = ?1").get(requestId) as Record<string, unknown> | null;
+  const companyCount = Math.max(companies.length, matchingCompanyCountForJob(requestId));
+  const storedStatus = jobStatus === "complete" && companyCount < Number(job?.target_count ?? 0) ? "partial" : jobStatus;
+  db.query("UPDATE discovery_jobs SET status = ?1, company_count = ?2, source_count = ?3, summary = ?4, updated_at = ?5 WHERE id = ?6")
+    .run(storedStatus, companyCount, sourceRecords || companyCount, response || (storedStatus === "complete" ? "Scan complete" : "Scan batch written"), now, requestId);
+  return { createdCompanies, updatedCompanies, returnedCompanies: companies.length, strategyAttempts, matchingCompanies: companyCount, status: storedStatus };
 }
 
 function findKindlingRun(requestId: string, roleKey: string, token: string) {

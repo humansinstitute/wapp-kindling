@@ -143,7 +143,7 @@ The WApp API surface for strategy-aware scans is:
 - `POST /api/nip98/kindling/scan-results`: writes a partial or final scan batch through NIP-98 edit access.
 - `POST /api/kindling/pipeline-write/target-scan`: writes a token-scoped partial pipeline batch for runs that use webhook-token auth rather than NIP-98.
 
-Partial writes are repeatable and do not mark the run complete. The final webhook remains the completion signal.
+Partial writes are repeatable and do not mark the run complete. The final webhook remains the pipeline completion signal, but the WApp discovery job should remain `partial` when the returned company count is below the requested target. Planned next strategies must be displayed separately from strategies actually run.
 
 It returns:
 
