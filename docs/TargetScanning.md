@@ -175,6 +175,8 @@ The top-level scan job view should show:
 - Parked or weak-source count.
 - Next recommended search slices.
 
+Recent scan jobs in the WApp should be clickable. The detail view should show the original input, target count, scan mode, strategies attempted, result count per strategy, output totals, and the companies produced by that scan. This makes strategy history auditable without forcing the user into Autopilot run logs.
+
 Normal users should see high-level scan status and resulting records. Agent/session notes and detailed pipeline logs should remain in Autopilot or admin/operator views for now.
 
 The default view should help the user choose the next structured slice of work, such as "engineering companies in Perth", "accountants in Subiaco", or "air conditioning businesses in Fremantle".

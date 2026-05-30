@@ -418,10 +418,24 @@ button:disabled {
   min-width: 0;
 }
 
+.scanJobButton {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  text-align: left;
+  background: var(--panel-soft);
+}
+
 .compactList span {
   display: block;
   color: var(--muted);
   font-size: 13px;
+}
+
+.compactList small,
+.strategyList small {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .companyTablePanel {
@@ -448,6 +462,85 @@ button:disabled {
 .targetList span {
   color: var(--muted);
   font-size: 13px;
+}
+
+.modalBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(23, 33, 30, 0.42);
+}
+
+.modalPanel {
+  width: min(980px, 100%);
+  max-height: min(820px, calc(100vh - 48px));
+  overflow: auto;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+  padding: 18px;
+}
+
+.modalHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.modalHeader h2 {
+  margin: 0;
+  font-size: 22px;
+  letter-spacing: 0;
+}
+
+.scanDetailGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--line);
+}
+
+.scanDetailGrid h3,
+.scanDetailSection h3 {
+  margin: 0 0 10px;
+  font-size: 15px;
+  letter-spacing: 0;
+}
+
+.scanDetailSection {
+  margin-top: 16px;
+}
+
+.strategyList {
+  display: grid;
+  gap: 8px;
+}
+
+.strategyList div {
+  display: grid;
+  gap: 3px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.strategyList span {
+  overflow-wrap: anywhere;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.modalCompanyList {
+  max-height: 280px;
+  overflow: auto;
 }
 
 .pitchText {
@@ -908,6 +1001,21 @@ textarea {
 
   .companyFilters {
     grid-template-columns: 1fr;
+  }
+
+  .modalBackdrop {
+    padding: 12px;
+    place-items: stretch;
+  }
+
+  .modalPanel {
+    max-height: calc(100vh - 24px);
+  }
+
+  .modalHeader,
+  .scanDetailGrid {
+    grid-template-columns: 1fr;
+    display: grid;
   }
 
   .settingsPage {

@@ -19,6 +19,7 @@ const state = {
   selectedCompanyId: localStorage.getItem("kindling_company") || "",
   kindlingFilters: loadKindlingFilters(),
   kindling: null,
+  scanJobDetail: null,
   kindlingStatus: "Ready",
   pollTimer: null,
   route: window.location.pathname,
@@ -311,6 +312,7 @@ function renderKindling() {
         <div><strong id="kindlingStatus">${escapeHtml(state.kindlingStatus)}</strong><span>Status</span></div>
       </section>
       ${renderKindlingView(data, company, canEdit)}
+      ${renderScanJobModal()}
     </div>
   `;
 }
@@ -352,9 +354,7 @@ function renderKindlingView(data, company, canEdit) {
       </form>
       <div class="kindlingPanel">
         <h2>Recent scan jobs</h2>
-        <div class="compactList">
-          ${(data.discoveryJobs || []).map((job) => `<div><strong>${escapeHtml(job.industry)}</strong><span>${escapeHtml(job.location)} - ${escapeHtml(job.status)} - ${Number(job.companyCount || 0)} companies</span></div>`).join("") || "<p>No scan jobs yet.</p>"}
-        </div>
+        ${renderScanJobs(data.discoveryJobs || [])}
       </div>
     </section>
   `;
@@ -432,6 +432,82 @@ function renderKindlingView(data, company, canEdit) {
       </div>
       <button type="submit" ${canEdit ? "" : "disabled"}>Save role mappings</button>
     </form>
+  `;
+}
+
+function renderScanJobs(jobs) {
+  if (!jobs.length) return "<p>No scan jobs yet.</p>";
+  return `<div class="compactList scanJobList">
+    ${jobs.map((job) => `
+      <button type="button" data-scan-job="${escapeHtml(job.id)}" class="scanJobButton">
+        <strong>${escapeHtml(job.industry)}</strong>
+        <span>${escapeHtml(job.location)} - ${escapeHtml(job.status)} - ${Number(job.companyCount || 0)} companies</span>
+        <small>${Number(job.targetCount || 0)} target - ${escapeHtml(job.scanMode || "interactive")}</small>
+      </button>
+    `).join("")}
+  </div>`;
+}
+
+function renderScanJobModal() {
+  const detail = state.scanJobDetail;
+  if (!detail) return "";
+  const strategies = detail.strategies || [];
+  const companies = detail.outputs?.companies || [];
+  return `
+    <div class="modalBackdrop" data-action="close-scan-job">
+      <section class="modalPanel scanJobModal" role="dialog" aria-modal="true" aria-label="Scan job details" data-modal-panel>
+        <header class="modalHeader">
+          <div>
+            <div class="eyebrow">Scan job</div>
+            <h2>${escapeHtml(detail.job?.industry || "Scan")} in ${escapeHtml(detail.job?.location || "Unknown")}</h2>
+          </div>
+          <button type="button" data-action="close-scan-job">Close</button>
+        </header>
+        <div class="scanDetailGrid">
+          <section>
+            <h3>Input</h3>
+            <dl class="kindlingFacts">
+              <div><dt>Message</dt><dd>${escapeHtml(detail.input?.message || "No message captured")}</dd></div>
+              <div><dt>Target</dt><dd>${Number(detail.input?.targetCount || detail.job?.targetCount || 0)}</dd></div>
+              <div><dt>Mode</dt><dd>${escapeHtml(detail.input?.scanMode || detail.job?.scanMode || "")}</dd></div>
+              <div><dt>Status</dt><dd>${escapeHtml(detail.job?.status || "")}</dd></div>
+            </dl>
+          </section>
+          <section>
+            <h3>Outputs</h3>
+            <dl class="kindlingFacts">
+              <div><dt>Companies</dt><dd>${Number(detail.outputs?.companyCount || 0)}</dd></div>
+              <div><dt>Sources</dt><dd>${Number(detail.outputs?.sourceCount || 0)}</dd></div>
+              <div><dt>Strategies</dt><dd>${strategies.length}</dd></div>
+              <div><dt>Summary</dt><dd>${escapeHtml(detail.outputs?.summary || "No summary captured")}</dd></div>
+            </dl>
+          </section>
+        </div>
+        <section class="scanDetailSection">
+          <h3>Strategies used</h3>
+          <div class="strategyList">
+            ${strategies.map((strategy, index) => `
+              <div>
+                <strong>Strategy ${index + 1}: ${escapeHtml(strategy.strategyType)}</strong>
+                <span>${escapeHtml(strategy.query || "No query captured")}</span>
+                <small>${escapeHtml(strategy.status)} - ${Number(strategy.resultCount || 0)} companies${strategy.notes ? ` - ${escapeHtml(strategy.notes)}` : ""}</small>
+              </div>
+            `).join("") || "<p>No strategy attempts recorded yet.</p>"}
+          </div>
+        </section>
+        <section class="scanDetailSection">
+          <h3>Companies found</h3>
+          <div class="companyTable modalCompanyList">
+            ${companies.map((company) => `
+              <button type="button" data-select-company="${escapeHtml(company.id)}">
+                <strong>${escapeHtml(company.name)}</strong>
+                <span>${escapeHtml(company.website || "No website")} - ${escapeHtml(company.dataRing)} - confidence ${Number(company.confidence || 0).toFixed(2)}</span>
+              </button>
+            `).join("") || "<p>No companies matched this job yet.</p>"}
+          </div>
+        </section>
+      </section>
+    </div>
   `;
 }
 
@@ -610,6 +686,12 @@ async function handleKindlingSubmit(event) {
 }
 
 async function handleKindlingClick(event) {
+  const closeScanJob = event.target.closest('[data-action="close-scan-job"]');
+  if (closeScanJob && (!event.target.closest("[data-modal-panel]") || closeScanJob.tagName === "BUTTON")) {
+    state.scanJobDetail = null;
+    renderKindling();
+    return;
+  }
   const viewButton = event.target.closest("[data-kindling-view]");
   if (viewButton) {
     state.activeKindlingView = viewButton.dataset.kindlingView;
@@ -617,10 +699,19 @@ async function handleKindlingClick(event) {
     renderKindling();
     return;
   }
+  const scanJobButton = event.target.closest("[data-scan-job]");
+  if (scanJobButton) {
+    setKindlingStatus("Loading scan job");
+    state.scanJobDetail = await api(`/api/kindling/discovery-jobs/${encodeURIComponent(scanJobButton.dataset.scanJob)}`);
+    renderKindling();
+    setKindlingStatus("Scan job loaded");
+    return;
+  }
   const selectButton = event.target.closest("[data-select-company]");
   if (selectButton) {
     state.selectedCompanyId = selectButton.dataset.selectCompany;
     localStorage.setItem("kindling_company", state.selectedCompanyId);
+    state.scanJobDetail = null;
     state.activeKindlingView = "act";
     localStorage.setItem("kindling_view", "act");
     renderKindling();

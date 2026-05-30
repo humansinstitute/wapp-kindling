@@ -145,6 +145,38 @@ function mapRun(row: Record<string, unknown>) {
   };
 }
 
+function mapDiscoveryJob(row: Record<string, unknown>) {
+  return {
+    id: String(row.id),
+    industry: String(row.industry),
+    location: String(row.location),
+    targetCount: Number(row.target_count ?? 25),
+    scanMode: String(row.scan_mode ?? "interactive"),
+    status: String(row.status),
+    companyCount: Number(row.company_count ?? 0),
+    sourceCount: Number(row.source_count ?? 0),
+    summary: String(row.summary ?? ""),
+    createdAt: Number(row.created_at),
+    updatedAt: Number(row.updated_at),
+  };
+}
+
+function mapStrategyAttempt(row: Record<string, unknown>) {
+  return {
+    id: String(row.id),
+    discoveryJobId: String(row.discovery_job_id),
+    industry: String(row.industry),
+    location: String(row.location),
+    strategyType: String(row.strategy_type),
+    query: String(row.query),
+    status: String(row.status),
+    resultCount: Number(row.result_count ?? 0),
+    notes: String(row.notes ?? ""),
+    payload: jsonParse<Record<string, unknown>>(row.payload_json, {}),
+    createdAt: Number(row.created_at),
+  };
+}
+
 function listPipelineRoles() {
   const rows = db.query("SELECT * FROM pipeline_roles ORDER BY display_name ASC").all() as Record<string, unknown>[];
   return rows.map(mapPipelineRole);
@@ -372,6 +404,68 @@ function listCompanies(filters: URLSearchParams | null = null) {
   const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
   const rows = db.query(`SELECT * FROM companies ${where} ORDER BY updated_at DESC, name ASC LIMIT 500`).all(...values) as Record<string, unknown>[];
   return rows.map(mapCompany);
+}
+
+function scanJobInputFromRun(run: Record<string, unknown> | null, job: ReturnType<typeof mapDiscoveryJob>) {
+  const trigger = jsonParse<Record<string, unknown>>(run?.trigger_payload_json, {});
+  const body = objectRecord(trigger.body);
+  const input = objectRecord(body.input);
+  return {
+    requestId: job.id,
+    message: String(input.message ?? ""),
+    industry: String(input.industry ?? job.industry),
+    location: String(input.location ?? job.location),
+    targetCount: Number(input.targetCount ?? job.targetCount),
+    scanMode: String(input.scanMode ?? job.scanMode),
+    pipelineRole: String(input.pipelineRole ?? input.roleKey ?? "scan_target_list"),
+  };
+}
+
+function getDiscoveryJobDetail(jobId: string) {
+  const jobRow = db.query("SELECT * FROM discovery_jobs WHERE id = ?1").get(jobId) as Record<string, unknown> | null;
+  if (!jobRow) return null;
+  const job = mapDiscoveryJob(jobRow);
+  const run = db.query(`
+    SELECT *
+    FROM kindling_pipeline_runs
+    WHERE local_request_id = ?1 AND role_key = 'scan_target_list'
+    ORDER BY created_at DESC
+    LIMIT 1
+  `).get(jobId) as Record<string, unknown> | null;
+  const strategies = (db.query(`
+    SELECT *
+    FROM scan_strategy_attempts
+    WHERE discovery_job_id = ?1
+    ORDER BY created_at ASC
+  `).all(jobId) as Record<string, unknown>[]).map(mapStrategyAttempt);
+  const companies = (db.query(`
+    SELECT DISTINCT c.*
+    FROM companies c
+    LEFT JOIN activities a
+      ON a.target_type = 'company'
+     AND a.target_id = c.id
+     AND a.action_type = 'company_created'
+    WHERE json_extract(a.payload_json, '$.requestId') = ?1
+       OR (
+         lower(COALESCE(c.industry, '')) = lower(?2)
+         AND lower(COALESCE(c.location, '')) = lower(?3)
+       )
+    ORDER BY c.updated_at DESC, c.name ASC
+    LIMIT 100
+  `).all(job.id, job.industry, job.location) as Record<string, unknown>[]).map(mapCompany);
+  return {
+    job,
+    input: scanJobInputFromRun(run, job),
+    strategies,
+    outputs: {
+      companyCount: job.companyCount,
+      sourceCount: job.sourceCount,
+      shownCompanies: companies.length,
+      companies,
+      summary: job.summary,
+      run: run ? mapRun(run) : null,
+    },
+  };
 }
 
 function upsertTargetRanking(companyId: string, reason: string, score: Record<string, unknown>) {
@@ -1004,7 +1098,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     if (!session) return json({ error: "unauthorized" }, 401);
     const companies = listCompanies();
     const recentRuns = (db.query("SELECT * FROM kindling_pipeline_runs ORDER BY updated_at DESC LIMIT 12").all() as Record<string, unknown>[]).map(mapRun);
-    const discoveryJobs = (db.query("SELECT * FROM discovery_jobs ORDER BY updated_at DESC LIMIT 8").all() as Record<string, unknown>[]).map(rowJson);
+    const discoveryJobs = (db.query("SELECT * FROM discovery_jobs ORDER BY updated_at DESC LIMIT 8").all() as Record<string, unknown>[]).map(mapDiscoveryJob);
     const outreachDrafts = (db.query(`
       SELECT od.*, c.name AS company_name
       FROM outreach_drafts od
@@ -1025,6 +1119,15 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
         activeRuns: recentRuns.filter((run) => ["queued", "running", "mock"].includes(run.status)).length,
       },
     });
+  }
+
+  const discoveryJobMatch = pathname.match(/^\/api\/kindling\/discovery-jobs\/([^/]+)$/);
+  if (discoveryJobMatch && req.method === "GET") {
+    const session = requireSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    const detail = getDiscoveryJobDetail(decodeURIComponent(discoveryJobMatch[1]!));
+    if (!detail) return json({ error: "discovery job not found" }, 404);
+    return json(detail);
   }
 
   if (pathname === "/api/kindling/pipeline-roles" && req.method === "GET") {

@@ -224,6 +224,11 @@ describe("Kindling API contracts", () => {
     expect(company).toMatchObject({ name: "North HVAC", industry: "HVAC", location: "Perth", website: "https://north.example" });
     const strategy = db.query("SELECT strategy_type, query, result_count, notes FROM scan_strategy_attempts LIMIT 1").get() as Record<string, string | number>;
     expect(strategy).toMatchObject({ strategy_type: "google", query: "HVAC Perth", result_count: 1, notes: "page 1" });
+    const detail = await api("/api/kindling/discovery-jobs/scan-request");
+    expect(detail.res.status).toBe(200);
+    expect(detail.payload.input).toMatchObject({ industry: "HVAC", location: "Perth", targetCount: 25 });
+    expect(detail.payload.strategies[0]).toMatchObject({ strategyType: "google", query: "HVAC Perth", resultCount: 1 });
+    expect(detail.payload.outputs.companyCount).toBe(1);
   });
 
   test("exposes scan context over NIP-98 for strategy planning", async () => {
