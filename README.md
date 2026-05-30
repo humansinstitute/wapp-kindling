@@ -65,7 +65,7 @@ POST /api/kindling/pipeline-webhook
 POST /api/kindling/pipeline-write/target-scan
 ```
 
-The legacy chat route remains available from the Home screen as a developer/testing surface for generic pipeline chat.
+The legacy chat route remains available from the Home screen as a developer/testing surface for generic pipeline chat. Its default `chat-wapp-agent-response` Autopilot pipeline treats graph memory as optional: if graph memory is not configured or unavailable, the pipeline should continue with warnings and still deliver the webhook response.
 
 ## Autopilot Integration
 
