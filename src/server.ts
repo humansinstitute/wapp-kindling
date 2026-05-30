@@ -442,9 +442,33 @@ function getDiscoveryJobDetail(jobId: string) {
   `).all(jobId) as Record<string, unknown>[]).map(mapStrategyAttempt);
   const resultPayload = jsonParse<Record<string, unknown>>(run?.result_payload_json, {});
   const result = objectRecord(resultPayload.result);
+  const plannedNextStrategies = Array.isArray(result.plannedNextStrategies)
+    ? (result.plannedNextStrategies as Record<string, unknown>[]).map((strategy, index) => ({
+      id: `planned-${job.id}-${index}`,
+      discoveryJobId: job.id,
+      industry: String(strategy.industry ?? result.industry ?? job.industry),
+      location: String(strategy.location ?? result.location ?? job.location),
+      strategyType: String(strategy.strategyType ?? strategy.strategy ?? "search"),
+      query: String(strategy.query ?? ""),
+      status: "planned",
+      resultCount: Number(strategy.resultCount ?? strategy.companiesFound ?? 0),
+      notes: String(strategy.notes ?? ""),
+      payload: strategy,
+      createdAt: Number(run?.updated_at ?? job.updatedAt),
+    }))
+    : [];
   const returnedCompanies = Array.isArray(result.companies) ? result.companies as Record<string, unknown>[] : [];
   const returnedWebsites = new Set(returnedCompanies.map((company) => String(company.website ?? "").trim().toLowerCase()).filter(Boolean));
   const returnedNames = new Set(returnedCompanies.map((company) => String(company.name ?? "").trim().toLowerCase()).filter(Boolean));
+  const scanCompanyIds = new Set((db.query(`
+    SELECT c.id
+    FROM companies c
+    JOIN activities a
+      ON a.target_type = 'company'
+     AND a.target_id = c.id
+     AND a.action_type IN ('company_created', 'company_matched')
+    WHERE json_extract(a.payload_json, '$.requestId') = ?1
+  `).all(job.id) as Record<string, unknown>[]).map((row) => String(row.id)));
   const createdIds = new Set((db.query(`
     SELECT c.id
     FROM companies c
@@ -460,7 +484,7 @@ function getDiscoveryJobDetail(jobId: string) {
       const id = String(company.id);
       const website = String(company.website ?? "").trim().toLowerCase();
       const name = String(company.name ?? "").trim().toLowerCase();
-      return createdIds.has(id) || (website && returnedWebsites.has(website)) || (name && returnedNames.has(name));
+      return scanCompanyIds.has(id) || (website && returnedWebsites.has(website)) || (name && returnedNames.has(name));
     })
     .slice(0, 120)
     .map(mapCompany);
@@ -472,13 +496,14 @@ function getDiscoveryJobDetail(jobId: string) {
     return total + (sources.length || (String(company.website ?? "").trim() ? 1 : 0));
   }, 0);
   const searchedStrategies = strategies.filter((strategy) => strategy.status !== "planned");
-  const plannedStrategies = strategies.filter((strategy) => strategy.status === "planned");
+  const legacyPlannedStrategies = strategies.filter((strategy) => strategy.status === "planned");
+  const plannedStrategies = plannedNextStrategies.length ? plannedNextStrategies : legacyPlannedStrategies;
   const returnedCount = returnedCompanies.length || Number(resultPayload?.persistence && objectRecord(resultPayload.persistence).companiesArtifact ? objectRecord(objectRecord(resultPayload.persistence).companiesArtifact).count : 0) || job.companyCount;
   const netNewCount = createdIds.size;
   return {
     job,
     input: scanJobInputFromRun(run, job),
-    strategies,
+    strategies: searchedStrategies,
     searchedStrategies,
     plannedStrategies,
     outputs: {
@@ -667,6 +692,7 @@ function normalizeKindlingCallbackRecords(roleKey: string, body: Record<string, 
       coverage: objectRecord(result.coverage),
       possibleDuplicates: Array.isArray(result.possibleDuplicates) ? result.possibleDuplicates : [],
       searchSlices: Array.isArray(result.searchSlices) ? result.searchSlices : [],
+      plannedNextStrategies: Array.isArray(result.plannedNextStrategies) ? result.plannedNextStrategies : [],
       warnings: Array.isArray(result.warnings) ? result.warnings : [],
     };
   }
@@ -798,6 +824,7 @@ function persistScanRecords(requestId: string, records: Record<string, unknown>,
             updated_at = ?5
         WHERE id = ?6
       `).run(location, industry, website, confidence, now, companyId);
+      recordActivity("company", companyId, "pipeline", "company_matched", `Matched by scan ${requestId}`, { requestId });
       updatedCompanies += 1;
     } else {
       db.query(`
@@ -837,6 +864,7 @@ function persistScanRecords(requestId: string, records: Record<string, unknown>,
     const query = String(slice.query ?? "");
     const location = String(slice.location ?? records.location ?? "");
     const status = String(slice.status ?? "searched");
+    if (status === "planned") continue;
     const existing = db.query(`
       SELECT 1
       FROM scan_strategy_attempts

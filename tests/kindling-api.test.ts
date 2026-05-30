@@ -302,6 +302,41 @@ describe("Kindling API contracts", () => {
     expect(count.count).toBe(1);
   });
 
+  test("keeps planned scan strategies separate from attempted strategy history", async () => {
+    db.query("INSERT INTO discovery_jobs(id, industry, location, status, created_at, updated_at) VALUES ('scan-planned-request', 'Accounting', 'Perth', 'queued', 1, 1)").run();
+    seedKindlingRun("scan_target_list", "scan-planned-request", "scan-planned-token");
+    const webhook = await api("/api/kindling/pipeline-webhook", {
+      method: "POST",
+      headers: { "x-kindling-pipeline-token": "scan-planned-token" },
+      body: {
+        requestId: "scan-planned-request",
+        role: "scan_target_list",
+        status: "partial",
+        response: "Scan partial",
+        result: {
+          outputKind: "target_scan_result",
+          industry: "Accounting",
+          location: "Perth",
+          companies: [{ name: "Planned Split Co", website: "https://planned.example", confidence: 0.8 }],
+          searchSlices: [
+            { industry: "Accounting", location: "Perth", strategyType: "directory", query: "accountants Perth page 2", status: "searched", resultCount: 1 },
+            { industry: "Accounting", location: "Perth", strategyType: "association", query: "CPA Perth next", status: "planned", resultCount: 0 },
+          ],
+          plannedNextStrategies: [
+            { industry: "Accounting", location: "Perth", strategyType: "registry", query: "TPB Perth suburb pass", status: "planned", resultCount: 0 },
+          ],
+        },
+      },
+    });
+    expect(webhook.res.status).toBe(200);
+    const storedStrategies = db.query("SELECT status, query FROM scan_strategy_attempts ORDER BY created_at ASC").all() as Record<string, string>[];
+    expect(storedStrategies).toEqual([{ status: "searched", query: "accountants Perth page 2" }]);
+    const detail = await api("/api/kindling/discovery-jobs/scan-planned-request");
+    expect(detail.payload.strategies).toHaveLength(1);
+    expect(detail.payload.plannedStrategies).toHaveLength(1);
+    expect(detail.payload.plannedStrategies[0]).toMatchObject({ strategyType: "registry", query: "TPB Perth suburb pass", status: "planned" });
+  });
+
   test("accepts repeatable NIP-98 scan result writes without direct DB access", async () => {
     db.query("INSERT INTO discovery_jobs(id, industry, location, status, created_at, updated_at) VALUES ('nip98-scan-write', 'Accounting', 'Perth', 'queued', 1, 1)").run();
     const path = "/api/nip98/kindling/scan-results";

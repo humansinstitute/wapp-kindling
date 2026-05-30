@@ -116,16 +116,14 @@ The profile patch includes `title`, `summary`, `positioningStatement`, `services
 
 ## Target Scan Pipeline
 
-`kindling-scan-target-list` is moving toward a manager/search loop. The first production shape should be:
+`kindling-scan-target-list` uses a bounded manager/search loop. The current production shape is:
 
-1. `load-scan-context`: a deterministic step that calls the WApp scan-context API for matching counts, previous strategy attempts, coverage, recent companies, and target count.
-2. `plan-next-strategy`: a manager agent step that chooses the next strategy slice and explains why it is likely to produce net-new verified companies.
-3. `run-search-slice`: a search agent step that executes the selected strategy only. It does not enrich people or draft outreach.
-4. `normalise-slice-results`: a deterministic step that converts raw agent output into companies, sources, duplicate hints, and strategy telemetry.
-5. `write-partial-results`: a deterministic step that writes the batch to the WApp scan-result API.
-6. `evaluate-progress`: a manager or deterministic step that checks current total, net-new yield, target count, max slices, and time/effort budget before looping or finishing.
+1. `discover-target-companies`: an agent step that chooses and runs the next concrete non-repeated strategy slice. It does not enrich people or draft outreach.
+2. `persist-target-scan`: a deterministic step that normalises the loop output, writes a per-iteration companies JSON artifact, and writes the partial batch to the WApp.
+3. `continue-scan-loop`: a bounded loop step that repeats discovery until the WApp persisted count reaches `targetCount` or the loop cap is reached. The default cap is 21 loops.
+4. `finalize-target-scan`: a deterministic step that sends one final webhook summary after the loop.
 
-The current first-pass pipeline still uses a compact discover/persist shape, but it must preserve the same contract: strategy selection happens from WApp state, results are normalised before persistence, and every attempted strategy is recorded.
+The pipeline still keeps strategy selection compact, but it preserves the manager-loop contract: strategy selection happens from WApp state and previous loop history, results are normalised before persistence, and every attempted strategy is recorded.
 
 The code step writes a JSON file before callback delivery so the discovered company batch is inspectable outside the agent transcript. By default artifacts are written under:
 
@@ -137,13 +135,15 @@ The WApp remains the owner of SQLite. The pipeline does not open the SQLite data
 
 For repeat scans, the WApp includes `localContext.priorScanStrategies`. The pipeline should use this to avoid repeating the same first-page searches and should return `searchSlices` with `strategyType`, `query`, `status`, `resultCount`, and `notes` so later runs can improve coverage.
 
+`searchSlices` is reserved for strategies that were actually executed or blocked. Planned but unused strategies must be returned under `plannedNextStrategies` instead. The WApp displays these recommendations separately and does not insert them into `scan_strategy_attempts`.
+
 The WApp API surface for strategy-aware scans is:
 
 - `GET /api/nip98/kindling/scan-context?industry=...&location=...&targetCount=...`: returns current matching counts, coverage, recent companies, and prior scan strategies.
 - `POST /api/nip98/kindling/scan-results`: writes a partial or final scan batch through NIP-98 edit access.
 - `POST /api/kindling/pipeline-write/target-scan`: writes a token-scoped partial pipeline batch for runs that use webhook-token auth rather than NIP-98.
 
-Partial writes are repeatable and do not mark the run complete. The final webhook remains the pipeline completion signal, but the WApp discovery job should remain `partial` when the returned company count is below the requested target. Planned next strategies must be displayed separately from strategies actually run.
+Partial writes are repeatable and do not mark the run complete. The final webhook remains the pipeline completion signal, but the WApp discovery job should remain `partial` when the persisted matching company count is below the requested target. Planned next strategies must be displayed separately from strategies actually run.
 
 It returns:
 
@@ -157,6 +157,7 @@ It returns:
 - `result.companiesArtifact`
 - `result.possibleDuplicates`
 - `result.searchSlices`
+- `result.plannedNextStrategies`
 - `result.activities`
 - `result.warnings`
 - `result.confidence`

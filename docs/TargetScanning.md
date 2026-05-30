@@ -70,6 +70,8 @@ Repeated scans should optimise for net-new records. The WApp passes previous sea
 
 The discovery session should stay focused on company discovery. It should not try to deeply profile every company, identify every person, score fit, monitor signals, and draft outreach in the same pass. Those activities belong to later pipeline stages.
 
+The scan pipeline should not stop after a single agent pass for large targets. It should keep selecting and running new strategy slices until the WApp reports that the requested target count has been met or a bounded loop cap is reached. The current operating cap is 21 strategy loops.
+
 ## Strategy Manager Loop
 
 Large scans should be driven by an Autopilot manager loop rather than a single large search prompt.
@@ -87,6 +89,8 @@ The intended loop is:
 7. The manager evaluates net-new yield and either chooses another strategy slice or finishes once the target, time budget, max slices, or useful strategy space is exhausted.
 
 The pipeline should optimise for net-new verified companies per strategy attempt, not raw candidate volume. Re-finding the same 50 companies is a low-yield strategy even if the search looked successful in isolation.
+
+Only strategies that were actually executed or genuinely blocked should be stored as strategy attempts. Planned but unused strategies are useful recommendations, but they should be carried as `plannedNextStrategies` in the final scan result and displayed separately in the WApp. They should not be inserted into `scan_strategy_attempts`, counted as attempted work, or sent back to Autopilot as prior run history.
 
 Useful strategy families include:
 
