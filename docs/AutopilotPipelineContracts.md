@@ -116,10 +116,16 @@ The profile patch includes `title`, `summary`, `positioningStatement`, `services
 
 ## Target Scan Pipeline
 
-`kindling-scan-target-list` has two steps:
+`kindling-scan-target-list` is moving toward a manager/search loop. The first production shape should be:
 
-1. `discover-target-companies`: an agent step that uses the free-text industry/location brief, target count, scan mode, prior search strategy attempts, and available source tools to produce source-backed candidate companies. If source-backed discovery is unavailable, it returns a search plan and warnings rather than inventing records.
-2. `persist-target-scan`: a deterministic function that normalises the result, writes a companies JSON artifact, and delivers the same records to the WApp persistence path.
+1. `load-scan-context`: a deterministic step that calls the WApp scan-context API for matching counts, previous strategy attempts, coverage, recent companies, and target count.
+2. `plan-next-strategy`: a manager agent step that chooses the next strategy slice and explains why it is likely to produce net-new verified companies.
+3. `run-search-slice`: a search agent step that executes the selected strategy only. It does not enrich people or draft outreach.
+4. `normalise-slice-results`: a deterministic step that converts raw agent output into companies, sources, duplicate hints, and strategy telemetry.
+5. `write-partial-results`: a deterministic step that writes the batch to the WApp scan-result API.
+6. `evaluate-progress`: a manager or deterministic step that checks current total, net-new yield, target count, max slices, and time/effort budget before looping or finishing.
+
+The current first-pass pipeline still uses a compact discover/persist shape, but it must preserve the same contract: strategy selection happens from WApp state, results are normalised before persistence, and every attempted strategy is recorded.
 
 The code step writes a JSON file before callback delivery so the discovered company batch is inspectable outside the agent transcript. By default artifacts are written under:
 
@@ -127,9 +133,17 @@ The code step writes a JSON file before callback delivery so the discovered comp
 ~/.wingmen/pipelines/users/honest-ivory-thicket/artifacts/kindling/target-scans/
 ```
 
-The WApp remains the owner of SQLite. The pipeline does not open the SQLite database directly. It sends the normalized companies to `localContext.writeApi` when configured, or to the normal webhook callback path. The WApp endpoint should perform the actual SQLite insert/update and duplicate marking.
+The WApp remains the owner of SQLite. The pipeline does not open the SQLite database directly. It sends the normalized companies to `localContext.writeApi`, the NIP-98 scan-result API, or the normal final webhook callback path. The WApp endpoint performs the actual SQLite insert/update, duplicate marking, and strategy-attempt persistence.
 
 For repeat scans, the WApp includes `localContext.priorScanStrategies`. The pipeline should use this to avoid repeating the same first-page searches and should return `searchSlices` with `strategyType`, `query`, `status`, `resultCount`, and `notes` so later runs can improve coverage.
+
+The WApp API surface for strategy-aware scans is:
+
+- `GET /api/nip98/kindling/scan-context?industry=...&location=...&targetCount=...`: returns current matching counts, coverage, recent companies, and prior scan strategies.
+- `POST /api/nip98/kindling/scan-results`: writes a partial or final scan batch through NIP-98 edit access.
+- `POST /api/kindling/pipeline-write/target-scan`: writes a token-scoped partial pipeline batch for runs that use webhook-token auth rather than NIP-98.
+
+Partial writes are repeatable and do not mark the run complete. The final webhook remains the completion signal.
 
 It returns:
 

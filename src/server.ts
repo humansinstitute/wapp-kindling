@@ -220,6 +220,56 @@ function listScanStrategyHistory(industry: string, location: string, limit = 30)
   }));
 }
 
+function buildScanContext(industry: string, location: string, targetCount: number) {
+  const counts = db.query(`
+    SELECT
+      COUNT(*) AS matching_companies,
+      SUM(CASE WHEN website IS NOT NULL AND website != '' THEN 1 ELSE 0 END) AS with_website,
+      SUM(CASE WHEN duplicate_status = 'possible_duplicate' THEN 1 ELSE 0 END) AS possible_duplicates
+    FROM companies
+    WHERE lower(industry) = lower(?1)
+      AND lower(location) = lower(?2)
+  `).get(industry, location) as Record<string, unknown> | null;
+  const total = db.query("SELECT COUNT(*) AS count FROM companies").get() as { count: number } | null;
+  const coverage = db.query(`
+    SELECT industry, location, COUNT(*) AS company_count
+    FROM companies
+    WHERE lower(industry) = lower(?1)
+       OR lower(location) = lower(?2)
+    GROUP BY industry, location
+    ORDER BY company_count DESC, industry ASC, location ASC
+    LIMIT 50
+  `).all(industry, location) as Record<string, unknown>[];
+  const recentCompanies = db.query(`
+    SELECT *
+    FROM companies
+    WHERE lower(industry) = lower(?1)
+      AND lower(location) = lower(?2)
+    ORDER BY updated_at DESC
+    LIMIT 25
+  `).all(industry, location) as Record<string, unknown>[];
+
+  return {
+    industry,
+    location,
+    targetCount,
+    scanMode: scanModeForTargetCount(targetCount),
+    currentCounts: {
+      matchingCompanies: Number(counts?.matching_companies ?? 0),
+      totalCompanies: Number(total?.count ?? 0),
+      withWebsite: Number(counts?.with_website ?? 0),
+      possibleDuplicates: Number(counts?.possible_duplicates ?? 0),
+    },
+    coverage: coverage.map((row) => ({
+      industry: String(row.industry ?? ""),
+      location: String(row.location ?? ""),
+      companyCount: Number(row.company_count ?? 0),
+    })),
+    priorScanStrategies: listScanStrategyHistory(industry, location, 50),
+    recentCompanies: recentCompanies.map(mapCompany),
+  };
+}
+
 function buildKindlingRoleFields(roleKey: string, context: Record<string, unknown>) {
   if (roleKey === "scan_target_list") {
     return {
@@ -542,16 +592,153 @@ function normalizeKindlingCallbackRecords(roleKey: string, body: Record<string, 
   return {};
 }
 
-function applyKindlingCallback(body: Record<string, unknown>, token: string) {
-  const requestId = String(body.requestId ?? "");
-  const roleKey = String(body.role ?? body.roleKey ?? "");
-  if (!requestId || !roleKey || !token) return { ok: false as const, error: "requestId, role, and token are required" };
-  const run = db.query(`
+function findExistingScanCompany(company: Record<string, unknown>, records: Record<string, unknown>) {
+  const website = String(company.website ?? "").trim();
+  if (website) {
+    return db.query("SELECT * FROM companies WHERE lower(website) = lower(?1) LIMIT 1").get(website) as Record<string, unknown> | null;
+  }
+  const name = String(company.name ?? "").trim();
+  if (!name) return null;
+  const location = String(company.location ?? records.location ?? "").trim();
+  const industry = String(company.industry ?? records.industry ?? "").trim();
+  return db.query(`
+    SELECT *
+    FROM companies
+    WHERE lower(name) = lower(?1)
+      AND lower(COALESCE(location, '')) = lower(?2)
+      AND lower(COALESCE(industry, '')) = lower(?3)
+    LIMIT 1
+  `).get(name, location, industry) as Record<string, unknown> | null;
+}
+
+function sourceAlreadyExists(companyId: string, url: string, summary: string) {
+  const row = db.query(`
+    SELECT 1
+    FROM sources
+    WHERE company_id = ?1
+      AND COALESCE(url, '') = ?2
+      AND summary = ?3
+    LIMIT 1
+  `).get(companyId, url, summary);
+  return Boolean(row);
+}
+
+function matchingCompanyCountForJob(requestId: string) {
+  const job = db.query("SELECT industry, location FROM discovery_jobs WHERE id = ?1").get(requestId) as Record<string, unknown> | null;
+  if (!job) return 0;
+  const row = db.query(`
+    SELECT COUNT(*) AS count
+    FROM companies
+    WHERE lower(COALESCE(industry, '')) = lower(?1)
+      AND lower(COALESCE(location, '')) = lower(?2)
+  `).get(String(job.industry ?? ""), String(job.location ?? "")) as { count: number } | null;
+  return Number(row?.count ?? 0);
+}
+
+function persistScanRecords(requestId: string, records: Record<string, unknown>, response: string, jobStatus: "running" | "complete") {
+  const now = Date.now();
+  const companies = Array.isArray(records.companies) ? records.companies as Record<string, unknown>[] : [];
+  let createdCompanies = 0;
+  let updatedCompanies = 0;
+  for (const company of companies) {
+    const existing = findExistingScanCompany(company, records);
+    const name = String(company.name ?? "").trim() || "Untitled company";
+    const location = String(company.location ?? records.location ?? "");
+    const industry = String(company.industry ?? records.industry ?? "");
+    const website = String(company.website ?? "");
+    const confidence = Number(company.confidence ?? 0.4);
+    const companyId = existing ? String(existing.id) : crypto.randomUUID();
+
+    if (existing) {
+      db.query(`
+        UPDATE companies
+        SET location = COALESCE(NULLIF(?1, ''), location),
+            industry = COALESCE(NULLIF(?2, ''), industry),
+            website = COALESCE(NULLIF(?3, ''), website),
+            confidence = MAX(confidence, ?4),
+            updated_at = ?5
+        WHERE id = ?6
+      `).run(location, industry, website, confidence, now, companyId);
+      updatedCompanies += 1;
+    } else {
+      db.query(`
+        INSERT INTO companies(id, name, location, industry, website, data_ring, duplicate_status, enrichment_status, confidence, profile_json, created_at, updated_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, 'seed', 'unknown', 'not_started', ?6, '{}', ?7, ?7)
+      `).run(companyId, name, location, industry, website, confidence, now);
+      recordActivity("company", companyId, "pipeline", "company_created", `Created by scan ${requestId}`, { requestId });
+      upsertTargetRanking(companyId, "New scan target with sparse but usable data.", { fit: confidence });
+      createdCompanies += 1;
+    }
+
+    const sourceUrl = String(company.website ?? "");
+    const sourceSummary = String(company.sourceSummary ?? company.evidence ?? "Scan source");
+    if (!sourceAlreadyExists(companyId, sourceUrl, sourceSummary)) {
+      db.query(`
+        INSERT INTO sources(id, company_id, source_type, url, summary, confidence, created_at)
+        VALUES (?1, ?2, 'scan', ?3, ?4, ?5, ?6)
+      `).run(crypto.randomUUID(), companyId, sourceUrl, sourceSummary, confidence, now);
+    }
+  }
+
+  let strategyAttempts = 0;
+  const slices = Array.isArray(records.searchSlices) ? records.searchSlices as Record<string, unknown>[] : [];
+  for (const slice of slices) {
+    const strategyType = String(slice.strategyType ?? slice.strategy ?? "search");
+    const query = String(slice.query ?? "");
+    const location = String(slice.location ?? records.location ?? "");
+    const status = String(slice.status ?? "searched");
+    const existing = db.query(`
+      SELECT 1
+      FROM scan_strategy_attempts
+      WHERE discovery_job_id = ?1
+        AND lower(strategy_type) = lower(?2)
+        AND lower(query) = lower(?3)
+        AND lower(location) = lower(?4)
+        AND status = ?5
+      LIMIT 1
+    `).get(requestId, strategyType, query, location, status);
+    if (existing) continue;
+    db.query(`
+      INSERT INTO scan_strategy_attempts(
+        id, discovery_job_id, industry, location, strategy_type, query, status, result_count, notes, payload_json, created_at
+      )
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+    `).run(
+      crypto.randomUUID(),
+      requestId,
+      String(slice.industry ?? records.industry ?? ""),
+      location,
+      strategyType,
+      query,
+      status,
+      Number(slice.resultCount ?? slice.companiesFound ?? 0),
+      String(slice.notes ?? ""),
+      JSON.stringify(slice),
+      now,
+    );
+    strategyAttempts += 1;
+  }
+
+  const companyCount = matchingCompanyCountForJob(requestId);
+  db.query("UPDATE discovery_jobs SET status = ?1, company_count = ?2, source_count = ?2, summary = ?3, updated_at = ?4 WHERE id = ?5")
+    .run(jobStatus, companyCount, response || (jobStatus === "complete" ? "Scan complete" : "Scan batch written"), now, requestId);
+  return { createdCompanies, updatedCompanies, strategyAttempts, matchingCompanies: companyCount };
+}
+
+function findKindlingRun(requestId: string, roleKey: string, token: string) {
+  return db.query(`
     SELECT * FROM kindling_pipeline_runs
     WHERE local_request_id = ?1 AND role_key = ?2 AND webhook_token = ?3
     ORDER BY created_at DESC
     LIMIT 1
   `).get(requestId, roleKey, token) as Record<string, unknown> | null;
+}
+
+function applyKindlingCallback(body: Record<string, unknown>, token: string) {
+  const requestId = String(body.requestId ?? "");
+  const roleKey = String(body.role ?? body.roleKey ?? "");
+  if (!requestId || !roleKey || !token) return { ok: false as const, error: "requestId, role, and token are required" };
+  const run = findKindlingRun(requestId, roleKey, token);
   if (!run) return { ok: false as const, error: "webhook target not found" };
   const records = normalizeKindlingCallbackRecords(roleKey, body);
   const now = Date.now();
@@ -587,53 +774,7 @@ function applyKindlingCallback(body: Record<string, unknown>, token: string) {
   }
 
   if (!alreadyApplied && roleKey === "scan_target_list") {
-    const companies = Array.isArray(records.companies) ? records.companies as Record<string, unknown>[] : [];
-    let companyCount = 0;
-    for (const company of companies) {
-      const companyId = crypto.randomUUID();
-      db.query(`
-        INSERT INTO companies(id, name, location, industry, website, data_ring, duplicate_status, enrichment_status, confidence, profile_json, created_at, updated_at)
-        VALUES (?1, ?2, ?3, ?4, ?5, 'seed', 'unknown', 'not_started', ?6, '{}', ?7, ?7)
-      `).run(
-        companyId,
-        String(company.name ?? "Untitled company"),
-        String(company.location ?? records.location ?? ""),
-        String(company.industry ?? records.industry ?? ""),
-        String(company.website ?? ""),
-        Number(company.confidence ?? 0.4),
-        now,
-      );
-      db.query(`
-        INSERT INTO sources(id, company_id, source_type, url, summary, confidence, created_at)
-        VALUES (?1, ?2, 'stub_scan', ?3, ?4, ?5, ?6)
-      `).run(crypto.randomUUID(), companyId, String(company.website ?? ""), String(company.sourceSummary ?? "Stub scan source"), Number(company.confidence ?? 0.4), now);
-      recordActivity("company", companyId, "pipeline", "company_created", `Created by scan ${requestId}`, { requestId });
-      upsertTargetRanking(companyId, "New scan target with sparse but usable data.", { fit: Number(company.confidence ?? 0.4) });
-      companyCount += 1;
-    }
-    db.query("UPDATE discovery_jobs SET status = 'complete', company_count = ?1, source_count = ?1, summary = ?2, updated_at = ?3 WHERE id = ?4")
-      .run(companyCount, String(body.response ?? "Scan complete"), now, requestId);
-    const slices = Array.isArray(records.searchSlices) ? records.searchSlices as Record<string, unknown>[] : [];
-    for (const slice of slices) {
-      db.query(`
-        INSERT INTO scan_strategy_attempts(
-          id, discovery_job_id, industry, location, strategy_type, query, status, result_count, notes, payload_json, created_at
-        )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
-      `).run(
-        crypto.randomUUID(),
-        requestId,
-        String(slice.industry ?? records.industry ?? ""),
-        String(slice.location ?? records.location ?? ""),
-        String(slice.strategyType ?? slice.strategy ?? "search"),
-        String(slice.query ?? ""),
-        String(slice.status ?? "searched"),
-        Number(slice.resultCount ?? slice.companiesFound ?? 0),
-        String(slice.notes ?? ""),
-        JSON.stringify(slice),
-        now,
-      );
-    }
+    persistScanRecords(requestId, records, String(body.response ?? "Scan complete"), "complete");
   }
 
   if (!alreadyApplied && roleKey === "enrich_company") {
@@ -961,6 +1102,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
       VALUES (?1, ?2, ?3, ?4, ?5, 'queued', ?6, ?6)
     `).run(jobId, industry, location, targetCount, scanMode, now);
     const webhookToken = crypto.randomUUID().replaceAll("-", "");
+    const scanContext = buildScanContext(industry, location, targetCount);
     const triggerRequest = buildKindlingTriggerRequest({
       roleKey: "scan_target_list",
       localRequestId: jobId,
@@ -971,7 +1113,12 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
         targetCount,
         scanMode,
         profile: getCurrentMarketProfile(),
-        priorScanStrategies: listScanStrategyHistory(industry, location),
+        scanContext,
+        priorScanStrategies: scanContext.priorScanStrategies,
+        scanContextApi: {
+          url: `${webhookOrigin(req)}/api/nip98/kindling/scan-context?industry=${encodeURIComponent(industry)}&location=${encodeURIComponent(location)}&targetCount=${targetCount}`,
+          auth: "nip98-read",
+        },
         writeApi: {
           url: `${webhookOrigin(req)}/api/kindling/pipeline-write/target-scan`,
           token: webhookToken,
@@ -1162,13 +1309,18 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
   if (pathname === "/api/kindling/pipeline-write/target-scan" && req.method === "POST") {
     const body = await readJson(req);
     const token = req.headers.get("x-kindling-pipeline-token") || String(body.token ?? "");
-    const result = applyKindlingCallback({
+    const requestId = String(body.requestId ?? "");
+    const run = requestId && token ? findKindlingRun(requestId, "scan_target_list", token) : null;
+    if (!run) return json({ error: "webhook target not found" }, 400);
+    const records = normalizeKindlingCallbackRecords("scan_target_list", {
       ...body,
-      requestId: String(body.requestId ?? ""),
       role: "scan_target_list",
-      status: "ok",
-    }, token);
-    return result.ok ? json({ ok: true }) : json({ error: result.error }, 400);
+      status: "running",
+    });
+    const persisted = persistScanRecords(requestId, records, String(body.response ?? "Scan batch written"), "running");
+    db.query("UPDATE kindling_pipeline_runs SET status = 'running', updated_at = ?1 WHERE id = ?2")
+      .run(Date.now(), String(run.id));
+    return json({ ok: true, persisted });
   }
 
   if (pathname === "/api/chats" && req.method === "GET") {
@@ -1354,6 +1506,45 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     if (!verified.ok) return json({ error: verified.error }, 401);
     if (!hasAccess(verified.pubkey, "read")) return json({ error: "read access required" }, 403);
     return json({ pipelineRoles: listPipelineRoles() });
+  }
+
+  if (pathname === "/api/nip98/kindling/scan-context" && req.method === "GET") {
+    const verified = await verifyNip98Request(req, url);
+    if (!verified.ok) return json({ error: verified.error }, 401);
+    if (!hasAccess(verified.pubkey, "read")) return json({ error: "read access required" }, 403);
+    const industry = String(url.searchParams.get("industry") ?? "").trim();
+    const location = String(url.searchParams.get("location") ?? "").trim();
+    if (!industry || !location) return json({ error: "industry and location are required" }, 400);
+    return json({ scanContext: buildScanContext(industry, location, clampTargetCount(url.searchParams.get("targetCount"))) });
+  }
+
+  if (pathname === "/api/nip98/kindling/scan-results" && req.method === "POST") {
+    const verified = await verifyNip98Request(req, url);
+    if (!verified.ok) return json({ error: verified.error }, 401);
+    if (!hasAccess(verified.pubkey, "edit")) return json({ error: "edit access required" }, 403);
+    const body = await readJson(req);
+    const requestId = String(body.requestId ?? "").trim();
+    if (!requestId) return json({ error: "requestId is required" }, 400);
+    const job = db.query("SELECT * FROM discovery_jobs WHERE id = ?1").get(requestId) as Record<string, unknown> | null;
+    if (!job) return json({ error: "discovery job not found" }, 404);
+    const records = normalizeKindlingCallbackRecords("scan_target_list", {
+      ...body,
+      role: "scan_target_list",
+      status: String(body.status ?? "running"),
+    });
+    const final = body.final === true || String(body.status ?? "") === "complete";
+    const persisted = persistScanRecords(requestId, records, String(body.response ?? ""), final ? "complete" : "running");
+    const run = db.query(`
+      SELECT * FROM kindling_pipeline_runs
+      WHERE local_request_id = ?1 AND role_key = 'scan_target_list'
+      ORDER BY created_at DESC
+      LIMIT 1
+    `).get(requestId) as Record<string, unknown> | null;
+    if (run) {
+      db.query("UPDATE kindling_pipeline_runs SET status = ?1, updated_at = ?2 WHERE id = ?3")
+        .run(final ? "complete" : "running", Date.now(), String(run.id));
+    }
+    return json({ ok: true, persisted });
   }
 
   const nip98ContextMatch = pathname.match(/^\/api\/nip98\/context\/([^/]+)$/);

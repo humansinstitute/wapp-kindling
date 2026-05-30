@@ -70,6 +70,45 @@ Repeated scans should optimise for net-new records. The WApp passes previous sea
 
 The discovery session should stay focused on company discovery. It should not try to deeply profile every company, identify every person, score fit, monitor signals, and draft outreach in the same pass. Those activities belong to later pipeline stages.
 
+## Strategy Manager Loop
+
+Large scans should be driven by an Autopilot manager loop rather than a single large search prompt.
+
+The durable state stays in the WApp SQLite database. Autopilot reads and writes that state only through WApp APIs. This keeps the WApp as the source of truth for companies, discovery jobs, strategy attempts, duplicate candidates, source coverage, and yield metrics.
+
+The intended loop is:
+
+1. The user asks the WApp to scan a free-text industry and location, such as "accountants in Perth".
+2. Autopilot calls the WApp scan-context API to inspect current matching company counts, previous strategies, coverage, recent companies, and target count.
+3. A manager agent chooses the next best strategy slice based on what has already been tried.
+4. A search agent runs that slice with a bounded target, such as the next 25, 50, 100, or 256 accounts depending on source type.
+5. Pipeline code normalises the search output into company records, source records, duplicate hints, and strategy-attempt telemetry.
+6. The pipeline writes the partial batch back to the WApp through the scan-result API.
+7. The manager evaluates net-new yield and either chooses another strategy slice or finishes once the target, time budget, max slices, or useful strategy space is exhausted.
+
+The pipeline should optimise for net-new verified companies per strategy attempt, not raw candidate volume. Re-finding the same 50 companies is a low-yield strategy even if the search looked successful in isolation.
+
+Useful strategy families include:
+
+- Google organic search with explicit page ranges.
+- Google Maps or local-pack style searches.
+- Suburb, city, region, state, and country geography slices.
+- Category variants such as accountant, tax agent, bookkeeper, BAS agent, SMSF accountant, CPA, chartered accountant, and business advisor.
+- Professional body directories and member lists.
+- Software/vendor partner directories such as accounting platform advisor directories.
+- Business directories, registries, and association lists.
+- Deeper-result searches after high-yield first pages have been exhausted.
+
+The default slice target can be 256 for structured directories or registry-like sources. For open web search, smaller slices such as 25-100 are more realistic and easier to verify. The manager should adapt the slice size to the source and prior yield.
+
+The first API surface for this loop is:
+
+- `GET /api/nip98/kindling/scan-context?industry=...&location=...&targetCount=...`
+- `POST /api/nip98/kindling/scan-results`
+- `POST /api/kindling/pipeline-write/target-scan` for token-scoped pipeline writes
+
+The scan-context response gives Autopilot the compact state needed to plan the next strategy. The scan-results endpoint allows repeatable partial writes, so long-running scans can preserve useful data even before the final webhook fires.
+
 ## Agent-Led Discovery
 
 Agent-led discovery should support:

@@ -1,7 +1,10 @@
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { sha256 } from "@noble/hashes/sha256";
+import { bytesToHex } from "@noble/hashes/utils";
 import { beforeEach, describe, expect, test } from "bun:test";
+import { finalizeEvent, getPublicKey } from "nostr-tools";
 
 process.env.CHAT_WAPP_DB_PATH = join(mkdtempSync(join(tmpdir(), "kindling-api-")), "test.sqlite");
 process.env.CHAT_WAPP_ALLOW_MOCK = "1";
@@ -10,7 +13,8 @@ process.env.WINGMAN_URL = "http://127.0.0.1:9";
 const { db, ensureDefaultPipelineRoles } = await import("../src/db.ts");
 const { handleApi } = await import("../src/server.ts");
 
-const pubkey = "1".repeat(64);
+const secretKey = new Uint8Array(32).fill(7);
+const pubkey = getPublicKey(secretKey);
 const token = "test-token";
 
 function resetData() {
@@ -51,6 +55,23 @@ async function api(path: string, options: { method?: string; body?: unknown; hea
   if (!res) throw new Error(`No response for ${path}`);
   const payload = await res.json().catch(() => ({}));
   return { res, payload };
+}
+
+function nip98Headers(path: string, method = "GET", body?: unknown) {
+  const tags = [
+    ["u", `http://kindling.test${path}`],
+    ["method", method],
+  ];
+  if (["POST", "PUT", "PATCH"].includes(method)) {
+    tags.push(["payload", bytesToHex(sha256(new TextEncoder().encode(JSON.stringify(body ?? {}))))]);
+  }
+  const event = finalizeEvent({
+    kind: 27235,
+    created_at: Math.floor(Date.now() / 1000),
+    tags,
+    content: "",
+  }, secretKey);
+  return { authorization: `Nostr ${btoa(JSON.stringify(event))}` };
 }
 
 function seedKindlingRun(roleKey: string, requestId: string, webhookToken: string) {
@@ -205,6 +226,36 @@ describe("Kindling API contracts", () => {
     expect(strategy).toMatchObject({ strategy_type: "google", query: "HVAC Perth", result_count: 1, notes: "page 1" });
   });
 
+  test("exposes scan context over NIP-98 for strategy planning", async () => {
+    db.query(`
+      INSERT INTO companies(id, name, location, industry, website, data_ring, duplicate_status, enrichment_status, confidence, profile_json, created_at, updated_at)
+      VALUES ('company-context', 'Context Accounting', 'Perth', 'Accounting', 'https://context.example', 'seed', 'unknown', 'not_started', 0.7, '{}', 1, 1)
+    `).run();
+    db.query("INSERT INTO discovery_jobs(id, industry, location, status, created_at, updated_at) VALUES ('context-scan', 'Accounting', 'Perth', 'complete', 1, 1)").run();
+    db.query(`
+      INSERT INTO scan_strategy_attempts(id, discovery_job_id, industry, location, strategy_type, query, status, result_count, notes, payload_json, created_at)
+      VALUES ('strategy-context', 'context-scan', 'Accounting', 'Perth', 'google', 'accountants Perth page 1', 'searched', 1, 'first page', '{}', 1)
+    `).run();
+    const path = "/api/nip98/kindling/scan-context?industry=Accounting&location=Perth&targetCount=256";
+    const { res, payload } = await api(path, { headers: nip98Headers(path) });
+    expect(res.status).toBe(200);
+    expect(payload.scanContext).toMatchObject({
+      industry: "Accounting",
+      location: "Perth",
+      targetCount: 256,
+      scanMode: "batch",
+      currentCounts: {
+        matchingCompanies: 1,
+        withWebsite: 1,
+      },
+    });
+    expect(payload.scanContext.priorScanStrategies[0]).toMatchObject({
+      strategyType: "google",
+      query: "accountants Perth page 1",
+      resultCount: 1,
+    });
+  });
+
   test("accepts scan write callback once before completion webhook", async () => {
     db.query("INSERT INTO discovery_jobs(id, industry, location, status, created_at, updated_at) VALUES ('scan-write-request', 'Accounting', 'Subiaco', 'queued', 1, 1)").run();
     seedKindlingRun("scan_target_list", "scan-write-request", "scan-write-token");
@@ -241,6 +292,29 @@ describe("Kindling API contracts", () => {
     expect(webhook.res.status).toBe(200);
     const count = db.query("SELECT COUNT(*) AS count FROM companies WHERE name = 'Write Once Co'").get() as { count: number };
     expect(count.count).toBe(1);
+  });
+
+  test("accepts repeatable NIP-98 scan result writes without direct DB access", async () => {
+    db.query("INSERT INTO discovery_jobs(id, industry, location, status, created_at, updated_at) VALUES ('nip98-scan-write', 'Accounting', 'Perth', 'queued', 1, 1)").run();
+    const path = "/api/nip98/kindling/scan-results";
+    const body = {
+      requestId: "nip98-scan-write",
+      result: {
+        outputKind: "target_scan_result",
+        industry: "Accounting",
+        location: "Perth",
+        companies: [{ name: "Loop Accounting", website: "https://loop.example", confidence: 0.8 }],
+        searchSlices: [{ industry: "Accounting", location: "Perth", strategyType: "directory", query: "Xero advisors Perth", status: "searched", resultCount: 1 }],
+      },
+    };
+    const first = await api(path, { method: "POST", body, headers: nip98Headers(path, "POST", body) });
+    const second = await api(path, { method: "POST", body, headers: nip98Headers(path, "POST", body) });
+    expect(first.res.status).toBe(200);
+    expect(second.res.status).toBe(200);
+    const companyCount = db.query("SELECT COUNT(*) AS count FROM companies WHERE name = 'Loop Accounting'").get() as { count: number };
+    const strategyCount = db.query("SELECT COUNT(*) AS count FROM scan_strategy_attempts WHERE query = 'Xero advisors Perth'").get() as { count: number };
+    expect(companyCount.count).toBe(1);
+    expect(strategyCount.count).toBe(1);
   });
 
   test("accepts documented enrichment webhook callback", async () => {
