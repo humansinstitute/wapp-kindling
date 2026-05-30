@@ -18,6 +18,7 @@ function resetData() {
     "outreach_drafts",
     "target_rankings",
     "enrichment_requests",
+    "scan_strategy_attempts",
     "discovery_jobs",
     "activities",
     "sources",
@@ -97,7 +98,12 @@ describe("Kindling API contracts", () => {
       pipelineRole: "scan_target_list",
       industry: "HVAC",
       location: "Perth",
+      targetCount: 25,
+      scanMode: "interactive",
       localContext: {
+        targetCount: 25,
+        scanMode: "interactive",
+        priorScanStrategies: [],
         writeApi: {
           authHeader: "x-kindling-pipeline-token",
         },
@@ -188,12 +194,15 @@ describe("Kindling API contracts", () => {
           industry: "HVAC",
           location: "Perth",
           companies: [{ name: "North HVAC", website: "https://north.example", confidence: 0.8 }],
+          searchSlices: [{ industry: "HVAC", location: "Perth", strategyType: "google", query: "HVAC Perth", status: "searched", resultCount: 1, notes: "page 1" }],
         },
       },
     });
     expect(res.status).toBe(200);
     const company = db.query("SELECT name, industry, location, website FROM companies LIMIT 1").get() as Record<string, string>;
     expect(company).toMatchObject({ name: "North HVAC", industry: "HVAC", location: "Perth", website: "https://north.example" });
+    const strategy = db.query("SELECT strategy_type, query, result_count, notes FROM scan_strategy_attempts LIMIT 1").get() as Record<string, string | number>;
+    expect(strategy).toMatchObject({ strategy_type: "google", query: "HVAC Perth", result_count: 1, notes: "page 1" });
   });
 
   test("accepts scan write callback once before completion webhook", async () => {

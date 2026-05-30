@@ -170,12 +170,29 @@ CREATE TABLE IF NOT EXISTS discovery_jobs (
   id TEXT PRIMARY KEY,
   industry TEXT NOT NULL,
   location TEXT NOT NULL,
+  target_count INTEGER NOT NULL DEFAULT 25,
+  scan_mode TEXT NOT NULL DEFAULT 'interactive',
   status TEXT NOT NULL,
   company_count INTEGER NOT NULL DEFAULT 0,
   source_count INTEGER NOT NULL DEFAULT 0,
   summary TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS scan_strategy_attempts (
+  id TEXT PRIMARY KEY,
+  discovery_job_id TEXT NOT NULL,
+  industry TEXT NOT NULL,
+  location TEXT NOT NULL,
+  strategy_type TEXT NOT NULL,
+  query TEXT NOT NULL,
+  status TEXT NOT NULL,
+  result_count INTEGER NOT NULL DEFAULT 0,
+  notes TEXT NOT NULL DEFAULT '',
+  payload_json TEXT NOT NULL DEFAULT '{}',
+  created_at INTEGER NOT NULL,
+  FOREIGN KEY (discovery_job_id) REFERENCES discovery_jobs(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS enrichment_requests (
@@ -213,6 +230,8 @@ CREATE TABLE IF NOT EXISTS outreach_drafts (
 
 for (const migration of [
   "ALTER TABLE pipeline_runs ADD COLUMN trigger_payload_json TEXT",
+  "ALTER TABLE discovery_jobs ADD COLUMN target_count INTEGER NOT NULL DEFAULT 25",
+  "ALTER TABLE discovery_jobs ADD COLUMN scan_mode TEXT NOT NULL DEFAULT 'interactive'",
   "DELETE FROM access_rules WHERE role = 'login'",
 ]) {
   try {

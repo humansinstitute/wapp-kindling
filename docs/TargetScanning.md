@@ -17,6 +17,7 @@ The scan form should include:
 - Optional company size hints.
 - Optional targeting notes.
 - Optional source preferences.
+- Target count, currently capped at 2,000.
 - Batch size or effort level.
 
 The first version should start with a simple research form rather than dropdown-heavy taxonomy controls. The core fields are free-text industry and free-text location. The WApp should send these fields to the configured Autopilot scan pipeline, which can expand, clean, and decompose the search into smaller slices.
@@ -57,12 +58,15 @@ A scan should:
 6. Record which fields are missing.
 7. Create activities describing what was attempted and what was found.
 8. Mark records for follow-up enrichment when promising but incomplete.
+9. Persist search strategy attempts, including query/source type, geography, status, result count, and notes.
 
 The WApp should prefer breadth first, then depth. A first scan can produce many partial records, then later enrichment jobs improve the promising parts of the list.
 
 The first practical scan mode can be agent-led: the user gives a plain instruction such as "find up to 1,000 air conditioning companies in the Perth metro area" or "find every accountant in Subiaco and Northbridge". Autopilot can then run one or more long-running agent sessions, search the public web, break the request into smaller geography or sub-industry slices, and write discovered records back into the WApp database through WApp APIs.
 
 These scans may run for hours. The WApp should treat them as background discovery jobs with visible progress, partial results, and resumable state rather than as synchronous UI requests.
+
+Repeated scans should optimise for net-new records. The WApp passes previous search strategy attempts to Autopilot so the next run can vary geography, source type, search-result depth, directory, association list, registry source, or suburb/category slice instead of repeating the same first-page search.
 
 The discovery session should stay focused on company discovery. It should not try to deeply profile every company, identify every person, score fit, monitor signals, and draft outreach in the same pass. Those activities belong to later pipeline stages.
 

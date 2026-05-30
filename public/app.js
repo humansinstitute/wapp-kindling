@@ -345,6 +345,7 @@ function renderKindlingView(data, company, canEdit) {
         <h2>Build target list</h2>
         <label><span>Industry</span><input id="scanIndustry" value="B2B services" /></label>
         <label><span>Location</span><input id="scanLocation" value="Perth" /></label>
+        <label><span>Target count</span><input id="scanTargetCount" type="number" min="1" max="2000" step="25" value="100" /></label>
         <div class="formActions">
           <button type="submit" ${canEdit ? "" : "disabled"}>Run scan role</button>
         </div>
@@ -538,7 +539,11 @@ async function handleKindlingSubmit(event) {
     }
     if (form.dataset.form === "scan") {
       setKindlingStatus("Running scan role");
-      await startKindlingPipeline("/api/kindling/target-scans", { industry: $("scanIndustry").value.trim(), location: $("scanLocation").value.trim() });
+      await startKindlingPipeline("/api/kindling/target-scans", {
+        industry: $("scanIndustry").value.trim(),
+        location: $("scanLocation").value.trim(),
+        targetCount: Number($("scanTargetCount").value || 25),
+      });
       await refreshKindlingSoon();
       setKindlingStatus("Target scan complete");
     }

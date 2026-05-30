@@ -118,7 +118,7 @@ The profile patch includes `title`, `summary`, `positioningStatement`, `services
 
 `kindling-scan-target-list` has two steps:
 
-1. `discover-target-companies`: an agent step that uses the free-text industry/location brief and available source tools to produce source-backed candidate companies. If source-backed discovery is unavailable, it returns a search plan and warnings rather than inventing records.
+1. `discover-target-companies`: an agent step that uses the free-text industry/location brief, target count, scan mode, prior search strategy attempts, and available source tools to produce source-backed candidate companies. If source-backed discovery is unavailable, it returns a search plan and warnings rather than inventing records.
 2. `persist-target-scan`: a deterministic function that normalises the result, writes a companies JSON artifact, and delivers the same records to the WApp persistence path.
 
 The code step writes a JSON file before callback delivery so the discovered company batch is inspectable outside the agent transcript. By default artifacts are written under:
@@ -128,6 +128,8 @@ The code step writes a JSON file before callback delivery so the discovered comp
 ```
 
 The WApp remains the owner of SQLite. The pipeline does not open the SQLite database directly. It sends the normalized companies to `localContext.writeApi` when configured, or to the normal webhook callback path. The WApp endpoint should perform the actual SQLite insert/update and duplicate marking.
+
+For repeat scans, the WApp includes `localContext.priorScanStrategies`. The pipeline should use this to avoid repeating the same first-page searches and should return `searchSlices` with `strategyType`, `query`, `status`, `resultCount`, and `notes` so later runs can improve coverage.
 
 It returns:
 

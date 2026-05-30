@@ -186,12 +186,47 @@ function recordActivity(targetType: string, targetId: string, actor: string, act
   `).run(crypto.randomUUID(), targetType, targetId, actor, actionType, summary, JSON.stringify(payload), Date.now());
 }
 
+function clampTargetCount(value: unknown): number {
+  const parsed = Math.floor(Number(value));
+  if (!Number.isFinite(parsed) || parsed < 1) return 25;
+  return Math.min(parsed, 2000);
+}
+
+function scanModeForTargetCount(targetCount: number) {
+  if (targetCount >= 500) return "bulk";
+  if (targetCount >= 100) return "batch";
+  return "interactive";
+}
+
+function listScanStrategyHistory(industry: string, location: string, limit = 30) {
+  const rows = db.query(`
+    SELECT sat.*
+    FROM scan_strategy_attempts sat
+    WHERE lower(sat.industry) = lower(?1)
+       OR lower(sat.location) = lower(?2)
+       OR lower(sat.industry || ' ' || sat.location) LIKE lower(?3)
+    ORDER BY sat.created_at DESC
+    LIMIT ?4
+  `).all(industry, location, `%${industry} ${location}%`, limit) as Record<string, unknown>[];
+  return rows.map((row) => ({
+    strategyType: String(row.strategy_type),
+    query: String(row.query),
+    status: String(row.status),
+    resultCount: Number(row.result_count),
+    notes: String(row.notes ?? ""),
+    industry: String(row.industry),
+    location: String(row.location),
+    createdAt: Number(row.created_at),
+  }));
+}
+
 function buildKindlingRoleFields(roleKey: string, context: Record<string, unknown>) {
   if (roleKey === "scan_target_list") {
     return {
       industry: String(context.industry ?? ""),
       location: String(context.location ?? ""),
       targetCount: Number(context.targetCount ?? 25),
+      scanMode: String(context.scanMode ?? scanModeForTargetCount(Number(context.targetCount ?? 25))),
     };
   }
   if (roleKey === "enrich_company" || roleKey === "draft_outreach") {
@@ -458,6 +493,8 @@ function normalizeKindlingCallbackRecords(roleKey: string, body: Record<string, 
       location: result.location,
       coverage: objectRecord(result.coverage),
       possibleDuplicates: Array.isArray(result.possibleDuplicates) ? result.possibleDuplicates : [],
+      searchSlices: Array.isArray(result.searchSlices) ? result.searchSlices : [],
+      warnings: Array.isArray(result.warnings) ? result.warnings : [],
     };
   }
 
@@ -576,6 +613,27 @@ function applyKindlingCallback(body: Record<string, unknown>, token: string) {
     }
     db.query("UPDATE discovery_jobs SET status = 'complete', company_count = ?1, source_count = ?1, summary = ?2, updated_at = ?3 WHERE id = ?4")
       .run(companyCount, String(body.response ?? "Scan complete"), now, requestId);
+    const slices = Array.isArray(records.searchSlices) ? records.searchSlices as Record<string, unknown>[] : [];
+    for (const slice of slices) {
+      db.query(`
+        INSERT INTO scan_strategy_attempts(
+          id, discovery_job_id, industry, location, strategy_type, query, status, result_count, notes, payload_json, created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+      `).run(
+        crypto.randomUUID(),
+        requestId,
+        String(slice.industry ?? records.industry ?? ""),
+        String(slice.location ?? records.location ?? ""),
+        String(slice.strategyType ?? slice.strategy ?? "search"),
+        String(slice.query ?? ""),
+        String(slice.status ?? "searched"),
+        Number(slice.resultCount ?? slice.companiesFound ?? 0),
+        String(slice.notes ?? ""),
+        JSON.stringify(slice),
+        now,
+      );
+    }
   }
 
   if (!alreadyApplied && roleKey === "enrich_company") {
@@ -893,22 +951,27 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     const body = await readJson(req);
     const industry = String(body.industry ?? "").trim();
     const location = String(body.location ?? "").trim();
+    const targetCount = clampTargetCount(body.targetCount);
+    const scanMode = scanModeForTargetCount(targetCount);
     if (!industry || !location) return json({ error: "industry and location are required" }, 400);
     const now = Date.now();
     const jobId = crypto.randomUUID();
     db.query(`
-      INSERT INTO discovery_jobs(id, industry, location, status, created_at, updated_at)
-      VALUES (?1, ?2, ?3, 'queued', ?4, ?4)
-    `).run(jobId, industry, location, now);
+      INSERT INTO discovery_jobs(id, industry, location, target_count, scan_mode, status, created_at, updated_at)
+      VALUES (?1, ?2, ?3, ?4, ?5, 'queued', ?6, ?6)
+    `).run(jobId, industry, location, targetCount, scanMode, now);
     const webhookToken = crypto.randomUUID().replaceAll("-", "");
     const triggerRequest = buildKindlingTriggerRequest({
       roleKey: "scan_target_list",
       localRequestId: jobId,
-      message: `Find target companies for ${industry} in ${location}`,
+      message: `Find up to ${targetCount} target companies for ${industry} in ${location}`,
       context: {
         industry,
         location,
+        targetCount,
+        scanMode,
         profile: getCurrentMarketProfile(),
+        priorScanStrategies: listScanStrategyHistory(industry, location),
         writeApi: {
           url: `${webhookOrigin(req)}/api/kindling/pipeline-write/target-scan`,
           token: webhookToken,
