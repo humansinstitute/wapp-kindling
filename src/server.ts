@@ -19,6 +19,7 @@ import { db, getSetting, mapChat, mapMessage, setSetting, type AccessRole, type 
 import { buildPipelineTriggerRequest, startPreparedChatPipeline, type PipelineTriggerRequest } from "./pipeline.ts";
 
 const PUBLIC_DIR = join(import.meta.dir, "..", "public");
+const COMPANY_LIST_LIMIT = 500;
 
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), {
@@ -319,6 +320,13 @@ function buildKindlingRoleFields(roleKey: string, context: Record<string, unknow
       companyName: String(context.companyName ?? ""),
     };
   }
+  if (roleKey === "enrich_industry_segment") {
+    return {
+      industry: String(context.industry ?? ""),
+      batchId: String(context.batchId ?? ""),
+      batchSize: Number(context.batchSize ?? 0),
+    };
+  }
   if (roleKey === "develop_service_offering") {
     return {
       history: Array.isArray(context.history) ? context.history : [],
@@ -326,6 +334,35 @@ function buildKindlingRoleFields(roleKey: string, context: Record<string, unknow
   }
   return {};
 }
+
+const INDUSTRY_ENRICHMENT_BATCH_LIMIT = 21;
+const INDUSTRY_ENRICHMENT_STRATEGIES = [
+  {
+    key: "official_website",
+    label: "Official website",
+    instruction: "Find or verify the company's official website, services, operating areas, and public contact paths.",
+  },
+  {
+    key: "search_results",
+    label: "Search result corroboration",
+    instruction: "Check independent search results/directories for corroborating summaries and alternative public URLs.",
+  },
+  {
+    key: "blog_news_resources",
+    label: "Blog, news, and resources",
+    instruction: "Look for blogs, news, publications, case studies, resources, or updates that indicate active practice areas and business signals.",
+  },
+  {
+    key: "people_team",
+    label: "People and team",
+    instruction: "Identify publicly listed employees, partners, team pages, leadership, or hiring signals without collecting private data.",
+  },
+  {
+    key: "fit_signals",
+    label: "Kindling fit signals",
+    instruction: "Summarise service-fit signals, operating complexity, visible gaps, and caveats for downstream scoring/outreach.",
+  },
+];
 
 function buildKindlingTriggerRequest(input: {
   roleKey: string;
@@ -388,7 +425,7 @@ function createKindlingRun(input: {
   return id;
 }
 
-function listCompanies(filters: URLSearchParams | null = null) {
+function buildCompanyFilterQuery(filters: URLSearchParams | null = null) {
   const clauses: string[] = [];
   const values: string[] = [];
   const add = (column: string, value: string | null) => {
@@ -404,8 +441,82 @@ function listCompanies(filters: URLSearchParams | null = null) {
   if (filters?.get("hasWebsite") === "yes") clauses.push("website IS NOT NULL AND website != ''");
   if (filters?.get("hasWebsite") === "no") clauses.push("(website IS NULL OR website = '')");
   const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
-  const rows = db.query(`SELECT * FROM companies ${where} ORDER BY updated_at DESC, name ASC LIMIT 500`).all(...values) as Record<string, unknown>[];
+  return { where, values };
+}
+
+function countCompanies(filters: URLSearchParams | null = null) {
+  const { where, values } = buildCompanyFilterQuery(filters);
+  const row = db.query(`SELECT COUNT(*) AS count FROM companies ${where}`).get(...values) as { count: number } | null;
+  return Number(row?.count ?? 0);
+}
+
+function countOutreachReadyCompanies() {
+  const row = db.query("SELECT COUNT(*) AS count FROM companies WHERE enrichment_status = 'complete'").get() as { count: number } | null;
+  return Number(row?.count ?? 0);
+}
+
+function listCompanies(filters: URLSearchParams | null = null) {
+  const { where, values } = buildCompanyFilterQuery(filters);
+  const rows = db.query(`SELECT * FROM companies ${where} ORDER BY updated_at DESC, name ASC LIMIT ${COMPANY_LIST_LIMIT}`).all(...values) as Record<string, unknown>[];
   return rows.map(mapCompany);
+}
+
+function normaliseIndustryBatchLimit(value: unknown): number {
+  const parsed = Math.floor(Number(value));
+  if (!Number.isFinite(parsed) || parsed < 1) return INDUSTRY_ENRICHMENT_BATCH_LIMIT;
+  return Math.min(parsed, INDUSTRY_ENRICHMENT_BATCH_LIMIT);
+}
+
+function listEnrichmentIndustries() {
+  const rows = db.query(`
+    SELECT
+      COALESCE(NULLIF(TRIM(industry), ''), '(blank)') AS industry,
+      SUM(CASE WHEN enrichment_status IN ('not_started', 'failed') THEN 1 ELSE 0 END) AS unprocessed_count,
+      SUM(CASE WHEN enrichment_status = 'not_started' THEN 1 ELSE 0 END) AS not_started_count,
+      SUM(CASE WHEN enrichment_status = 'failed' THEN 1 ELSE 0 END) AS failed_count,
+      SUM(CASE WHEN enrichment_status = 'queued' THEN 1 ELSE 0 END) AS queued_count,
+      SUM(CASE WHEN enrichment_status = 'complete' THEN 1 ELSE 0 END) AS complete_count
+    FROM companies
+    GROUP BY COALESCE(NULLIF(TRIM(industry), ''), '(blank)')
+    HAVING unprocessed_count > 0
+    ORDER BY unprocessed_count DESC, industry ASC
+  `).all() as Record<string, unknown>[];
+  return rows.map((row) => ({
+    industry: String(row.industry ?? ""),
+    unprocessedCount: Number(row.unprocessed_count ?? 0),
+    notStartedCount: Number(row.not_started_count ?? 0),
+    failedCount: Number(row.failed_count ?? 0),
+    queuedCount: Number(row.queued_count ?? 0),
+    completeCount: Number(row.complete_count ?? 0),
+  }));
+}
+
+function listCompaniesForIndustryEnrichment(industry: string, limit: number) {
+  const rows = db.query(`
+    SELECT *
+    FROM companies
+    WHERE COALESCE(NULLIF(TRIM(industry), ''), '(blank)') = ?1
+      AND enrichment_status IN ('not_started', 'failed')
+    ORDER BY updated_at ASC, name ASC
+    LIMIT ?2
+  `).all(industry, limit) as Record<string, unknown>[];
+  return rows.map(mapCompany);
+}
+
+function knownSourcesForCompany(companyId: string) {
+  return (db.query(`
+    SELECT source_type, url, summary, confidence, created_at
+    FROM sources
+    WHERE company_id = ?1
+    ORDER BY confidence DESC, created_at DESC
+    LIMIT 12
+  `).all(companyId) as Record<string, unknown>[]).map((source) => ({
+    type: String(source.source_type ?? ""),
+    url: String(source.url ?? ""),
+    summary: String(source.summary ?? ""),
+    confidence: Number(source.confidence ?? 0),
+    createdAt: Number(source.created_at ?? 0),
+  }));
 }
 
 function scanJobInputFromRun(run: Record<string, unknown> | null, job: ReturnType<typeof mapDiscoveryJob>) {
@@ -421,6 +532,65 @@ function scanJobInputFromRun(run: Record<string, unknown> | null, job: ReturnTyp
     scanMode: String(input.scanMode ?? job.scanMode),
     pipelineRole: String(input.pipelineRole ?? input.roleKey ?? "scan_target_list"),
   };
+}
+
+async function fetchAutopilotPipelineRun(autopilotRunId: string) {
+  if (!autopilotRunId) return null;
+  const autopilotUrl = toServerAutopilotUrl(getAppSettings().autopilotUrl);
+  const runUrl = new URL(`/api/pipelines/runs/${encodeURIComponent(autopilotRunId)}`, autopilotUrl);
+  runUrl.searchParams.set("includePayload", "1");
+  try {
+    const res = await fetch(runUrl);
+    if (!res.ok) return null;
+    const payload = await res.json().catch(() => null) as Record<string, unknown> | null;
+    return objectRecord(payload?.run);
+  } catch {
+    return null;
+  }
+}
+
+function markKindlingRunFailedFromAutopilot(run: Record<string, unknown>, error: string) {
+  const now = Date.now();
+  const roleKey = String(run.role_key ?? "");
+  const requestId = String(run.local_request_id ?? "");
+  const persistedCount = roleKey === "scan_target_list" ? matchingCompanyCountForJob(requestId) : 0;
+  const localStatus = persistedCount > 0 ? "partial_failed" : "failed";
+  db.query(`
+    UPDATE kindling_pipeline_runs
+    SET status = ?1, error = ?2, updated_at = ?3
+    WHERE id = ?4
+  `).run(localStatus, error, now, String(run.id));
+
+  if (roleKey === "scan_target_list") {
+    const summary = persistedCount > 0
+      ? `Scan stopped after writing ${persistedCount} companies: ${error}`
+      : `Scan failed before writing companies: ${error}`;
+    db.query(`
+      UPDATE discovery_jobs
+      SET status = ?1,
+          company_count = MAX(company_count, ?2),
+          summary = ?3,
+          updated_at = ?4
+      WHERE id = ?5
+    `).run(localStatus, persistedCount, summary, now, requestId);
+  }
+}
+
+async function reconcileActiveKindlingRuns() {
+  const rows = db.query(`
+    SELECT *
+    FROM kindling_pipeline_runs
+    WHERE status IN ('queued', 'running')
+      AND COALESCE(autopilot_run_id, '') != ''
+    ORDER BY updated_at ASC
+    LIMIT 12
+  `).all() as Record<string, unknown>[];
+  for (const row of rows) {
+    const remoteRun = await fetchAutopilotPipelineRun(String(row.autopilot_run_id ?? ""));
+    const remoteStatus = String(remoteRun?.status ?? "");
+    if (remoteStatus !== "error") continue;
+    markKindlingRunFailedFromAutopilot(row, String(remoteRun?.error ?? "Autopilot pipeline failed"));
+  }
 }
 
 function getDiscoveryJobDetail(jobId: string) {
@@ -914,6 +1084,68 @@ function findKindlingRun(requestId: string, roleKey: string, token: string) {
   `).get(requestId, roleKey, token) as Record<string, unknown> | null;
 }
 
+function persistCompanyEnrichment(input: {
+  company: Record<string, unknown> | undefined;
+  response: string;
+  requestId: string;
+  runId: string;
+  now?: number;
+}) {
+  const company = input.company;
+  const now = input.now ?? Date.now();
+  const sources = Array.isArray(company?.sources) ? company.sources as Record<string, unknown>[] : [];
+  const companyId = String(company?.id ?? input.requestId);
+  const existing = db.query("SELECT * FROM companies WHERE id = ?1").get(companyId) as Record<string, unknown> | null;
+  const profile = { ...jsonParse<Record<string, unknown>>(existing?.profile_json, {}), ...(company?.profile as Record<string, unknown> | undefined ?? {}) };
+  db.query(`
+    UPDATE companies
+    SET website = COALESCE(NULLIF(?1, ''), website),
+        data_ring = ?2,
+        enrichment_status = ?3,
+        confidence = ?4,
+        profile_json = ?5,
+        updated_at = ?6
+    WHERE id = ?7
+  `).run(String(company?.website ?? ""), String(company?.dataRing ?? "enriched"), String(company?.enrichmentStatus ?? "complete"), Number(company?.confidence ?? 0.75), JSON.stringify(profile), now, companyId);
+
+  const requestRow = db.query(`
+    SELECT id
+    FROM enrichment_requests
+    WHERE (id = ?1 OR company_id = ?2)
+      AND status IN ('queued', 'running')
+    ORDER BY CASE WHEN id = ?1 THEN 0 ELSE 1 END, created_at DESC
+    LIMIT 1
+  `).get(input.requestId, companyId) as Record<string, unknown> | null;
+  if (requestRow) {
+    db.query("UPDATE enrichment_requests SET status = 'complete', summary = ?1, updated_at = ?2 WHERE id = ?3")
+      .run(input.response || "Enrichment complete", now, String(requestRow.id));
+  }
+
+  if (sources.length) {
+    for (const source of sources) {
+      db.query(`
+        INSERT INTO sources(id, company_id, source_type, url, summary, confidence, created_at)
+        VALUES (?1, ?2, 'pipeline_enrichment', ?3, ?4, ?5, ?6)
+      `).run(
+        crypto.randomUUID(),
+        companyId,
+        String(source.url ?? ""),
+        String(source.summary ?? source.title ?? "Pipeline enrichment source"),
+        Number(source.confidence ?? company?.confidence ?? 0.75),
+        now,
+      );
+    }
+  } else {
+    db.query(`
+      INSERT INTO sources(id, company_id, source_type, url, summary, confidence, created_at)
+      VALUES (?1, ?2, 'stub_enrichment', ?3, ?4, ?5, ?6)
+    `).run(crypto.randomUUID(), companyId, String(company?.website ?? ""), String(company?.sourceSummary ?? "Stub enrichment source"), Number(company?.confidence ?? 0.75), now);
+  }
+  recordActivity("company", companyId, "pipeline", "company_enriched", input.response || "Enrichment complete", { requestId: input.requestId, runId: input.runId });
+  upsertTargetRanking(companyId, "Enriched company with stronger service fit signals.", { fit: Number(company?.confidence ?? 0.75) });
+  return { companyId, sourceCount: sources.length || 1 };
+}
+
 function applyKindlingCallback(body: Record<string, unknown>, token: string) {
   const requestId = String(body.requestId ?? "");
   const roleKey = String(body.role ?? body.roleKey ?? "");
@@ -959,44 +1191,25 @@ function applyKindlingCallback(body: Record<string, unknown>, token: string) {
 
   if (!alreadyApplied && roleKey === "enrich_company") {
     const company = records.company as Record<string, unknown> | undefined;
-    const sources = Array.isArray(company?.sources) ? company.sources as Record<string, unknown>[] : [];
-    const companyId = String(company?.id ?? requestId);
-    const existing = db.query("SELECT * FROM companies WHERE id = ?1").get(companyId) as Record<string, unknown> | null;
-    const profile = { ...jsonParse<Record<string, unknown>>(existing?.profile_json, {}), ...(company?.profile as Record<string, unknown> | undefined ?? {}) };
-    db.query(`
-      UPDATE companies
-      SET website = COALESCE(NULLIF(?1, ''), website),
-          data_ring = ?2,
-          enrichment_status = ?3,
-          confidence = ?4,
-          profile_json = ?5,
-          updated_at = ?6
-      WHERE id = ?7
-    `).run(String(company?.website ?? ""), String(company?.dataRing ?? "enriched"), String(company?.enrichmentStatus ?? "complete"), Number(company?.confidence ?? 0.75), JSON.stringify(profile), now, companyId);
-    db.query("UPDATE enrichment_requests SET status = 'complete', summary = ?1, updated_at = ?2 WHERE id = ?3")
-      .run(String(body.response ?? "Enrichment complete"), now, requestId);
-    if (sources.length) {
-      for (const source of sources) {
-        db.query(`
-          INSERT INTO sources(id, company_id, source_type, url, summary, confidence, created_at)
-          VALUES (?1, ?2, 'pipeline_enrichment', ?3, ?4, ?5, ?6)
-        `).run(
-          crypto.randomUUID(),
-          companyId,
-          String(source.url ?? ""),
-          String(source.summary ?? source.title ?? "Pipeline enrichment source"),
-          Number(source.confidence ?? company?.confidence ?? 0.75),
-          now,
-        );
-      }
-    } else {
-      db.query(`
-        INSERT INTO sources(id, company_id, source_type, url, summary, confidence, created_at)
-        VALUES (?1, ?2, 'stub_enrichment', ?3, ?4, ?5, ?6)
-      `).run(crypto.randomUUID(), companyId, String(company?.website ?? ""), String(company?.sourceSummary ?? "Stub enrichment source"), Number(company?.confidence ?? 0.75), now);
-    }
-    recordActivity("company", companyId, "pipeline", "company_enriched", String(body.response ?? "Enrichment complete"), { requestId });
-    upsertTargetRanking(companyId, "Enriched company with stronger service fit signals.", { fit: Number(company?.confidence ?? 0.75) });
+    persistCompanyEnrichment({
+      company,
+      response: String(body.response ?? "Enrichment complete"),
+      requestId,
+      runId: String(run.id),
+      now,
+    });
+  }
+
+  if (!alreadyApplied && roleKey === "enrich_industry_segment") {
+    const result = objectRecord(body.result);
+    recordActivity(
+      "industry",
+      requestId,
+      "pipeline",
+      "industry_enrichment_batch_complete",
+      String(body.response ?? `Industry enrichment batch complete for ${String(result.industry ?? "industry segment")}`),
+      { requestId, runId: run.id },
+    );
   }
 
   if (!alreadyApplied && roleKey === "draft_outreach") {
@@ -1182,6 +1395,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
   if (pathname === "/api/kindling/summary" && req.method === "GET") {
     const session = requireSession(req);
     if (!session) return json({ error: "unauthorized" }, 401);
+    await reconcileActiveKindlingRuns();
     const companies = listCompanies();
     const recentRuns = (db.query("SELECT * FROM kindling_pipeline_runs ORDER BY updated_at DESC LIMIT 12").all() as Record<string, unknown>[]).map(mapRun);
     const discoveryJobs = (db.query("SELECT * FROM discovery_jobs ORDER BY updated_at DESC LIMIT 8").all() as Record<string, unknown>[]).map(mapDiscoveryJob);
@@ -1200,17 +1414,92 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
       pipelineRoles: listPipelineRoles(),
       recentRuns,
       counts: {
-        companies: companies.length,
-        outreachReady: companies.filter((company) => company.enrichmentStatus === "complete").length,
+        companies: countCompanies(),
+        outreachReady: countOutreachReadyCompanies(),
         activeRuns: recentRuns.filter((run) => ["queued", "running", "mock"].includes(run.status)).length,
       },
+      companyList: {
+        returned: companies.length,
+        total: countCompanies(),
+        limit: COMPANY_LIST_LIMIT,
+      },
     });
+  }
+
+  if (pathname === "/api/kindling/enrichment-industries" && req.method === "GET") {
+    const session = requireSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    return json({
+      industries: listEnrichmentIndustries(),
+      batchLimit: INDUSTRY_ENRICHMENT_BATCH_LIMIT,
+      strategies: INDUSTRY_ENRICHMENT_STRATEGIES,
+    });
+  }
+
+  const enrichIndustryMatch = pathname.match(/^\/api\/kindling\/enrichment-industries\/([^/]+)\/enrich$/);
+  if (enrichIndustryMatch && req.method === "POST") {
+    const session = requireEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const body = await readJson(req);
+    const industry = decodeURIComponent(enrichIndustryMatch[1]!).trim();
+    if (!industry) return json({ error: "industry is required" }, 400);
+    const limit = normaliseIndustryBatchLimit(body.limit);
+    const companies = listCompaniesForIndustryEnrichment(industry, limit);
+    if (!companies.length) return json({ error: "no unprocessed companies for this industry" }, 409);
+
+    const now = Date.now();
+    const batchId = crypto.randomUUID();
+    const webhookToken = crypto.randomUUID().replaceAll("-", "");
+    const companyIds = companies.map((company) => company.id);
+    for (const company of companies) {
+      db.query("INSERT INTO enrichment_requests(id, company_id, status, request_kind, summary, created_at, updated_at) VALUES (?1, ?2, 'queued', 'industry_batch', ?3, ?4, ?4)")
+        .run(crypto.randomUUID(), company.id, `Queued by industry batch ${batchId}`, now);
+    }
+    const placeholders = companyIds.map((_, index) => `?${index + 2}`).join(", ");
+    db.query(`UPDATE companies SET enrichment_status = 'queued', updated_at = ?1 WHERE id IN (${placeholders})`)
+      .run(now, ...companyIds);
+
+    const batchCompanies = companies.map((company) => ({
+      ...company,
+      knownSources: knownSourcesForCompany(company.id),
+    }));
+    const triggerRequest = buildKindlingTriggerRequest({
+      roleKey: "enrich_industry_segment",
+      localRequestId: batchId,
+      message: `Enrich up to ${companies.length} ${industry} companies`,
+      context: {
+        batchId,
+        industry,
+        batchSize: companies.length,
+        batchLimit: INDUSTRY_ENRICHMENT_BATCH_LIMIT,
+        companies: batchCompanies,
+        enrichmentStrategies: INDUSTRY_ENRICHMENT_STRATEGIES,
+        activeProfileVersion: getCurrentMarketProfile()?.version ?? null,
+        writeApi: {
+          url: `${webhookOrigin(req)}/api/kindling/pipeline-write/enrichment-company`,
+          token: webhookToken,
+          authHeader: "x-kindling-pipeline-token",
+          batchRequestId: batchId,
+        },
+      },
+      webhookUrl: `${webhookOrigin(req)}/api/kindling/pipeline-webhook`,
+      webhookToken,
+      userPubkey: session.pubkey,
+      userNpub: pubkeyToNpub(session.pubkey),
+    });
+    const runId = createKindlingRun({ roleKey: "enrich_industry_segment", localRequestId: batchId, triggerRequest, status: "queued" });
+    if (shouldDeferKindlingAutopilotAuth(body, "enrich_industry_segment")) {
+      return json({ requiresAutopilotAuth: true, runId, batchId, industry, batchSize: companies.length, triggerRequest }, 202);
+    }
+    await startKindlingRun(runId, typeof body.autopilotAuthorization === "string" ? body.autopilotAuthorization.trim() : "");
+    return json({ runId, batchId, industry, batchSize: companies.length, triggerRequest }, 201);
   }
 
   const discoveryJobMatch = pathname.match(/^\/api\/kindling\/discovery-jobs\/([^/]+)$/);
   if (discoveryJobMatch && req.method === "GET") {
     const session = requireSession(req);
     if (!session) return json({ error: "unauthorized" }, 401);
+    await reconcileActiveKindlingRuns();
     const detail = getDiscoveryJobDetail(decodeURIComponent(discoveryJobMatch[1]!));
     if (!detail) return json({ error: "discovery job not found" }, 404);
     return json(detail);
@@ -1330,7 +1619,13 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
   if (pathname === "/api/kindling/companies" && req.method === "GET") {
     const session = requireSession(req);
     if (!session) return json({ error: "unauthorized" }, 401);
-    return json({ companies: listCompanies(url.searchParams) });
+    const companies = listCompanies(url.searchParams);
+    return json({
+      companies,
+      total: countCompanies(url.searchParams),
+      returned: companies.length,
+      limit: COMPANY_LIST_LIMIT,
+    });
   }
 
   if (pathname === "/api/kindling/companies" && req.method === "POST") {
@@ -1507,6 +1802,39 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
       status: "running",
     });
     const persisted = persistScanRecords(requestId, records, String(body.response ?? "Scan batch written"), "running");
+    db.query("UPDATE kindling_pipeline_runs SET status = 'running', updated_at = ?1 WHERE id = ?2")
+      .run(Date.now(), String(run.id));
+    return json({ ok: true, persisted });
+  }
+
+  if (pathname === "/api/kindling/pipeline-write/enrichment-company" && req.method === "POST") {
+    const body = await readJson(req);
+    const token = req.headers.get("x-kindling-pipeline-token") || String(body.token ?? "");
+    const batchRequestId = String(body.batchRequestId ?? body.requestId ?? "").trim();
+    const run = batchRequestId && token ? findKindlingRun(batchRequestId, "enrich_industry_segment", token) : null;
+    if (!run) return json({ error: "webhook target not found" }, 400);
+    const records = normalizeKindlingCallbackRecords("enrich_company", {
+      ...body,
+      role: "enrich_company",
+    });
+    const company = objectRecord(records.company ?? body.company);
+    const companyId = String(company?.id ?? body.companyId ?? "").trim();
+    if (!companyId) return json({ error: "company id is required" }, 400);
+    const requestRow = db.query(`
+      SELECT id
+      FROM enrichment_requests
+      WHERE company_id = ?1
+        AND request_kind = 'industry_batch'
+        AND status IN ('queued', 'running')
+      ORDER BY created_at DESC
+      LIMIT 1
+    `).get(companyId) as Record<string, unknown> | null;
+    const persisted = persistCompanyEnrichment({
+      company: { ...company, id: companyId },
+      response: String(body.response ?? `Enriched ${companyId}`),
+      requestId: requestRow ? String(requestRow.id) : batchRequestId,
+      runId: String(run.id),
+    });
     db.query("UPDATE kindling_pipeline_runs SET status = 'running', updated_at = ?1 WHERE id = ?2")
       .run(Date.now(), String(run.id));
     return json({ ok: true, persisted });

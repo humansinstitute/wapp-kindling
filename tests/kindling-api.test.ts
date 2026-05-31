@@ -89,12 +89,13 @@ beforeEach(() => {
 
 describe("Kindling API contracts", () => {
   test("seeds and repairs documented working role slugs", () => {
-    const roles = db.query("SELECT role_key, active_pipeline_slug, expected_output_shape FROM pipeline_roles WHERE role_key IN ('develop_service_offering', 'scan_target_list', 'enrich_company', 'draft_outreach') ORDER BY role_key")
+    const roles = db.query("SELECT role_key, active_pipeline_slug, expected_output_shape FROM pipeline_roles WHERE role_key IN ('develop_service_offering', 'scan_target_list', 'enrich_company', 'enrich_industry_segment', 'draft_outreach') ORDER BY role_key")
       .all() as Array<Record<string, string>>;
     expect(roles.map((role) => role.active_pipeline_slug)).toEqual([
       "kindling-develop-service-offering",
       "kindling-draft-outreach",
       "kindling-enrich-company",
+      "kindling-enrich-industry-segment",
       "kindling-scan-target-list",
     ]);
 
@@ -134,6 +135,66 @@ describe("Kindling API contracts", () => {
       },
     });
     expect(payload.triggerRequest.body.input.roleKey).toBe("scan_target_list");
+  });
+
+  test("preserves exact round target counts", async () => {
+    const { res, payload } = await api("/api/kindling/target-scans", {
+      method: "POST",
+      body: { industry: "Legal Services", location: "Perth", targetCount: 1000 },
+    });
+    expect(res.status).toBe(201);
+    expect(payload.triggerRequest.body.input.targetCount).toBe(1000);
+    expect(payload.triggerRequest.body.input.scanMode).toBe("bulk");
+    const job = db.query("SELECT target_count, scan_mode FROM discovery_jobs WHERE id = ?1").get(payload.jobId) as Record<string, unknown>;
+    expect(job.target_count).toBe(1000);
+    expect(job.scan_mode).toBe("bulk");
+  });
+
+  test("lists unprocessed industries and queues an industry enrichment batch", async () => {
+    const now = Date.now();
+    db.query(`
+      INSERT INTO companies(id, name, location, industry, website, data_ring, duplicate_status, enrichment_status, confidence, profile_json, created_at, updated_at)
+      VALUES
+        ('tax-1', 'Tax One', 'Perth', 'Tax accountants', '', 'seed', 'unknown', 'not_started', 0.5, '{}', ?1, ?1),
+        ('tax-2', 'Tax Two', 'Perth', 'Tax accountants', '', 'seed', 'unknown', 'failed', 0.5, '{}', ?1, ?1),
+        ('tax-done', 'Tax Done', 'Perth', 'Tax accountants', '', 'enriched', 'unknown', 'complete', 0.8, '{}', ?1, ?1),
+        ('legal-1', 'Legal One', 'Perth', 'Legal Services', '', 'seed', 'unknown', 'not_started', 0.5, '{}', ?1, ?1)
+    `).run(now);
+
+    const list = await api("/api/kindling/enrichment-industries");
+    expect(list.payload.industries[0]).toMatchObject({
+      industry: "Tax accountants",
+      unprocessedCount: 2,
+      notStartedCount: 1,
+      failedCount: 1,
+    });
+    expect(list.payload.batchLimit).toBe(21);
+
+    const queued = await api("/api/kindling/enrichment-industries/Tax%20accountants/enrich", {
+      method: "POST",
+      body: { limit: 21 },
+    });
+    expect(queued.res.status).toBe(201);
+    expect(queued.payload.batchSize).toBe(2);
+    expect(queued.payload.triggerRequest.body.input).toMatchObject({
+      pipelineRole: "enrich_industry_segment",
+      industry: "Tax accountants",
+      batchSize: 2,
+    });
+    expect(queued.payload.triggerRequest.body.input.localContext).toMatchObject({
+      batchSize: 2,
+      batchLimit: 21,
+      writeApi: {
+        authHeader: "x-kindling-pipeline-token",
+      },
+    });
+    expect(queued.payload.triggerRequest.body.input.localContext.companies.map((company: { id: string }) => company.id)).toEqual(["tax-1", "tax-2"]);
+    const statuses = db.query("SELECT id, enrichment_status FROM companies WHERE id IN ('tax-1', 'tax-2', 'tax-done') ORDER BY id").all() as Array<Record<string, string>>;
+    expect(statuses).toEqual([
+      { id: "tax-1", enrichment_status: "queued" },
+      { id: "tax-2", enrichment_status: "queued" },
+      { id: "tax-done", enrichment_status: "complete" },
+    ]);
   });
 
   test("returns non-502 JSON when Autopilot pipeline discovery is unreachable", async () => {
@@ -360,6 +421,40 @@ describe("Kindling API contracts", () => {
     expect(strategyCount.count).toBe(1);
   });
 
+  test("reconciles errored Autopilot scan runs as partial failures when data was written", async () => {
+    db.query(`
+      INSERT INTO discovery_jobs(id, industry, location, target_count, status, company_count, created_at, updated_at)
+      VALUES ('scan-error', 'HVAC', 'Perth', 100, 'running', 3, 1, 1)
+    `).run();
+    db.query(`
+      INSERT INTO companies(id, name, location, industry, data_ring, duplicate_status, enrichment_status, confidence, profile_json, created_at, updated_at)
+      VALUES
+        ('c1', 'A HVAC', 'Perth', 'HVAC', 'seed', 'unknown', 'not_started', 0, '{}', 1, 1),
+        ('c2', 'B HVAC', 'Perth', 'HVAC', 'seed', 'unknown', 'not_started', 0, '{}', 1, 1),
+        ('c3', 'C HVAC', 'Perth', 'HVAC', 'seed', 'unknown', 'not_started', 0, '{}', 1, 1)
+    `).run();
+    seedKindlingRun("scan_target_list", "scan-error", "scan-token");
+    db.query("UPDATE kindling_pipeline_runs SET autopilot_run_id = 'remote-error-run' WHERE id = 'run-scan-error'").run();
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      expect(String(url)).toContain("/api/pipelines/runs/remote-error-run");
+      return Response.json({ run: { id: "remote-error-run", status: "error", error: "Request Entity Too Large" } });
+    }) as typeof fetch;
+    try {
+      const { res, payload } = await api("/api/kindling/summary");
+      expect(res.status).toBe(200);
+      const run = payload.recentRuns.find((entry: Record<string, unknown>) => entry.localRequestId === "scan-error");
+      const job = payload.discoveryJobs.find((entry: Record<string, unknown>) => entry.id === "scan-error");
+      expect(run.status).toBe("partial_failed");
+      expect(run.error).toBe("Request Entity Too Large");
+      expect(job.status).toBe("partial_failed");
+      expect(job.summary).toContain("Request Entity Too Large");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test("accepts documented enrichment webhook callback", async () => {
     db.query("INSERT INTO companies(id, name, data_ring, duplicate_status, enrichment_status, confidence, profile_json, created_at, updated_at) VALUES ('company-1', 'North HVAC', 'manual', 'unknown', 'queued', 0, '{}', 1, 1)").run();
     db.query("INSERT INTO enrichment_requests(id, company_id, status, request_kind, created_at, updated_at) VALUES ('enrich-request', 'company-1', 'queued', 'standard', 1, 1)").run();
@@ -471,5 +566,118 @@ describe("Kindling API contracts", () => {
     `).run(now);
     const { payload } = await api("/api/kindling/companies?industry=HVAC&location=Perth&dataRing=manual&duplicateStatus=unique&hasWebsite=yes&enrichmentStatus=complete");
     expect(payload.companies.map((company: { id: string }) => company.id)).toEqual(["match"]);
+  });
+
+  test("reports total company counts separately from the 500 row list cap", async () => {
+    const now = Date.now();
+    const insert = db.query(`
+      INSERT INTO companies(id, name, location, industry, website, data_ring, duplicate_status, enrichment_status, confidence, profile_json, created_at, updated_at)
+      VALUES (?1, ?2, 'Perth', 'Accounting', '', 'seed', 'unknown', ?3, 0.4, '{}', ?4, ?4)
+    `);
+    for (let index = 0; index < 505; index += 1) {
+      insert.run(`company-${index}`, `Company ${index}`, index < 2 ? "complete" : "not_started", now + index);
+    }
+
+    const list = await api("/api/kindling/companies");
+    expect(list.payload.companies).toHaveLength(500);
+    expect(list.payload.returned).toBe(500);
+    expect(list.payload.total).toBe(505);
+    expect(list.payload.limit).toBe(500);
+
+    const summary = await api("/api/kindling/summary");
+    expect(summary.payload.companies).toHaveLength(500);
+    expect(summary.payload.counts.companies).toBe(505);
+    expect(summary.payload.counts.outreachReady).toBe(2);
+    expect(summary.payload.companyList).toMatchObject({
+      returned: 500,
+      total: 505,
+      limit: 500,
+    });
+  });
+
+  test("queues an industry enrichment batch of up to 21 unprocessed companies", async () => {
+    const now = Date.now();
+    for (let index = 0; index < 23; index += 1) {
+      db.query(`
+        INSERT INTO companies(id, name, location, industry, website, data_ring, duplicate_status, enrichment_status, confidence, profile_json, created_at, updated_at)
+        VALUES (?1, ?2, 'Perth', 'Tax accountants', '', 'seed', 'unknown', 'not_started', 0.4, '{}', ?3, ?3)
+      `).run(`tax-${index}`, `Tax Co ${index}`, now + index);
+    }
+    db.query(`
+      INSERT INTO companies(id, name, location, industry, website, data_ring, duplicate_status, enrichment_status, confidence, profile_json, created_at, updated_at)
+      VALUES ('tax-done', 'Done Tax', 'Perth', 'Tax accountants', '', 'enriched', 'unknown', 'complete', 0.8, '{}', ?1, ?1)
+    `).run(now);
+
+    const industries = await api("/api/kindling/enrichment-industries");
+    expect(industries.payload.industries[0]).toMatchObject({
+      industry: "Tax accountants",
+      unprocessedCount: 23,
+    });
+
+    const queued = await api("/api/kindling/enrichment-industries/Tax%20accountants/enrich", {
+      method: "POST",
+      body: { deferAutopilotAuth: true },
+    });
+    expect(queued.res.status).toBe(202);
+    expect(queued.payload.batchSize).toBe(21);
+    expect(queued.payload.triggerRequest.body.input).toMatchObject({
+      pipelineRole: "enrich_industry_segment",
+      industry: "Tax accountants",
+      batchSize: 21,
+      localContext: {
+        industry: "Tax accountants",
+        batchSize: 21,
+      },
+    });
+    expect(queued.payload.triggerRequest.body.input.localContext.companies).toHaveLength(21);
+    const statusRows = db.query(`
+      SELECT enrichment_status, COUNT(*) AS count
+      FROM companies
+      WHERE industry = 'Tax accountants'
+      GROUP BY enrichment_status
+      ORDER BY enrichment_status
+    `).all() as Array<Record<string, unknown>>;
+    expect(statusRows).toEqual([
+      { enrichment_status: "complete", count: 1 },
+      { enrichment_status: "not_started", count: 2 },
+      { enrichment_status: "queued", count: 21 },
+    ]);
+  });
+
+  test("accepts token-scoped industry enrichment writes per company", async () => {
+    const now = Date.now();
+    db.query(`
+      INSERT INTO companies(id, name, location, industry, website, data_ring, duplicate_status, enrichment_status, confidence, profile_json, created_at, updated_at)
+      VALUES ('tax-write', 'Tax Write Co', 'Perth', 'Tax accountants', '', 'seed', 'unknown', 'not_started', 0.4, '{}', ?1, ?1)
+    `).run(now);
+    const queued = await api("/api/kindling/enrichment-industries/Tax%20accountants/enrich", {
+      method: "POST",
+      body: { deferAutopilotAuth: true },
+    });
+    const run = db.query("SELECT webhook_token FROM kindling_pipeline_runs WHERE id = ?1").get(queued.payload.runId) as Record<string, string>;
+    const body = {
+      batchRequestId: queued.payload.batchId,
+      companyId: "tax-write",
+      response: "Enriched Tax Write Co",
+      company: {
+        id: "tax-write",
+        website: "https://tax-write.example",
+        confidence: 0.82,
+        profile: { summary: "Tax advisory practice" },
+        sources: [{ url: "https://tax-write.example", summary: "Official site", confidence: 0.9 }],
+      },
+    };
+    const written = await api("/api/kindling/pipeline-write/enrichment-company", {
+      method: "POST",
+      headers: { "x-kindling-pipeline-token": run.webhook_token },
+      body,
+    });
+    expect(written.res.status).toBe(200);
+    const company = db.query("SELECT website, data_ring, enrichment_status FROM companies WHERE id = 'tax-write'").get() as Record<string, string>;
+    expect(company).toMatchObject({
+      website: "https://tax-write.example",
+      data_ring: "enriched",
+      enrichment_status: "complete",
+    });
   });
 });

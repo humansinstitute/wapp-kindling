@@ -285,6 +285,7 @@ const defaultPipelineRoles = [
   ["develop_service_offering", "Develop service offering", "kindling-develop-service-offering", "Develop service offering", "[\"prompt\"]", "market_profile_update"],
   ["scan_target_list", "Scan target list", "kindling-scan-target-list", "Scan target list", "[\"industry\",\"location\"]", "target_scan_result"],
   ["enrich_company", "Enrich company", "kindling-enrich-company", "Enrich company", "[\"companyId\"]", "company_enrichment"],
+  ["enrich_industry_segment", "Enrich industry segment", "kindling-enrich-industry-segment", "Enrich industry segment", "[\"industry\"]", "industry_enrichment_batch"],
   ["draft_outreach", "Draft outreach", "kindling-draft-outreach", "Draft outreach", "[\"companyId\"]", "outreach_draft"],
   ["resolve_duplicates", "Resolve duplicates", "kindling-stub-resolve-duplicates", "Stub: Resolve duplicates", "[]", "duplicate_updates"],
   ["find_people", "Find people", "kindling-stub-find-people", "Stub: Find people", "[\"companyId\"]", "people"],
@@ -316,6 +317,8 @@ export function ensureDefaultPipelineRoles(updatedAt = Date.now()) {
     ["scan_target_list", "kindling-scan-target-list-stub", "kindling-scan-target-list", "target_scan_result"],
     ["enrich_company", "kindling-stub-enrich-company", "kindling-enrich-company", "company_enrichment"],
     ["enrich_company", "kindling-enrich-company-stub", "kindling-enrich-company", "company_enrichment"],
+    ["enrich_industry_segment", "kindling-stub-enrich-industry-segment", "kindling-enrich-industry-segment", "industry_enrichment_batch"],
+    ["enrich_industry_segment", "kindling-enrich-industry-segment-stub", "kindling-enrich-industry-segment", "industry_enrichment_batch"],
     ["draft_outreach", "kindling-stub-draft-outreach", "kindling-draft-outreach", "outreach_draft"],
     ["draft_outreach", "kindling-draft-outreach-stub", "kindling-draft-outreach", "outreach_draft"],
   ]) {
