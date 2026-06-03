@@ -1,0 +1,153 @@
+{
+  "name": "kindling-enrich-industry-segment",
+  "description": "Kindling WApp industry-segment enrichment pipeline. Processes up to 21 queued companies sequentially, checks fixed strategy coverage, and writes each company back to the WApp as soon as it completes.",
+  "version": 1,
+  "tags": [
+    "kindling",
+    "wapp",
+    "http-trigger",
+    "webhook",
+    "industry-enrichment",
+    "company-enrichment"
+  ],
+  "input": {
+    "source": "kindling-wapp",
+    "pipelineRole": "enrich_industry_segment",
+    "requestId": "",
+    "batchId": "",
+    "industry": "",
+    "batchSize": 0,
+    "agent": "codex",
+    "workingDirectory": "/Users/mini/wingmen/wingman21",
+    "localContext": {
+      "companies": [],
+      "enrichmentStrategies": [],
+      "activeProfileVersion": {},
+      "writeApi": {
+        "url": "",
+        "authHeader": "x-kindling-pipeline-token",
+        "token": "",
+        "batchRequestId": ""
+      }
+    },
+    "webhook": {
+      "url": "",
+      "authHeader": "x-kindling-pipeline-token",
+      "token": ""
+    },
+    "batchLoop": {
+      "iteration": 1,
+      "index": 0,
+      "total": 0
+    },
+    "batchHistory": {
+      "items": []
+    }
+  },
+  "steps": [
+    {
+      "id": "enrich-company-batch-loop",
+      "name": "enrich-company-batch-loop",
+      "description": "Process each queued company one at a time.",
+      "type": "loop",
+      "iterations": "$.batchSize",
+      "counter": "$.batchLoop",
+      "history": "$.batchHistory",
+      "capture": {
+        "companyId": "$.currentCompany.company.id",
+        "delivery": "$.companyDelivery"
+      },
+      "steps": [
+        {
+          "id": "select-company",
+          "name": "select-company",
+          "description": "Select the current company from the batch.",
+          "type": "code",
+          "function": "kindling.selectIndustryEnrichmentCompany",
+          "input": {
+            "pick": {
+              "requestId": "$.requestId",
+              "batchId": "$.batchId",
+              "industry": "$.industry",
+              "companies": "$.localContext.companies",
+              "enrichmentStrategies": "$.localContext.enrichmentStrategies",
+              "activeProfileVersion": "$.localContext.activeProfileVersion",
+              "writeApi": "$.localContext.writeApi",
+              "loop": "$.batchLoop"
+            }
+          },
+          "assign": "$.currentCompany"
+        },
+        {
+          "id": "discover-company-enrichment",
+          "name": "discover-company-enrichment",
+          "description": "Run source-backed enrichment for one company.",
+          "type": "agent",
+          "agent": "$.agent",
+          "directory": "$.workingDirectory",
+          "timeoutMs": 1800000,
+          "input": {
+            "pick": {
+              "requestId": "$.requestId",
+              "industry": "$.industry",
+              "selected": "$.currentCompany",
+              "activeProfileVersion": "$.localContext.activeProfileVersion"
+            }
+          },
+          "prompt": "You are the Kindling industry enrichment worker.\n\nGoal:\nEnrich exactly one company using the selected company record and the fixed enrichment strategy checklist. This is company-level enrichment only. Do not draft outreach.\n\nRequired strategy checklist:\n- official_website: Find or verify the company's official website, services, operating areas, and public contact paths.\n- search_results: Check independent search results/directories for corroborating summaries and alternative public URLs.\n- blog_news_resources: Look for blogs, news, publications, case studies, resources, or updates that indicate active practice areas and business signals.\n- people_team: Identify publicly listed employees, partners, team pages, leadership, or hiring signals without collecting private data.\n- fit_signals: Summarise service-fit signals, operating complexity, visible gaps, and caveats for downstream scoring/outreach.\n\nRules:\n- Treat selected.company as the current WApp record.\n- Use selected.company.knownSources first, then available web/search tools.\n- Do not fabricate public facts. Put unverifiable fields in gaps or warnings.\n- Keep source summaries concise and source-backed.\n- Do not call Kindling yourself; deterministic code writes the company update.\n- Do not read or write Kindling SQLite directly.\n\nReturn compact JSON only with this exact shape:\n{\n  \"response\": \"short enrichment summary\",\n  \"companyId\": \"same company id\",\n  \"companyName\": \"company name\",\n  \"profilePatch\": {\n    \"website\": \"https://...\",\n    \"industry\": \"industry label\",\n    \"location\": \"location label\",\n    \"summary\": \"source-backed company summary\",\n    \"services\": [\"service names\"],\n    \"operatingAreas\": [\"locations\"],\n    \"contact\": {\"phone\": \"\", \"email\": \"\", \"contactUrl\": \"\"},\n    \"peopleSignals\": [\"public team/role signals\"],\n    \"contentSignals\": [\"blog/news/resource signals\"],\n    \"fitSignals\": [\"Kindling fit signals\"],\n    \"confidenceNotes\": [\"field-level caveats\"]\n  },\n  \"strategyCoverage\": [\n    {\"key\": \"official_website\", \"status\": \"done|blocked\", \"summary\": \"what happened\", \"sources\": [\"https://...\"]}\n  ],\n  \"fieldsUpdated\": [\n    {\"field\": \"website\", \"value\": \"https://...\", \"previousValue\": \"\", \"confidence\": 0.0, \"sourceUrl\": \"https://...\", \"reason\": \"why update is supported\"}\n  ],\n  \"sources\": [\n    {\"type\": \"web\", \"url\": \"https://...\", \"title\": \"source title\", \"summary\": \"what the source supports\", \"confidence\": 0.0}\n  ],\n  \"activities\": [\n    {\"action\": \"enrich\", \"summary\": \"what was checked\"}\n  ],\n  \"gaps\": [\"fields attempted but not found\"],\n  \"warnings\": [\"caveats\"],\n  \"confidence\": 0.0\n}",
+          "assign": "$.enrichmentDraft"
+        },
+        {
+          "id": "manager-check-enrichment",
+          "name": "manager-check-enrichment",
+          "description": "Verify that the worker attempted every required enrichment strategy.",
+          "type": "agent",
+          "agent": "$.agent",
+          "directory": "$.workingDirectory",
+          "timeoutMs": 900000,
+          "input": {
+            "pick": {
+              "selected": "$.currentCompany",
+              "enrichmentDraft": "$.enrichmentDraft"
+            }
+          },
+          "prompt": "You are the Kindling enrichment manager.\n\nGoal:\nCheck whether the worker attempted every fixed enrichment strategy for the selected company. You are not doing new research. Verify coverage from enrichmentDraft.strategyCoverage, sources, fieldsUpdated, gaps, and warnings.\n\nRequired strategies:\n- official_website\n- search_results\n- blog_news_resources\n- people_team\n- fit_signals\n\nApproval rules:\n- approved=true only if each strategy is represented as done or blocked with a concrete reason.\n- If a strategy is missing or vague, approved=false and list it in missingStrategies.\n- Do not require every field to be found; blocked with a source-backed or explicit no-result reason is acceptable.\n\nReturn compact JSON only:\n{\n  \"approved\": true,\n  \"summary\": \"manager outcome\",\n  \"strategyCoverage\": [\n    {\"key\": \"official_website\", \"status\": \"done|blocked|missing\", \"reason\": \"short reason\"}\n  ],\n  \"missingStrategies\": [\"strategy keys\"],\n  \"warnings\": [\"manager caveats\"]\n}",
+          "assign": "$.managerReview"
+        },
+        {
+          "id": "deliver-company-result",
+          "name": "deliver-company-result",
+          "description": "Write the enriched company result back to Kindling before moving to the next company.",
+          "type": "code",
+          "function": "kindling.deliverIndustryEnrichmentCompany",
+          "input": {
+            "pick": {
+              "requestId": "$.requestId",
+              "selected": "$.currentCompany",
+              "enrichmentDraft": "$.enrichmentDraft",
+              "managerReview": "$.managerReview"
+            }
+          },
+          "assign": "$.companyDelivery"
+        }
+      ]
+    },
+    {
+      "id": "finalize-industry-batch",
+      "name": "finalize-industry-batch",
+      "description": "Send the final batch webhook summary.",
+      "type": "code",
+      "function": "kindling.finalizeIndustryEnrichmentBatch",
+      "input": {
+        "pick": {
+          "requestId": "$.requestId",
+          "industry": "$.industry",
+          "companies": "$.localContext.companies",
+          "batchHistory": "$.batchHistory",
+          "webhook": "$.webhook"
+        }
+      },
+      "assign": "$.finalDelivery"
+    }
+  ]
+}

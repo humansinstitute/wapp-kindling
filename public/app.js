@@ -194,6 +194,7 @@ async function bootApp() {
   try {
     state.me = await api("/api/me");
     $("npub").textContent = state.me.npub;
+    syncAccessUi();
     await renderRoute();
   } catch {
     logout();
@@ -212,11 +213,23 @@ function logout() {
 
 async function loadChatScreen() {
   await loadChats();
+  if (!state.me?.access?.edit) {
+    state.activeChatId = state.chats[0]?.id || "";
+    renderChats();
+    if (state.activeChatId) await loadActiveChat();
+    else {
+      $("chatTitle").textContent = "Chat";
+      renderMessages([]);
+    }
+    syncAccessUi();
+    return;
+  }
   if (!state.activeChatId || !state.chats.find((chat) => chat.id === state.activeChatId)) {
     if (state.chats[0]) state.activeChatId = state.chats[0].id;
     else await newChat();
   }
   await loadActiveChat();
+  syncAccessUi();
 }
 
 async function loadChats() {
@@ -284,7 +297,7 @@ function selectedCompany() {
 function servicePromptValue() {
   const profile = state.kindling?.profile?.version;
   if (!profile) return "We help local service businesses find better-fit prospects, enrich sparse company records, and draft relevant first-touch outreach.";
-  return profile.structured?.offer || profile.summary || "";
+  return "";
 }
 
 function setKindlingStatus(text) {
@@ -360,23 +373,24 @@ function renderKindling() {
 
 function renderKindlingView(data, company, canEdit) {
   if (state.activeKindlingView === "service") return `
-    <section class="kindlingGrid two">
-      <div class="kindlingPanel">
-        <h2>Current service profile</h2>
-        <p>${escapeHtml(data.profile?.version?.summary || "No service profile has been created yet.")}</p>
-        <dl class="kindlingFacts">
-          <div><dt>Version</dt><dd>${escapeHtml(data.profile?.version?.versionNumber || "New")}</dd></div>
-          <div><dt>Rationale</dt><dd>${escapeHtml(data.profile?.version?.rationale || "Use the workspace to create the first version.")}</dd></div>
-        </dl>
+    <section class="serviceWorkspace">
+      <div class="kindlingPanel serviceProfilePanel">
+        ${renderServiceProfile(data.profile?.version)}
       </div>
-      <form class="kindlingPanel kindlingActionForm" data-form="service">
-        <h2>Develop service offering</h2>
+      <form class="kindlingPanel kindlingActionForm profileChatPanel" data-form="service">
+        <div class="panelHeader">
+          <div>
+            <h2>Profile chat</h2>
+            <span>${data.profile?.version ? `Editing v${escapeHtml(data.profile.version.versionNumber)}` : "Create first profile"}</span>
+          </div>
+        </div>
+        ${renderProfileChatContext(data.profile?.version)}
         <label>
-          <span>Research prompt</span>
-          <textarea id="servicePrompt" rows="9">${escapeHtml(servicePromptValue())}</textarea>
+          <span>Message</span>
+          <textarea id="servicePrompt" rows="10" placeholder="Tell Kindling what to change, add, question, or tighten.">${escapeHtml(servicePromptValue())}</textarea>
         </label>
         <div class="formActions">
-          <button type="submit" ${canEdit ? "" : "disabled"}>Run service role</button>
+          <button type="submit" ${canEdit ? "" : "disabled"}>Update profile</button>
         </div>
       </form>
     </section>
@@ -463,6 +477,163 @@ function renderKindlingView(data, company, canEdit) {
       </div>
       <button type="submit" ${canEdit ? "" : "disabled"}>Save role mappings</button>
     </form>
+  `;
+}
+
+function renderServiceProfile(version) {
+  if (!version) return `
+    <h2>Company profile</h2>
+    <p>No service profile has been created yet.</p>
+  `;
+  const profile = version.structured || {};
+  return `
+    <div class="serviceProfileHeader">
+      <div>
+        <h2>${escapeHtml(profile.title || "Company profile")}</h2>
+        <span>Version ${escapeHtml(version.versionNumber || "New")}</span>
+      </div>
+    </div>
+    <section class="profileSection profileLead">
+      <h3>Summary</h3>
+      <p>${escapeHtml(profile.summary || version.summary || "")}</p>
+      ${profile.positioningStatement ? `<p>${escapeHtml(profile.positioningStatement)}</p>` : ""}
+    </section>
+    ${renderServiceLines(profile.services || [])}
+    ${renderProfileGroup("Ideal customer profile", profile.idealCustomerProfile)}
+    ${renderProfileListSection("Problems solved", profile.problemsSolved)}
+    ${renderProfileListSection("Buying triggers", profile.buyingTriggers)}
+    ${renderProfileListSection("Differentiators", profile.differentiators)}
+    ${renderOutreachVoice(profile.outreachVoice)}
+    ${renderProfileListSection("Exclusions", profile.exclusions)}
+    ${renderAssumptions(profile.assumptions || [])}
+    ${renderProfileListSection("Rationale", profile.rationaleNotes || (version.rationale ? version.rationale.split("\\n") : []))}
+    ${renderEvidence(profile.evidence || version.sourceReferences || [])}
+    ${renderProfileListSection("Warnings", profile.warnings)}
+  `;
+}
+
+function renderServiceLines(services) {
+  if (!Array.isArray(services) || !services.length) return "";
+  return `
+    <section class="profileSection">
+      <h3>Services</h3>
+      <div class="serviceLineList">
+        ${services.map((service) => `
+          <article class="serviceLine">
+            <h4>${escapeHtml(service.name || "Service")}</h4>
+            <p>${escapeHtml(service.description || "")}</p>
+            ${renderInlineList("Benefits", service.benefits)}
+            ${renderInlineList("Proof", service.proofPoints)}
+            ${renderInlineList("Targets", service.targetSegments)}
+          </article>
+        `).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function renderProfileGroup(title, group) {
+  if (!group || typeof group !== "object" || Array.isArray(group)) return "";
+  const entries = Object.entries(group).filter(([, value]) => Array.isArray(value) ? value.length : value);
+  if (!entries.length) return "";
+  return `
+    <section class="profileSection">
+      <h3>${escapeHtml(title)}</h3>
+      <div class="profileColumns">
+        ${entries.map(([key, value]) => `
+          <div>
+            <strong>${escapeHtml(labelFromKey(key))}</strong>
+            ${renderBulletList(value)}
+          </div>
+        `).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function renderOutreachVoice(voice) {
+  if (!voice || typeof voice !== "object" || Array.isArray(voice)) return "";
+  return `
+    <section class="profileSection">
+      <h3>Outreach voice</h3>
+      ${voice.tone ? `<p>${escapeHtml(voice.tone)}</p>` : ""}
+      <div class="profileColumns">
+        ${renderProfileColumn("Emphasise", voice.emphasise)}
+        ${renderProfileColumn("Avoid", voice.avoid)}
+      </div>
+    </section>
+  `;
+}
+
+function renderProfileColumn(label, values) {
+  if (!Array.isArray(values) || !values.length) return "";
+  return `<div><strong>${escapeHtml(label)}</strong>${renderBulletList(values)}</div>`;
+}
+
+function renderProfileListSection(title, values) {
+  if (!Array.isArray(values) || !values.length) return "";
+  return `
+    <section class="profileSection">
+      <h3>${escapeHtml(title)}</h3>
+      ${renderBulletList(values)}
+    </section>
+  `;
+}
+
+function renderAssumptions(assumptions) {
+  if (!Array.isArray(assumptions) || !assumptions.length) return "";
+  return `
+    <section class="profileSection">
+      <h3>Assumptions</h3>
+      <div class="assumptionList">
+        ${assumptions.map((item) => `
+          <div>
+            <span>${escapeHtml(item.statement || item)}</span>
+            ${item.confidence !== undefined ? `<small>${Math.round(Number(item.confidence || 0) * 100)}% confidence${item.needsEvidence ? " - needs evidence" : ""}</small>` : ""}
+          </div>
+        `).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function renderEvidence(evidence) {
+  if (!Array.isArray(evidence) || !evidence.length) return "";
+  return `
+    <section class="profileSection">
+      <h3>Evidence</h3>
+      <div class="assumptionList">
+        ${evidence.map((item) => `
+          <div>
+            <strong>${escapeHtml(item.label || item.title || item.url || "Evidence")}</strong>
+            <span>${escapeHtml(item.summary || "")}</span>
+            ${item.confidence !== undefined ? `<small>${Math.round(Number(item.confidence || 0) * 100)}% confidence</small>` : ""}
+          </div>
+        `).join("")}
+      </div>
+    </section>
+  `;
+}
+
+function renderInlineList(label, values) {
+  if (!Array.isArray(values) || !values.length) return "";
+  return `<div class="inlineProfileList"><strong>${escapeHtml(label)}</strong>${renderBulletList(values)}</div>`;
+}
+
+function renderBulletList(values) {
+  const items = Array.isArray(values) ? values : [values];
+  return `<ul>${items.map((value) => `<li>${escapeHtml(formatProfileValue(value))}</li>`).join("")}</ul>`;
+}
+
+function renderProfileChatContext(version) {
+  const profile = version?.structured || {};
+  const questions = Array.isArray(profile.nextQuestions) ? profile.nextQuestions : [];
+  const latest = profile.response || profile.changeSummary || "";
+  return `
+    ${latest ? `<div class="profileChatContext"><strong>Latest update</strong><span>${escapeHtml(latest)}</span></div>` : ""}
+    ${questions.length ? `<div class="nextQuestionList">
+      ${questions.slice(0, 5).map((question) => `<button type="button" data-service-question="${escapeHtml(question)}">${escapeHtml(question)}</button>`).join("")}
+    </div>` : ""}
   `;
 }
 
@@ -957,6 +1128,15 @@ async function handleKindlingClick(event) {
     setKindlingStatus(`Queued ${Number(payload.batchSize || 0)} ${industry} companies`);
     return;
   }
+  const serviceQuestionButton = event.target.closest("[data-service-question]");
+  if (serviceQuestionButton) {
+    const input = $("servicePrompt");
+    if (input) {
+      input.value = serviceQuestionButton.dataset.serviceQuestion || "";
+      input.focus();
+    }
+    return;
+  }
   const stageButton = event.target.closest("[data-company-stage]");
   if (stageButton) {
     state.kindlingFilters = {
@@ -1388,8 +1568,17 @@ function renderMessages(messages) {
   setStatus(pending ? "Pipeline running" : "Ready");
 }
 
+function syncAccessUi() {
+  const canEdit = Boolean(state.me?.access?.edit);
+  for (const id of ["homeChatButton", "newChatButton", "messageInput", "sendButton"]) {
+    const el = $(id);
+    if (el) el.disabled = !canEdit;
+  }
+}
+
 async function sendMessage(event) {
   event.preventDefault();
+  if (!state.me?.access?.edit) return;
   const input = $("messageInput");
   const content = input.value.trim();
   if (!content || !state.activeChatId) return;
@@ -1414,8 +1603,8 @@ async function sendMessage(event) {
   } catch (error) {
     setStatus(error.message);
   } finally {
-    $("sendButton").disabled = false;
-    input.focus();
+    $("sendButton").disabled = !state.me?.access?.edit;
+    if (state.me?.access?.edit) input.focus();
   }
 }
 

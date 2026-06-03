@@ -355,6 +355,13 @@ button:disabled {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.serviceWorkspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(340px, 0.8fr);
+  gap: 14px;
+  align-items: start;
+}
+
 .kindlingGrid.companiesLayout {
   grid-template-columns: minmax(0, 1fr);
   align-items: start;
@@ -375,6 +382,150 @@ button:disabled {
   margin: 0 0 14px;
   font-size: 19px;
   letter-spacing: 0;
+}
+
+.serviceProfilePanel {
+  display: grid;
+  gap: 18px;
+}
+
+.serviceProfileHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 14px;
+  padding-bottom: 4px;
+}
+
+.serviceProfileHeader h2 {
+  margin: 0;
+  font-size: 26px;
+  line-height: 1.08;
+}
+
+.serviceProfileHeader span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.profileSection {
+  display: grid;
+  gap: 8px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
+.profileSection h3 {
+  margin: 0;
+  font-size: 15px;
+  letter-spacing: 0;
+}
+
+.profileSection h4 {
+  margin: 0;
+  font-size: 15px;
+  letter-spacing: 0;
+}
+
+.profileLead {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.profileSection p {
+  margin: 0;
+  color: var(--ink);
+}
+
+.serviceLineList,
+.serviceLine,
+.inlineProfileList,
+.assumptionList {
+  display: grid;
+  gap: 10px;
+}
+
+.serviceLine {
+  padding-top: 14px;
+  border-top: 1px solid rgba(223, 221, 214, 0.9);
+}
+
+.serviceLine:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.inlineProfileList {
+  gap: 4px;
+}
+
+.inlineProfileList strong,
+.profileColumns strong,
+.assumptionList strong {
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.profileColumns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.profileSection ul {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--ink);
+}
+
+.profileSection li + li {
+  margin-top: 4px;
+}
+
+.assumptionList div {
+  display: grid;
+  gap: 3px;
+}
+
+.assumptionList small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.profileChatPanel {
+  position: sticky;
+  top: 18px;
+}
+
+.profileChatContext {
+  display: grid;
+  gap: 5px;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.profileChatContext strong {
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+.profileChatContext span {
+  color: var(--ink);
+}
+
+.nextQuestionList {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.nextQuestionList button {
+  width: 100%;
+  text-align: left;
+  background: var(--panel-soft);
 }
 
 .panelHeader {
@@ -1212,10 +1363,16 @@ textarea {
   }
 
   .kindlingStats,
+  .serviceWorkspace,
   .kindlingGrid.two,
   .kindlingGrid.companiesLayout,
+  .profileColumns,
   .companyProfileGrid {
     grid-template-columns: 1fr;
+  }
+
+  .profileChatPanel {
+    position: static;
   }
 
   .roleRow {

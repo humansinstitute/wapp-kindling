@@ -7,7 +7,6 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { finalizeEvent, getPublicKey } from "nostr-tools";
 
 process.env.CHAT_WAPP_DB_PATH = join(mkdtempSync(join(tmpdir(), "kindling-api-")), "test.sqlite");
-process.env.CHAT_WAPP_ALLOW_MOCK = "1";
 process.env.WINGMAN_URL = "http://127.0.0.1:9";
 
 const { db, ensureDefaultPipelineRoles } = await import("../src/db.ts");
@@ -30,6 +29,7 @@ function resetData() {
     "market_profile_versions",
     "market_profiles",
     "kindling_pipeline_runs",
+    "access_rules",
     "sessions",
     "users",
   ]) {
@@ -74,13 +74,19 @@ function nip98Headers(path: string, method = "GET", body?: unknown) {
   return { authorization: `Nostr ${btoa(JSON.stringify(event))}` };
 }
 
-function seedKindlingRun(roleKey: string, requestId: string, webhookToken: string) {
+function seedKindlingRun(roleKey: string, requestId: string, webhookToken: string, triggerPayload: unknown = {}) {
   db.query(`
     INSERT INTO kindling_pipeline_runs(
       id, role_key, local_request_id, status, webhook_token, trigger_payload_json, created_at, updated_at
     )
     VALUES (?1, ?2, ?3, 'running', ?4, '{}', 1, 1)
   `).run(`run-${requestId}`, roleKey, requestId, webhookToken);
+  db.query("UPDATE kindling_pipeline_runs SET trigger_payload_json = ?1 WHERE id = ?2")
+    .run(JSON.stringify(triggerPayload), `run-${requestId}`);
+}
+
+function makeCurrentUserReadOnly() {
+  db.query("INSERT INTO access_rules(pubkey, npub, role, created_at) VALUES (?1, 'npub-test', 'read', 1)").run(pubkey);
 }
 
 beforeEach(() => {
@@ -109,12 +115,47 @@ describe("Kindling API contracts", () => {
     });
   });
 
+  test("blocks read-only users from triggering pipelines", async () => {
+    makeCurrentUserReadOnly();
+
+    const service = await api("/api/kindling/service-offering", {
+      method: "POST",
+      body: { prompt: "Update the profile" },
+    });
+    expect(service.res.status).toBe(403);
+    expect(service.payload.error).toBe("edit access required");
+
+    const now = Date.now();
+    db.query("INSERT INTO chats(id, pubkey, title, created_at, updated_at) VALUES ('read-chat', ?1, 'Read chat', ?2, ?2)")
+      .run(pubkey, now);
+
+    const message = await api("/api/chats/read-chat/messages", {
+      method: "POST",
+      body: { content: "Trigger the default chat pipeline" },
+    });
+    expect(message.res.status).toBe(403);
+    expect(message.payload.error).toBe("edit access required");
+
+    db.query(`
+      INSERT INTO pipeline_runs(
+        id, chat_id, user_message_id, assistant_message_id, trigger_status, webhook_token, trigger_payload_json, created_at, updated_at
+      )
+      VALUES ('read-run', 'read-chat', 'user-message', 'assistant-message', 'awaiting-user-nip98', 'read-token', '{}', ?1, ?1)
+    `).run(now);
+    const start = await api("/api/pipeline-runs/read-run/start", {
+      method: "POST",
+      body: { autopilotAuthorization: "Nostr test" },
+    });
+    expect(start.res.status).toBe(403);
+    expect(start.payload.error).toBe("edit access required");
+  });
+
   test("builds documented trigger payload fields and webhook auth header", async () => {
     const { res, payload } = await api("/api/kindling/target-scans", {
       method: "POST",
-      body: { industry: "HVAC", location: "Perth" },
+      body: { industry: "HVAC", location: "Perth", deferAutopilotAuth: true },
     });
-    expect(res.status).toBe(201);
+    expect(res.status).toBe(202);
     expect(payload.triggerRequest.body.input).toMatchObject({
       source: "kindling-wapp",
       pipelineRole: "scan_target_list",
@@ -140,9 +181,9 @@ describe("Kindling API contracts", () => {
   test("preserves exact round target counts", async () => {
     const { res, payload } = await api("/api/kindling/target-scans", {
       method: "POST",
-      body: { industry: "Legal Services", location: "Perth", targetCount: 1000 },
+      body: { industry: "Legal Services", location: "Perth", targetCount: 1000, deferAutopilotAuth: true },
     });
-    expect(res.status).toBe(201);
+    expect(res.status).toBe(202);
     expect(payload.triggerRequest.body.input.targetCount).toBe(1000);
     expect(payload.triggerRequest.body.input.scanMode).toBe("bulk");
     const job = db.query("SELECT target_count, scan_mode FROM discovery_jobs WHERE id = ?1").get(payload.jobId) as Record<string, unknown>;
@@ -172,9 +213,9 @@ describe("Kindling API contracts", () => {
 
     const queued = await api("/api/kindling/enrichment-industries/Tax%20accountants/enrich", {
       method: "POST",
-      body: { limit: 21 },
+      body: { limit: 21, deferAutopilotAuth: true },
     });
-    expect(queued.res.status).toBe(201);
+    expect(queued.res.status).toBe(202);
     expect(queued.payload.batchSize).toBe(2);
     expect(queued.payload.triggerRequest.body.input).toMatchObject({
       pipelineRole: "enrich_industry_segment",
@@ -210,7 +251,7 @@ describe("Kindling API contracts", () => {
     expect(payload.url).toBe("http://127.0.0.1:9/api/pipelines/definitions");
   });
 
-  test("maps public Rick Autopilot URL to the local server URL", async () => {
+  test("uses the configured public Rick Autopilot URL without remapping", async () => {
     const { res, payload } = await api("/api/autopilot/pipelines", {
       method: "POST",
       body: {
@@ -218,7 +259,7 @@ describe("Kindling API contracts", () => {
       },
     });
     expect(res.status).toBe(202);
-    expect(payload.triggerRequest.url).toBe("http://127.0.0.1:9/api/pipelines/definitions");
+    expect(payload.triggerRequest.url).toBe("https://rick.runwingman.com/api/pipelines/definitions");
   });
 
   test("preserves configured Autopilot URL in settings after save", async () => {
@@ -236,6 +277,22 @@ describe("Kindling API contracts", () => {
     expect(loaded.payload.settings.autopilotUrl).toBe("https://rick.runwingman.com");
   });
 
+  test("builds Kindling scan triggers against the saved Autopilot URL exactly", async () => {
+    await api("/api/settings", {
+      method: "PUT",
+      body: {
+        autopilotUrl: "https://rick.runwingman.com",
+      },
+    });
+
+    const { res, payload } = await api("/api/kindling/target-scans", {
+      method: "POST",
+      body: { industry: "HVAC", location: "Perth", deferAutopilotAuth: true },
+    });
+    expect(res.status).toBe(202);
+    expect(payload.triggerRequest.url).toBe("https://rick.runwingman.com/api/pipelines/triggers/http/kindling-scan-target-list");
+  });
+
   test("accepts documented service offering webhook callback", async () => {
     seedKindlingRun("develop_service_offering", "profile-request", "profile-token");
     const { res } = await api("/api/kindling/pipeline-webhook", {
@@ -249,7 +306,11 @@ describe("Kindling API contracts", () => {
         result: {
           outputKind: "market_profile_update",
           profileVersionPatch: { summary: "Summary", rationale: "Because", offer: "Offer" },
+          changeSummary: "Changed positioning",
+          rationaleNotes: ["Reason one"],
           nextQuestions: ["Next?"],
+          evidence: [{ label: "Brief", summary: "User brief", confidence: 0.9 }],
+          warnings: ["Needs proof"],
         },
       },
     });
@@ -257,7 +318,13 @@ describe("Kindling API contracts", () => {
     const version = db.query("SELECT summary, rationale, structured_json FROM market_profile_versions LIMIT 1").get() as Record<string, string>;
     expect(version.summary).toBe("Summary");
     expect(version.rationale).toBe("Because");
-    expect(JSON.parse(version.structured_json).offer).toBe("Offer");
+    const structured = JSON.parse(version.structured_json);
+    expect(structured.offer).toBe("Offer");
+    expect(structured.changeSummary).toBe("Changed positioning");
+    expect(structured.rationaleNotes).toEqual(["Reason one"]);
+    expect(structured.nextQuestions).toEqual(["Next?"]);
+    expect(structured.evidence[0].label).toBe("Brief");
+    expect(structured.warnings).toEqual(["Needs proof"]);
   });
 
   test("accepts documented scan webhook callback", async () => {
@@ -450,6 +517,57 @@ describe("Kindling API contracts", () => {
       expect(run.error).toBe("Request Entity Too Large");
       expect(job.status).toBe("partial_failed");
       expect(job.summary).toContain("Request Entity Too Large");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("reconciles errored industry enrichment runs and releases queued companies", async () => {
+    db.query(`
+      INSERT INTO companies(id, name, location, industry, data_ring, duplicate_status, enrichment_status, confidence, profile_json, created_at, updated_at)
+      VALUES
+        ('tax-complete', 'Complete Tax', 'Perth', 'Tax accountants', 'enriched', 'unknown', 'complete', 0.9, '{}', 1, 1),
+        ('tax-stale-1', 'Stale Tax 1', 'Perth', 'Tax accountants', 'seed', 'unknown', 'queued', 0.4, '{}', 1, 1),
+        ('tax-stale-2', 'Stale Tax 2', 'Perth', 'Tax accountants', 'seed', 'unknown', 'queued', 0.4, '{}', 1, 1)
+    `).run();
+    db.query(`
+      INSERT INTO enrichment_requests(id, company_id, status, request_kind, summary, created_at, updated_at)
+      VALUES
+        ('tax-request-complete', 'tax-complete', 'complete', 'industry_batch', 'Enriched', 1, 1),
+        ('tax-request-stale-1', 'tax-stale-1', 'queued', 'industry_batch', 'Queued by automatic industry batch tax-batch-error', 1, 1),
+        ('tax-request-stale-2', 'tax-stale-2', 'queued', 'industry_batch', 'Queued by automatic industry batch tax-batch-error', 1, 1)
+    `).run();
+    seedKindlingRun("enrich_industry_segment", "tax-batch-error", "tax-token", {
+      body: {
+        input: {
+          localContext: {
+            companies: [{ id: "tax-complete" }, { id: "tax-stale-1" }, { id: "tax-stale-2" }],
+          },
+        },
+      },
+    });
+    db.query("UPDATE kindling_pipeline_runs SET autopilot_run_id = 'remote-industry-error-run' WHERE id = 'run-tax-batch-error'").run();
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      expect(String(url)).toContain("/api/pipelines/runs/remote-industry-error-run");
+      return Response.json({ run: { id: "remote-industry-error-run", status: "error", error: "Timed out waiting for pipeline agent callback" } });
+    }) as typeof fetch;
+    try {
+      const { res, payload } = await api("/api/kindling/summary");
+      expect(res.status).toBe(200);
+      const run = payload.recentRuns.find((entry: Record<string, unknown>) => entry.localRequestId === "tax-batch-error");
+      expect(run.status).toBe("partial_failed");
+      expect(run.error).toBe("Timed out waiting for pipeline agent callback");
+      const companies = db.query("SELECT id, enrichment_status FROM companies WHERE id LIKE 'tax-%' ORDER BY id").all() as Array<Record<string, string>>;
+      expect(companies).toEqual([
+        { id: "tax-complete", enrichment_status: "complete" },
+        { id: "tax-stale-1", enrichment_status: "failed" },
+        { id: "tax-stale-2", enrichment_status: "failed" },
+      ]);
+      const requests = db.query("SELECT id, status, summary FROM enrichment_requests WHERE id LIKE 'tax-request-stale-%' ORDER BY id").all() as Array<Record<string, string>>;
+      expect(requests.map((request) => request.status)).toEqual(["failed", "failed"]);
+      expect(requests[0]?.summary).toContain("Timed out waiting for pipeline agent callback");
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -679,5 +797,57 @@ describe("Kindling API contracts", () => {
       data_ring: "enriched",
       enrichment_status: "complete",
     });
+  });
+
+  test("marks unwritten companies failed when an industry enrichment batch completes", async () => {
+    const now = Date.now();
+    for (const id of ["tax-written", "tax-missing"]) {
+      db.query(`
+        INSERT INTO companies(id, name, location, industry, website, data_ring, duplicate_status, enrichment_status, confidence, profile_json, created_at, updated_at)
+        VALUES (?1, ?2, 'Perth', 'Tax accountants', '', 'seed', 'unknown', 'not_started', 0.4, '{}', ?3, ?3)
+      `).run(id, id, now);
+    }
+    const queued = await api("/api/kindling/enrichment-industries/Tax%20accountants/enrich", {
+      method: "POST",
+      body: { deferAutopilotAuth: true },
+    });
+    const run = db.query("SELECT webhook_token FROM kindling_pipeline_runs WHERE id = ?1").get(queued.payload.runId) as Record<string, string>;
+    const write = await api("/api/kindling/pipeline-write/enrichment-company", {
+      method: "POST",
+      headers: { "x-kindling-pipeline-token": run.webhook_token },
+      body: {
+        batchRequestId: queued.payload.batchId,
+        companyId: "tax-written",
+        response: "Enriched Tax Written",
+        company: {
+          id: "tax-written",
+          website: "https://tax-written.example",
+          confidence: 0.82,
+          profile: { summary: "Tax advisory practice" },
+        },
+      },
+    });
+    expect(write.res.status).toBe(200);
+
+    const finished = await api("/api/kindling/pipeline-webhook", {
+      method: "POST",
+      headers: { "x-kindling-pipeline-token": run.webhook_token },
+      body: {
+        requestId: queued.payload.batchId,
+        role: "enrich_industry_segment",
+        status: "complete",
+        response: "Industry batch complete",
+        result: { industry: "Tax accountants" },
+      },
+    });
+    expect(finished.res.status).toBe(200);
+    const runRow = db.query("SELECT status, error FROM kindling_pipeline_runs WHERE id = ?1").get(queued.payload.runId) as Record<string, string>;
+    expect(runRow.status).toBe("partial_failed");
+    expect(runRow.error).toContain("Pipeline completed without writing enrichment");
+    const statuses = db.query("SELECT id, enrichment_status FROM companies WHERE id IN ('tax-written', 'tax-missing') ORDER BY id").all() as Array<Record<string, string>>;
+    expect(statuses).toEqual([
+      { id: "tax-missing", enrichment_status: "failed" },
+      { id: "tax-written", enrichment_status: "complete" },
+    ]);
   });
 });

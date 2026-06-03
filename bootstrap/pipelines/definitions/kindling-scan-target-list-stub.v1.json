@@ -1,0 +1,44 @@
+{
+  "name": "kindling-scan-target-list-stub",
+  "description": "Kindling WApp stub for target-list scanning. Accepts free-text industry/location research input and posts a discovery-job placeholder to the WApp webhook.",
+  "version": 1,
+  "tags": [
+    "kindling",
+    "wapp",
+    "stub",
+    "http-trigger",
+    "webhook",
+    "target-scan"
+  ],
+  "input": {
+    "source": "kindling-wapp",
+    "pipelineRole": "scan_target_list",
+    "requestId": "",
+    "userNpub": "",
+    "message": "",
+    "industry": "",
+    "location": "",
+    "targetCount": null,
+    "localContext": {
+      "marketProfileId": "",
+      "activeProfileVersionId": "",
+      "existingCompanyCount": 0,
+      "existingLocations": []
+    },
+    "webhook": {
+      "url": "",
+      "authHeader": "x-kindling-pipeline-token",
+      "token": ""
+    }
+  },
+  "steps": [
+    {
+      "id": "deliver-target-scan-stub",
+      "name": "deliver-target-scan-stub",
+      "description": "Build a stub target-scan response and deliver it to the Kindling WApp webhook.",
+      "type": "code",
+      "function": "kindling.stubWebhook",
+      "assign": "$.stubResult"
+    }
+  ]
+}

@@ -153,6 +153,21 @@ function normaliseUrlForNip98(value: string): string | null {
   }
 }
 
+function firstForwardedHeaderValue(value: string | null): string | null {
+  const first = value?.split(",")[0]?.trim();
+  return first || null;
+}
+
+function forwardedRequestUrl(req: Request, fallbackUrl: URL): URL {
+  const host = firstForwardedHeaderValue(req.headers.get("x-forwarded-host"));
+  const proto = firstForwardedHeaderValue(req.headers.get("x-forwarded-proto"));
+  if (!host && !proto) return fallbackUrl;
+  const publicUrl = new URL(fallbackUrl.toString());
+  if (host) publicUrl.host = host;
+  if (proto === "http" || proto === "https") publicUrl.protocol = `${proto}:`;
+  return publicUrl;
+}
+
 export async function verifyNip98Request(req: Request, url: URL): Promise<{ ok: true; pubkey: string; npub: string } | { ok: false; error: string }> {
   const event = decodeNip98Token(req.headers.get("authorization"));
   if (!event) return { ok: false, error: "NIP-98 authorization required" };
@@ -162,7 +177,9 @@ export async function verifyNip98Request(req: Request, url: URL): Promise<{ ok: 
 
   const eventUrl = event.tags.find((tag) => tag[0] === "u")?.[1];
   const eventMethod = event.tags.find((tag) => tag[0] === "method")?.[1];
-  if (!eventUrl || normaliseUrlForNip98(eventUrl) !== url.toString()) return { ok: false, error: "NIP-98 URL mismatch" };
+  const normalisedEventUrl = eventUrl ? normaliseUrlForNip98(eventUrl) : null;
+  const acceptedUrls = [url, forwardedRequestUrl(req, url)].map((candidate) => candidate.toString());
+  if (!normalisedEventUrl || !acceptedUrls.includes(normalisedEventUrl)) return { ok: false, error: "NIP-98 URL mismatch" };
   if (!eventMethod || eventMethod.toUpperCase() !== req.method.toUpperCase()) return { ok: false, error: "NIP-98 method mismatch" };
   if (Math.abs(Math.floor(Date.now() / 1000) - Number(event.created_at)) > NIP98_MAX_AGE_SECONDS) {
     return { ok: false, error: "NIP-98 event expired" };

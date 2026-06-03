@@ -14,7 +14,7 @@ import {
   verifyLoginEvent,
   verifyNip98Request,
 } from "./auth.ts";
-import { ALLOW_MOCK, HTTP_TRIGGER_TOKEN, PIPELINE_NAME, PORT, PUBLIC_ORIGIN, WINGMAN_URL } from "./config.ts";
+import { PIPELINE_NAME, PORT, PUBLIC_ORIGIN, WINGMAN_URL } from "./config.ts";
 import { db, getSetting, mapChat, mapMessage, setSetting, type AccessRole, type AppSettings, type Message } from "./db.ts";
 import { buildPipelineTriggerRequest, startPreparedChatPipeline, type PipelineTriggerRequest } from "./pipeline.ts";
 
@@ -55,21 +55,12 @@ function requireSession(req: Request) {
 }
 
 function toServerAutopilotUrl(value: string) {
-  const trimmed = value.replace(/\/$/, "");
-  try {
-    const parsed = new URL(trimmed);
-    const oldLocalDefault = ["localhost", "127.0.0.1"].includes(parsed.hostname) && parsed.port === "3021";
-    const rickPublicAutopilot = parsed.hostname === "rick.runwingman.com";
-    if (oldLocalDefault || rickPublicAutopilot) return WINGMAN_URL;
-  } catch {
-    return trimmed;
-  }
-  return trimmed;
+  return value.replace(/\/$/, "");
 }
 
 function getAppSettings(): AppSettings {
   return {
-    autopilotUrl: (getSetting("autopilotUrl") || WINGMAN_URL).replace(/\/$/, ""),
+    autopilotUrl: (getSetting("autopilotUrl") || WINGMAN_URL || "").replace(/\/$/, ""),
     defaultPipeline: getSetting("defaultPipeline") || PIPELINE_NAME,
   };
 }
@@ -375,6 +366,7 @@ function buildKindlingTriggerRequest(input: {
   userNpub: string;
 }) {
   const settings = getAppSettings();
+  if (!settings.autopilotUrl) throw new Error("Autopilot URL is required");
   const role = getPipelineRole(input.roleKey);
   const pipelineName = role?.activePipelineSlug || input.roleKey;
   const url = new URL(`/api/pipelines/triggers/http/${encodeURIComponent(pipelineName)}`, toServerAutopilotUrl(settings.autopilotUrl));
@@ -404,7 +396,7 @@ function buildKindlingTriggerRequest(input: {
 }
 
 function kindlingRunNeedsAutopilotAuth(roleSlug: string, authorization?: string) {
-  return !authorization && !HTTP_TRIGGER_TOKEN && !/^kindling-.+-stub$/.test(roleSlug);
+  return !authorization && !/^kindling-.+-stub$/.test(roleSlug);
 }
 
 function createKindlingRun(input: {
@@ -549,17 +541,100 @@ async function fetchAutopilotPipelineRun(autopilotRunId: string) {
   }
 }
 
+function industryBatchCompanyIdsFromRun(run: Record<string, unknown>) {
+  const trigger = jsonParse<Record<string, unknown>>(run.trigger_payload_json, {});
+  const body = objectRecord(trigger.body);
+  const input = objectRecord(body.input);
+  const context = objectRecord(input.localContext);
+  const rawCompanies = Array.isArray(context.companies)
+    ? context.companies
+    : Array.isArray(input.companies)
+      ? input.companies
+      : [];
+  return [...new Set(rawCompanies
+    .map((company) => String(objectRecord(company).id ?? "").trim())
+    .filter(Boolean))];
+}
+
+function industryBatchQueuedSummaries(batchId: string) {
+  return [
+    `Queued by automatic industry batch ${batchId}`,
+    `Queued by industry batch ${batchId}`,
+  ];
+}
+
+function countCompleteIndustryBatchCompanies(companyIds: string[]) {
+  if (!companyIds.length) return 0;
+  const placeholders = companyIds.map((_, index) => `?${index + 1}`).join(", ");
+  const row = db.query(`
+    SELECT COUNT(*) AS count
+    FROM companies
+    WHERE id IN (${placeholders})
+      AND enrichment_status = 'complete'
+  `).get(...companyIds) as { count: number } | null;
+  return Number(row?.count ?? 0);
+}
+
+function finalizeIndustryEnrichmentBatch(run: Record<string, unknown>, terminalStatus: "complete" | "failed", reason: string, now = Date.now()) {
+  const batchId = String(run.local_request_id ?? "");
+  const summaries = industryBatchQueuedSummaries(batchId);
+  const pendingRows = db.query(`
+    SELECT id, company_id
+    FROM enrichment_requests
+    WHERE request_kind = 'industry_batch'
+      AND status IN ('queued', 'running')
+      AND summary IN (?1, ?2)
+  `).all(...summaries) as Array<{ id: string; company_id: string }>;
+
+  const pendingCompanyIds = [...new Set(pendingRows.map((row) => String(row.company_id)).filter(Boolean))];
+  const cleanupReason = terminalStatus === "failed"
+    ? reason
+    : reason || "Pipeline completed without writing enrichment for this company";
+  if (pendingRows.length) {
+    const requestIds = pendingRows.map((row) => String(row.id));
+    const requestPlaceholders = requestIds.map((_, index) => `?${index + 3}`).join(", ");
+    db.query(`
+      UPDATE enrichment_requests
+      SET status = 'failed', summary = ?1, updated_at = ?2
+      WHERE id IN (${requestPlaceholders})
+    `).run(cleanupReason, now, ...requestIds);
+  }
+
+  if (pendingCompanyIds.length) {
+    const companyPlaceholders = pendingCompanyIds.map((_, index) => `?${index + 2}`).join(", ");
+    db.query(`
+      UPDATE companies
+      SET enrichment_status = 'failed', updated_at = ?1
+      WHERE id IN (${companyPlaceholders})
+        AND enrichment_status = 'queued'
+    `).run(now, ...pendingCompanyIds);
+  }
+
+  const completeCount = countCompleteIndustryBatchCompanies(industryBatchCompanyIdsFromRun(run));
+  const status = terminalStatus === "complete"
+    ? pendingRows.length > 0 ? "partial_failed" : "complete"
+    : completeCount > 0 ? "partial_failed" : "failed";
+  const error = status === "complete" ? "" : cleanupReason;
+  return { status, error, pendingCount: pendingRows.length, completeCount };
+}
+
 function markKindlingRunFailedFromAutopilot(run: Record<string, unknown>, error: string) {
   const now = Date.now();
   const roleKey = String(run.role_key ?? "");
   const requestId = String(run.local_request_id ?? "");
   const persistedCount = roleKey === "scan_target_list" ? matchingCompanyCountForJob(requestId) : 0;
-  const localStatus = persistedCount > 0 ? "partial_failed" : "failed";
+  let localStatus = persistedCount > 0 ? "partial_failed" : "failed";
+  let localError = error;
+  if (roleKey === "enrich_industry_segment") {
+    const finalized = finalizeIndustryEnrichmentBatch(run, "failed", error, now);
+    localStatus = finalized.status;
+    localError = finalized.error || error;
+  }
   db.query(`
     UPDATE kindling_pipeline_runs
     SET status = ?1, error = ?2, updated_at = ?3
     WHERE id = ?4
-  `).run(localStatus, error, now, String(run.id));
+  `).run(localStatus, localError, now, String(run.id));
 
   if (roleKey === "scan_target_list") {
     const summary = persistedCount > 0
@@ -700,28 +775,35 @@ function upsertTargetRanking(companyId: string, reason: string, score: Record<st
   `).run(crypto.randomUUID(), companyId, count + 1, reason, JSON.stringify(score), Date.now());
 }
 
+function markKindlingStartFailed(run: Record<string, unknown>, error: string) {
+  const now = Date.now();
+  const roleKey = String(run.role_key ?? "");
+  const requestId = String(run.local_request_id ?? "");
+  db.query("UPDATE kindling_pipeline_runs SET status = 'failed', error = ?1, updated_at = ?2 WHERE id = ?3")
+    .run(error, now, String(run.id));
+
+  if (roleKey === "scan_target_list") {
+    db.query(`
+      UPDATE discovery_jobs
+      SET status = 'failed', summary = ?1, updated_at = ?2
+      WHERE id = ?3 AND status IN ('queued', 'running')
+    `).run(error, now, requestId);
+  }
+}
+
 async function startKindlingRun(runId: string, authorization?: string) {
   const run = db.query("SELECT * FROM kindling_pipeline_runs WHERE id = ?1").get(runId) as Record<string, unknown> | null;
   if (!run) throw new Error("pipeline run not found");
   const triggerRequest = jsonParse<ReturnType<typeof buildKindlingTriggerRequest>>(run.trigger_payload_json, null as never);
-  const token = String(run.webhook_token);
   const role = getPipelineRole(String(run.role_key));
   if (!role?.enabled) throw new Error("pipeline role is disabled");
-
-  const useLocalStub = !authorization && /^kindling-.+-stub$/.test(role.activePipelineSlug);
-  if (useLocalStub) {
-    scheduleKindlingStubCallback(triggerRequest, token, "local stub");
-    db.query("UPDATE kindling_pipeline_runs SET status = 'mock', autopilot_run_id = ?1, updated_at = ?2 WHERE id = ?3")
-      .run(`mock-${crypto.randomUUID()}`, Date.now(), runId);
-    return { mode: "mock", runId, status: "mocked" };
-  }
 
   try {
     const res = await fetch(triggerRequest.url, {
       method: triggerRequest.method,
       headers: {
         "content-type": "application/json",
-        ...(authorization ? { authorization } : HTTP_TRIGGER_TOKEN ? { authorization: `Bearer ${HTTP_TRIGGER_TOKEN}` } : {}),
+        ...(authorization ? { authorization } : {}),
       },
       body: JSON.stringify(triggerRequest.body),
     });
@@ -732,11 +814,9 @@ async function startKindlingRun(runId: string, authorization?: string) {
       .run(String(remoteRun.id ?? payload.runId ?? ""), Date.now(), runId);
     return { mode: "autopilot-http", runId: String(remoteRun.id ?? payload.runId ?? runId), status: "running" };
   } catch (error) {
-    if (!ALLOW_MOCK) throw error;
-    scheduleKindlingStubCallback(triggerRequest, token, error instanceof Error ? error.message : String(error));
-    db.query("UPDATE kindling_pipeline_runs SET status = 'mock', autopilot_run_id = ?1, error = ?2, updated_at = ?3 WHERE id = ?4")
-      .run(`mock-${crypto.randomUUID()}`, error instanceof Error ? error.message : String(error), Date.now(), runId);
-    return { mode: "mock", runId, status: "mocked" };
+    const message = error instanceof Error ? error.message : String(error);
+    markKindlingStartFailed(run, message);
+    throw error;
   }
 }
 
@@ -744,91 +824,6 @@ function shouldDeferKindlingAutopilotAuth(body: Record<string, unknown>, roleKey
   if (body.deferAutopilotAuth !== true) return false;
   const role = getPipelineRole(roleKey);
   return kindlingRunNeedsAutopilotAuth(role?.activePipelineSlug || roleKey);
-}
-
-function stubCompanyName(industry: string, location: string, index: number) {
-  const industryBase = industry.replace(/[^a-z0-9 ]/gi, "").trim().split(/\s+/).slice(0, 2).join(" ") || "Growth";
-  const names = ["Northstar", "Harbor", "Keystone"];
-  return `${names[index] || "Signal"} ${industryBase} ${location ? "Co" : "Group"}`.replace(/\s+/g, " ");
-}
-
-function scheduleKindlingStubCallback(triggerRequest: ReturnType<typeof buildKindlingTriggerRequest>, token: string, reason: string) {
-  const input = triggerRequest.body.input;
-  const roleKey = String(input.pipelineRole ?? input.roleKey);
-  const context = input.localContext as Record<string, unknown>;
-  setTimeout(async () => {
-    const records: Record<string, unknown> = {};
-    let response = "Kindling stub completed.";
-    if (roleKey === "develop_service_offering") {
-      const prompt = String(context.prompt ?? input.message ?? "Initial service offering");
-      records.marketProfileVersion = {
-        summary: prompt.slice(0, 220),
-        rationale: "Stubbed from the service-offering workspace prompt.",
-        structured: {
-          offer: prompt,
-          idealCustomer: "Small teams with a clear outbound motion",
-          painPoints: ["unclear targeting", "manual prospect research", "slow outreach drafting"],
-          outcome: "Sharper target selection and a copyable first pitch",
-        },
-      };
-      response = "Service offering profile updated from stub pipeline.";
-    } else if (roleKey === "scan_target_list") {
-      const industry = String(context.industry ?? "software services");
-      const location = String(context.location ?? "local market");
-      const companies = [0, 1, 2].map((index) => ({
-        name: stubCompanyName(industry, location, index),
-        industry,
-        location,
-        website: index === 0 ? `https://example-${industry.toLowerCase().replace(/[^a-z0-9]+/g, "-")}.com` : "",
-        sourceSummary: `Stub source for ${industry} in ${location}`,
-        confidence: 0.42 + index * 0.08,
-      }));
-      records.companies = companies;
-      response = `Created ${companies.length} stub targets for ${industry} in ${location}.`;
-    } else if (roleKey === "enrich_company") {
-      records.company = {
-        id: String(context.companyId ?? ""),
-        website: String(context.website ?? "") || "https://example.com",
-        dataRing: "enriched",
-        enrichmentStatus: "complete",
-        confidence: 0.76,
-        profile: {
-          fitNotes: "Stub enrichment found likely service fit, visible operating complexity, and a simple outreach angle.",
-          signals: ["active hiring", "multi-location operations", "manual workflow indicators"],
-        },
-        sourceSummary: "Stub enrichment source pack",
-      };
-      response = "Company enrichment completed from stub pipeline.";
-    } else if (roleKey === "draft_outreach") {
-      const company = String(context.companyName ?? "your team");
-      const profile = getCurrentMarketProfile();
-      const offer = String(profile?.version?.structured?.offer ?? "help sharpen target research and outbound messaging")
-        .replace(/^we\s+/i, "")
-        .replace(/[.?!]+$/, "");
-      records.outreachDraft = {
-        companyId: String(context.companyId ?? ""),
-        pitchText: `Hi ${company},\n\nI noticed a few signs that your team may be doing a lot of manual prospect and account research. We ${offer.toLowerCase()}.\n\nWould it be worth comparing notes on where the current process slows down and whether a lightweight research loop could help?`,
-      };
-      response = "Copyable outreach pitch drafted from stub pipeline.";
-    }
-    await fetch(input.webhook.url, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-kindling-pipeline-token": token,
-      },
-      body: JSON.stringify({
-        requestId: input.requestId,
-        role: roleKey,
-        roleKey,
-        runId: `mock-${crypto.randomUUID()}`,
-        status: "ok",
-        response,
-        records,
-        metadata: { mode: "mock", fallbackReason: reason },
-      }),
-    }).catch(() => undefined);
-  }, 650);
 }
 
 function objectRecord(value: unknown): Record<string, unknown> {
@@ -843,14 +838,27 @@ function normalizeKindlingCallbackRecords(roleKey: string, body: Record<string, 
 
   if (roleKey === "develop_service_offering") {
     const patch = objectRecord(result.profileVersionPatch);
+    const rationaleNotes = Array.isArray(result.rationaleNotes) ? result.rationaleNotes.map(String) : [];
+    const nextQuestions = Array.isArray(result.nextQuestions) ? result.nextQuestions : [];
+    const evidence = Array.isArray(result.evidence) ? result.evidence : [];
+    const warnings = Array.isArray(result.warnings) ? result.warnings : [];
+    const structured = {
+      ...patch,
+      changeSummary: String(result.changeSummary ?? ""),
+      response: String(result.response ?? body.response ?? ""),
+      rationaleNotes,
+      nextQuestions,
+      evidence,
+      warnings,
+    };
     return {
       marketProfileVersion: {
         summary: String(patch.summary ?? body.response ?? "Service offering updated"),
-        rationale: String(patch.rationale ?? ""),
-        structured: patch,
-        sourceReferences: Array.isArray(patch.sourceReferences) ? patch.sourceReferences : [],
+        rationale: String(patch.rationale ?? rationaleNotes.join("\n") ?? ""),
+        structured,
+        sourceReferences: Array.isArray(patch.sourceReferences) ? patch.sourceReferences : evidence,
       },
-      nextQuestions: Array.isArray(result.nextQuestions) ? result.nextQuestions : [],
+      nextQuestions,
     };
   }
 
@@ -1138,8 +1146,8 @@ function persistCompanyEnrichment(input: {
   } else {
     db.query(`
       INSERT INTO sources(id, company_id, source_type, url, summary, confidence, created_at)
-      VALUES (?1, ?2, 'stub_enrichment', ?3, ?4, ?5, ?6)
-    `).run(crypto.randomUUID(), companyId, String(company?.website ?? ""), String(company?.sourceSummary ?? "Stub enrichment source"), Number(company?.confidence ?? 0.75), now);
+      VALUES (?1, ?2, 'pipeline_enrichment', ?3, ?4, ?5, ?6)
+    `).run(crypto.randomUUID(), companyId, String(company?.website ?? ""), String(company?.sourceSummary ?? "Pipeline enrichment source"), Number(company?.confidence ?? 0.75), now);
   }
   recordActivity("company", companyId, "pipeline", "company_enriched", input.response || "Enrichment complete", { requestId: input.requestId, runId: input.runId });
   upsertTargetRanking(companyId, "Enriched company with stronger service fit signals.", { fit: Number(company?.confidence ?? 0.75) });
@@ -1155,6 +1163,9 @@ function applyKindlingCallback(body: Record<string, unknown>, token: string) {
   const records = normalizeKindlingCallbackRecords(roleKey, body);
   const now = Date.now();
   const alreadyApplied = Boolean(run.result_payload_json);
+  if (alreadyApplied) return { ok: true as const };
+  let storedStatus = String(body.status ?? "complete");
+  let storedError = "";
 
   if (!alreadyApplied && roleKey === "develop_service_offering") {
     const versionRecord = records.marketProfileVersion as Record<string, unknown> | undefined;
@@ -1202,6 +1213,17 @@ function applyKindlingCallback(body: Record<string, unknown>, token: string) {
 
   if (!alreadyApplied && roleKey === "enrich_industry_segment") {
     const result = objectRecord(body.result);
+    const callbackFailed = ["error", "failed", "failure"].includes(storedStatus.toLowerCase());
+    const finalized = finalizeIndustryEnrichmentBatch(
+      run,
+      callbackFailed ? "failed" : "complete",
+      callbackFailed
+        ? String(body.error ?? body.response ?? "Industry enrichment batch failed")
+        : "Pipeline completed without writing enrichment for this company",
+      now,
+    );
+    storedStatus = finalized.status;
+    storedError = finalized.error;
     recordActivity(
       "industry",
       requestId,
@@ -1224,9 +1246,13 @@ function applyKindlingCallback(body: Record<string, unknown>, token: string) {
 
   db.query(`
     UPDATE kindling_pipeline_runs
-    SET status = ?1, autopilot_run_id = COALESCE(?2, autopilot_run_id), result_payload_json = ?3, updated_at = ?4
-    WHERE id = ?5
-  `).run(String(body.status ?? "complete"), String(body.runId ?? "") || null, JSON.stringify(body), now, String(run.id));
+    SET status = ?1,
+        autopilot_run_id = COALESCE(?2, autopilot_run_id),
+        result_payload_json = ?3,
+        error = CASE WHEN ?4 = '' THEN error ELSE ?4 END,
+        updated_at = ?5
+    WHERE id = ?6
+  `).run(storedStatus, String(body.runId ?? "") || null, JSON.stringify(body), storedError, now, String(run.id));
   return { ok: true as const };
 }
 
@@ -1261,8 +1287,22 @@ function updateChatTitle(chatId: string, title: string) {
   db.query("UPDATE chats SET title = ?1, updated_at = ?2 WHERE id = ?3").run(title.slice(0, 80), Date.now(), chatId);
 }
 
+function firstForwardedHeaderValue(value: string | null): string | null {
+  const first = value?.split(",")[0]?.trim();
+  return first || null;
+}
+
+function requestPublicOrigin(req: Request): string {
+  const url = new URL(req.url);
+  const host = firstForwardedHeaderValue(req.headers.get("x-forwarded-host"));
+  const proto = firstForwardedHeaderValue(req.headers.get("x-forwarded-proto"));
+  if (host) url.host = host;
+  if (proto === "http" || proto === "https") url.protocol = `${proto}:`;
+  return url.origin;
+}
+
 function webhookOrigin(req: Request): string {
-  return PUBLIC_ORIGIN || new URL(req.url).origin;
+  return PUBLIC_ORIGIN || requestPublicOrigin(req);
 }
 
 export async function handleApi(req: Request, url: URL): Promise<Response | null> {
@@ -1855,8 +1895,8 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
   }
 
   if (pathname === "/api/chats" && req.method === "POST") {
-    const session = requireSession(req);
-    if (!session) return json({ error: "unauthorized" }, 401);
+    const session = requireEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
     const now = Date.now();
     const id = crypto.randomUUID();
     db.query("INSERT INTO chats(id, pubkey, title, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?4)")
@@ -1875,8 +1915,8 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
   }
 
   if (chatMessagesMatch && req.method === "POST") {
-    const session = requireSession(req);
-    if (!session) return json({ error: "unauthorized" }, 401);
+    const session = requireEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
     const chatId = decodeURIComponent(chatMessagesMatch[1]!);
     const chat = getChatForUser(chatId, session.pubkey);
     if (!chat) return json({ error: "chat not found" }, 404);
@@ -1948,8 +1988,8 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
 
   const pipelineStartMatch = pathname.match(/^\/api\/pipeline-runs\/([^/]+)\/start$/);
   if (pipelineStartMatch && req.method === "POST") {
-    const session = requireSession(req);
-    if (!session) return json({ error: "unauthorized" }, 401);
+    const session = requireEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
     const runId = decodeURIComponent(pipelineStartMatch[1]!);
     const body = await readJson(req);
     const autopilotAuthorization = String(body.autopilotAuthorization ?? "").trim();

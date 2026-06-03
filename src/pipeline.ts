@@ -1,4 +1,4 @@
-import { ALLOW_MOCK, HTTP_TRIGGER_TOKEN, PIPELINE_NAME, WEBHOOK_SECRET, WINGMAN_URL } from "./config.ts";
+import { PIPELINE_NAME, WINGMAN_URL } from "./config.ts";
 import type { Message } from "./db.ts";
 
 export type PipelineStartInput = {
@@ -41,6 +41,7 @@ export type PipelineTriggerRequest = {
 
 export function buildPipelineTriggerRequest(input: PipelineStartInput): PipelineTriggerRequest {
   const autopilotUrl = (input.autopilotUrl || WINGMAN_URL).replace(/\/$/, "");
+  if (!autopilotUrl) throw new Error("Autopilot URL is required");
   const pipelineName = input.pipelineName || PIPELINE_NAME;
   const url = new URL(`/api/pipelines/triggers/http/${encodeURIComponent(pipelineName)}`, autopilotUrl);
   return {
@@ -69,21 +70,7 @@ export async function startChatPipeline(input: PipelineStartInput, authorization
 }
 
 export async function startPreparedChatPipeline(trigger: PipelineTriggerRequest, authorization?: string): Promise<PipelineStartResult> {
-  const input = trigger.body.input;
-  try {
-    return await startAutopilotHttpPipeline(trigger, authorization);
-  } catch (error) {
-    if (!ALLOW_MOCK) throw error;
-    return startMockPipeline({
-      chatId: input.chatId,
-      userPubkey: input.userPubkey,
-      userNpub: input.userNpub,
-      message: input.message,
-      history: input.history,
-      webhookUrl: input.webhook.url,
-      webhookToken: input.webhook.token,
-    }, error);
-  }
+  return startAutopilotHttpPipeline(trigger, authorization);
 }
 
 async function startAutopilotHttpPipeline(trigger: PipelineTriggerRequest, authorization?: string): Promise<PipelineStartResult> {
@@ -91,7 +78,7 @@ async function startAutopilotHttpPipeline(trigger: PipelineTriggerRequest, autho
     method: trigger.method,
     headers: {
       "content-type": "application/json",
-      ...(authorization ? { authorization } : HTTP_TRIGGER_TOKEN ? { authorization: `Bearer ${HTTP_TRIGGER_TOKEN}` } : {}),
+      ...(authorization ? { authorization } : {}),
     },
     body: JSON.stringify(trigger.body),
   });
@@ -106,33 +93,4 @@ async function startAutopilotHttpPipeline(trigger: PipelineTriggerRequest, autho
     runId: String(run.id ?? payload.runId ?? crypto.randomUUID()),
     status: "running",
   };
-}
-
-function startMockPipeline(input: PipelineStartInput, cause: unknown): PipelineStartResult {
-  const runId = `mock-${crypto.randomUUID()}`;
-  const reason = cause instanceof Error ? cause.message : String(cause);
-  setTimeout(async () => {
-    const content = [
-      `Mock pipeline response for: ${input.message}`,
-      "",
-      "The WApp stored the chat locally, created a pending assistant message, and delivered this through the same webhook the real pipeline agent will call.",
-      `Autopilot trigger fallback reason: ${reason}`,
-    ].join("\n");
-    await fetch(input.webhookUrl, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-chat-wapp-token": input.webhookToken,
-        "x-chat-wapp-signature": WEBHOOK_SECRET,
-      },
-      body: JSON.stringify({
-        chatId: input.chatId,
-        runId,
-        status: "ok",
-        response: content,
-        metadata: { mode: "mock", fallbackReason: reason },
-      }),
-    }).catch(() => undefined);
-  }, 900);
-  return { mode: "mock", runId, status: "mocked" };
 }

@@ -36,14 +36,24 @@ Kindling stores role mappings locally so an admin can swap the active Autopilot 
 
 Future roles are stubbed in the data model for duplicate resolution, people finding, and monitor-and-score workflows.
 
+## Bootstrap / Migration
+
+Repo-local bootstrap assets live in `bootstrap/`:
+
+- `bootstrap/LLM_INSTRUCTIONS.md` is the setup handoff for a target local agent.
+- `bootstrap/pipelines/definitions/` contains Kindling pipeline definitions.
+- `bootstrap/pipelines/functions/` contains Kindling pipeline functions.
+
+The SQLite database is runtime state and is migrated separately. Use `bun scripts/export-migration.ts` to create a private migration bundle with a sanitized SQLite backup plus the repo-local bootstrap assets.
+
 ## Local Run
 
 ```bash
 bun install
-PORT=4317 WINGMAN_URL=http://localhost:3256 CHAT_WAPP_ALLOW_MOCK=0 bun src/server.ts
+PORT=4317 WINGMAN_URL=https://<autopilot-public-host> bun src/server.ts
 ```
 
-Open `http://localhost:4317/act`.
+Open the Kindling app URL assigned by Wingman.
 
 You need a Nostr browser signer for login and for NIP-98 requests to Autopilot. Until access rules exist, the first signed-in user can bootstrap settings. After that, only configured read/edit npubs can use the app, and only edit users can change admin settings or role mappings.
 
@@ -69,13 +79,13 @@ The legacy chat route remains available from the Home screen as a developer/test
 
 ## Autopilot Integration
 
-Kindling triggers Autopilot with:
+Kindling triggers Autopilot with browser-signed NIP-98 requests to the exact Autopilot URL saved in Settings:
 
 ```txt
 POST /api/pipelines/triggers/http/:pipelineSlug
 ```
 
-When no server-side trigger token is configured, Kindling asks the browser to sign the Autopilot trigger as a NIP-98 request. Long-running work happens inside Autopilot; the WApp records a local run, shows high-level status, and applies the webhook or write callback when the pipeline finishes.
+Long-running work happens inside Autopilot; the WApp records a local run, shows high-level status, and applies the webhook or write callback when the pipeline finishes. Kindling does not use bearer trigger tokens or remap public Autopilot URLs to local addresses.
 
 Scan pipelines may call `POST /api/kindling/pipeline-write/target-scan` as companies are discovered, then call the normal webhook to close the run.
 

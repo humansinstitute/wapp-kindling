@@ -1,0 +1,41 @@
+{
+  "name": "kindling-enrich-company-stub",
+  "description": "Kindling WApp stub for company enrichment. Accepts a selected company and posts an enrichment placeholder to the WApp webhook.",
+  "version": 1,
+  "tags": [
+    "kindling",
+    "wapp",
+    "stub",
+    "http-trigger",
+    "webhook",
+    "enrichment"
+  ],
+  "input": {
+    "source": "kindling-wapp",
+    "pipelineRole": "enrich_company",
+    "requestId": "",
+    "userNpub": "",
+    "companyId": "",
+    "companyName": "",
+    "localContext": {
+      "company": {},
+      "knownSources": [],
+      "requestedFields": []
+    },
+    "webhook": {
+      "url": "",
+      "authHeader": "x-kindling-pipeline-token",
+      "token": ""
+    }
+  },
+  "steps": [
+    {
+      "id": "deliver-enrichment-stub",
+      "name": "deliver-enrichment-stub",
+      "description": "Build a stub enrichment response and deliver it to the Kindling WApp webhook.",
+      "type": "code",
+      "function": "kindling.stubWebhook",
+      "assign": "$.stubResult"
+    }
+  ]
+}

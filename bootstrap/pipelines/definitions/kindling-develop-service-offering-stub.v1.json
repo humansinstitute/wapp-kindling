@@ -1,0 +1,41 @@
+{
+  "name": "kindling-develop-service-offering-stub",
+  "description": "Kindling WApp stub for developing the service offering / market profile. Accepts a WApp trigger and posts a profile-update placeholder to the WApp webhook.",
+  "version": 1,
+  "tags": [
+    "kindling",
+    "wapp",
+    "stub",
+    "http-trigger",
+    "webhook",
+    "service-offering"
+  ],
+  "input": {
+    "source": "kindling-wapp",
+    "pipelineRole": "develop_service_offering",
+    "requestId": "",
+    "userNpub": "",
+    "message": "",
+    "history": [],
+    "localContext": {
+      "marketProfileId": "",
+      "activeProfileVersionId": "",
+      "documents": []
+    },
+    "webhook": {
+      "url": "",
+      "authHeader": "x-kindling-pipeline-token",
+      "token": ""
+    }
+  },
+  "steps": [
+    {
+      "id": "deliver-service-offering-stub",
+      "name": "deliver-service-offering-stub",
+      "description": "Build a stub market-profile update response and deliver it to the Kindling WApp webhook.",
+      "type": "code",
+      "function": "kindling.stubWebhook",
+      "assign": "$.stubResult"
+    }
+  ]
+}
