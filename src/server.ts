@@ -137,6 +137,147 @@ function mapRun(row: Record<string, unknown>) {
   };
 }
 
+const KINDLING_IMPORT_TABLES = {
+  companies: [
+    "id",
+    "name",
+    "location",
+    "industry",
+    "website",
+    "data_ring",
+    "duplicate_status",
+    "enrichment_status",
+    "confidence",
+    "profile_json",
+    "created_at",
+    "updated_at",
+  ],
+  sources: [
+    "id",
+    "company_id",
+    "source_type",
+    "url",
+    "summary",
+    "confidence",
+    "created_at",
+  ],
+  activities: [
+    "id",
+    "target_type",
+    "target_id",
+    "actor",
+    "action_type",
+    "summary",
+    "payload_json",
+    "created_at",
+  ],
+  discovery_jobs: [
+    "id",
+    "industry",
+    "location",
+    "target_count",
+    "scan_mode",
+    "status",
+    "company_count",
+    "source_count",
+    "summary",
+    "created_at",
+    "updated_at",
+  ],
+  scan_strategy_attempts: [
+    "id",
+    "discovery_job_id",
+    "industry",
+    "location",
+    "strategy_type",
+    "query",
+    "status",
+    "result_count",
+    "notes",
+    "payload_json",
+    "created_at",
+  ],
+  enrichment_requests: [
+    "id",
+    "company_id",
+    "status",
+    "request_kind",
+    "summary",
+    "created_at",
+    "updated_at",
+  ],
+  target_rankings: [
+    "id",
+    "company_id",
+    "rank",
+    "reason",
+    "score_json",
+    "created_at",
+  ],
+  outreach_drafts: [
+    "id",
+    "company_id",
+    "pitch_text",
+    "status",
+    "source_run_id",
+    "created_at",
+    "updated_at",
+  ],
+} as const;
+
+type KindlingImportTable = keyof typeof KINDLING_IMPORT_TABLES;
+type SqlImportValue = string | number | bigint | boolean | null | Uint8Array;
+
+function sqlImportValue(value: unknown): SqlImportValue {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string" || typeof value === "number" || typeof value === "bigint" || typeof value === "boolean") return value;
+  if (value instanceof Uint8Array) return value;
+  return JSON.stringify(value);
+}
+
+function importRows(table: KindlingImportTable, rows: unknown[]): number {
+  const columns = KINDLING_IMPORT_TABLES[table];
+  if (!rows.length) return 0;
+  const placeholders = columns.map((_, index) => `?${index + 1}`).join(", ");
+  const statement = db.query(`
+    INSERT OR REPLACE INTO ${table} (${columns.join(", ")})
+    VALUES (${placeholders})
+  `);
+  let count = 0;
+  for (const raw of rows) {
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) continue;
+    const row = raw as Record<string, unknown>;
+    statement.run(...columns.map((column) => sqlImportValue(row[column])));
+    count += 1;
+  }
+  return count;
+}
+
+function importKindlingData(body: Record<string, unknown>) {
+  const tables = body.tables && typeof body.tables === "object" && !Array.isArray(body.tables)
+    ? body.tables as Record<string, unknown>
+    : body;
+  const counts: Record<string, number> = {};
+  const order: KindlingImportTable[] = [
+    "companies",
+    "discovery_jobs",
+    "sources",
+    "activities",
+    "scan_strategy_attempts",
+    "enrichment_requests",
+    "target_rankings",
+    "outreach_drafts",
+  ];
+  const transaction = db.transaction(() => {
+    for (const table of order) {
+      const rows = Array.isArray(tables[table]) ? tables[table] as unknown[] : [];
+      counts[table] = importRows(table, rows);
+    }
+  });
+  transaction();
+  return counts;
+}
+
 function mapDiscoveryJob(row: Record<string, unknown>) {
   return {
     id: String(row.id),
@@ -2063,6 +2204,15 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     if (!verified.ok) return json({ error: verified.error }, 401);
     if (!hasAccess(verified.pubkey, "read")) return json({ error: "read access required" }, 403);
     return json({ pipelineRoles: listPipelineRoles() });
+  }
+
+  if (pathname === "/api/nip98/kindling/import" && req.method === "POST") {
+    const verified = await verifyNip98Request(req, url);
+    if (!verified.ok) return json({ error: verified.error }, 401);
+    if (!hasAccess(verified.pubkey, "edit")) return json({ error: "edit access required" }, 403);
+    const body = await readJson(req);
+    const counts = importKindlingData(body);
+    return json({ ok: true, counts });
   }
 
   if (pathname === "/api/nip98/kindling/scan-context" && req.method === "GET") {
