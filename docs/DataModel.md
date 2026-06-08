@@ -5,7 +5,7 @@
 Kindling stores three linked datasets:
 
 - The owner company running Kindling.
-- Marketing/service profiles for the owner company. Each profile targets a specific segment, such as SME Manufacturing or SME Accounting, and each profile has its own version history.
+- Market profiles for the owner company. Each profile targets a specific segment, such as SME Manufacturing or SME Accounting, and each profile has its own version history.
 - Prospective customer records, sources, people, match results, outreach drafts, and follow-up history.
 
 All persisted API identifiers are UUID strings. Timestamps are Unix milliseconds in SQLite rows and ISO-8601 strings in JSON examples unless an existing endpoint already returns milliseconds.
@@ -44,7 +44,7 @@ JSON shape:
 
 ### `market_profiles`
 
-Stores one marketing/service profile for the owner company. An owner company can have many market profiles, for example `sme_manufacturing` and `sme_accounting`.
+Stores one market profile for the owner company. An owner company can have many market profiles, for example `sme_manufacturing` and `sme_accounting`.
 
 ```sql
 CREATE TABLE market_profiles (
@@ -78,7 +78,7 @@ JSON shape:
 
 ### `market_profile_versions`
 
-Stores versioned service-offering and matching data for one market profile. Matching and outreach use the active version referenced by `market_profiles.current_version_id`.
+Stores versioned positioning, services, and matching data for one market profile. Matching and outreach use the active version referenced by `market_profiles.current_version_id`.
 
 ```sql
 CREATE TABLE market_profile_versions (
@@ -213,7 +213,7 @@ Allowed `duplicate_status` values:
     }
   ],
   "primaryPersonIds": ["638dcd54-0424-4ed9-bc24-3fc4b4d7fd89"],
-  "currentVersionId": "e934d4d3-6808-43d0-9680-203be5198d83",
+  "currentCustomerProfileVersionId": "e934d4d3-6808-43d0-9680-203be5198d83",
   "gaps": [
     {
       "field": "people",
@@ -397,7 +397,7 @@ JSON shape:
 
 ### `activities`
 
-Stores audit history for customers, sources, outreach, and service-offering versions.
+Stores audit history for customers, sources, outreach, and market profile versions.
 
 ```sql
 CREATE TABLE activities (
@@ -451,7 +451,7 @@ JSON shape:
   "summary": "Checked the company website and found a new blog post about AI-enabled bookkeeping.",
   "payload": {
     "companyId": "8fb4b145-8a80-44a0-a178-f731acfed5c9",
-    "customerVersionId": "f8f875a1-2024-44ec-b20f-d48fb37adabf",
+    "customerProfileVersionId": "f8f875a1-2024-44ec-b20f-d48fb37adabf",
     "changed": true,
     "confidence": 0.81
   },
@@ -459,19 +459,25 @@ JSON shape:
 }
 ```
 
-### `target_rankings`
+### `company_matches`
 
 Stores match results between a prospective customer and a market profile version.
 
 ```sql
-CREATE TABLE target_rankings (
+CREATE TABLE company_matches (
   id TEXT PRIMARY KEY,
   company_id TEXT NOT NULL,
+  market_profile_id TEXT NOT NULL,
+  market_profile_version_id TEXT NOT NULL,
+  profile_key TEXT NOT NULL,
   rank INTEGER NOT NULL,
   reason TEXT NOT NULL,
   score_json TEXT NOT NULL DEFAULT '{}',
   created_at INTEGER NOT NULL,
-  FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
+  FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE,
+  FOREIGN KEY (market_profile_id) REFERENCES market_profiles(id) ON DELETE CASCADE,
+  FOREIGN KEY (market_profile_version_id) REFERENCES market_profile_versions(id) ON DELETE CASCADE,
+  UNIQUE(company_id, market_profile_version_id)
 );
 ```
 
@@ -479,9 +485,6 @@ CREATE TABLE target_rankings (
 
 ```json
 {
-  "marketProfileId": "586e57f9-c90a-48f7-a55d-14e2f6f08f19",
-  "marketProfileVersionId": "538b52f0-f52d-4f10-927e-77f978abf184",
-  "profileKey": "sme_accounting",
   "overallScore": 82,
   "drivers": {
     "serviceFit": 0.86,
@@ -509,12 +512,18 @@ Stores outreach approaches and draft copy.
 CREATE TABLE outreach_drafts (
   id TEXT PRIMARY KEY,
   company_id TEXT NOT NULL,
+  company_match_id TEXT,
+  market_profile_id TEXT NOT NULL,
+  market_profile_version_id TEXT NOT NULL,
   pitch_text TEXT NOT NULL,
   status TEXT NOT NULL,
   source_run_id TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
-  FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
+  FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE,
+  FOREIGN KEY (company_match_id) REFERENCES company_matches(id) ON DELETE SET NULL,
+  FOREIGN KEY (market_profile_id) REFERENCES market_profiles(id) ON DELETE CASCADE,
+  FOREIGN KEY (market_profile_version_id) REFERENCES market_profile_versions(id) ON DELETE CASCADE
 );
 ```
 
@@ -583,7 +592,7 @@ Response:
 }
 ```
 
-### Owner Company and Service Offering Profiles
+### Owner Company and Market Profiles
 
 ```txt
 GET   /api/kindling/owner-company
@@ -630,7 +639,7 @@ Response when deferred:
         "localContext": {
           "ownerCompany": {},
           "marketProfile": {},
-          "currentVersion": {}
+          "marketProfileVersion": {}
         }
       }
     }
@@ -649,7 +658,7 @@ Pipeline callback payload:
   "result": {
     "outputKind": "market_profile_update",
     "marketProfileId": "586e57f9-c90a-48f7-a55d-14e2f6f08f19",
-    "profileVersionPatch": {},
+    "marketProfileVersionPatch": {},
     "changeSummary": "Added AI workflow consulting service line for SME accounting firms.",
     "rationaleNotes": ["The new service line matches the supplied positioning."],
     "sourceReferences": []
@@ -698,9 +707,9 @@ Detail response:
   "sources": [],
   "people": [],
   "activities": [],
-  "versions": [],
+  "customerProfileVersions": [],
   "matches": [],
-  "drafts": [],
+  "outreachDrafts": [],
   "feedback": []
 }
 ```
@@ -740,7 +749,7 @@ Check-result request:
     "summary": "Found new blog post about AI-enabled bookkeeping.",
     "payload": {}
   },
-  "profileVersion": {}
+  "customerProfileVersion": {}
 }
 ```
 
@@ -790,6 +799,8 @@ Common trigger payload shape sent to Autopilot:
 5. Add `outreach_feedback` table.
 6. Add `last_checked_at` and `last_checked_by_run_id` to `sources`.
 7. Normalize `companies.data_ring` to `found`, `enhanced`, `matched`, `outreach`, and `parked`.
-8. Add owner-company and market-profile read/create/version/activate endpoints around `owner_companies`, `market_profiles`, and `market_profile_versions`.
-9. Add source check-batch and check-result endpoints for agent daily cycles.
-10. Return `people`, `versions`, `matches`, and `feedback` in company detail responses.
+8. Add `company_matches` table for market-profile-specific match records.
+9. Add `company_match_id`, `market_profile_id`, and `market_profile_version_id` to `outreach_drafts`.
+10. Add owner-company and market-profile read/create/version/activate endpoints around `owner_companies`, `market_profiles`, and `market_profile_versions`.
+11. Add source check-batch and check-result endpoints for agent daily cycles.
+12. Return `people`, `customerProfileVersions`, `matches`, `outreachDrafts`, and `feedback` in company detail responses.
