@@ -2,24 +2,27 @@
 
 ## Scope
 
-Kindling stores two linked datasets:
+Kindling stores three linked datasets:
 
-- The service offering profile for the company running Kindling. This is the "My Profile" record used to match prospective customers.
+- The owner company running Kindling.
+- Marketing/service profiles for the owner company. Each profile targets a specific segment, such as SME Manufacturing or SME Accounting, and each profile has its own version history.
 - Prospective customer records, sources, people, match results, outreach drafts, and follow-up history.
 
 All persisted API identifiers are UUID strings. Timestamps are Unix milliseconds in SQLite rows and ISO-8601 strings in JSON examples unless an existing endpoint already returns milliseconds.
 
 ## SQLite Tables
 
-### `market_profiles`
+### `owner_companies`
 
 Stores the organisation running Kindling.
 
 ```sql
-CREATE TABLE market_profiles (
+CREATE TABLE owner_companies (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL,
-  current_version_id TEXT,
+  website TEXT,
+  location TEXT,
+  summary TEXT NOT NULL DEFAULT '',
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -29,8 +32,44 @@ JSON shape:
 
 ```json
 {
-  "id": "586e57f9-c90a-48f7-a55d-14e2f6f08f19",
+  "id": "a2dd40fd-5a11-46d6-a1e6-b6b1f6a568b8",
   "name": "Adapt by Design",
+  "website": "https://adaptbydesign.example",
+  "location": "Perth, WA",
+  "summary": "Adapt helps businesses improve workflows with practical AI, automation, training, and implementation support.",
+  "createdAt": 1780876800000,
+  "updatedAt": 1780876800000
+}
+```
+
+### `market_profiles`
+
+Stores one marketing/service profile for the owner company. An owner company can have many market profiles, for example `sme_manufacturing` and `sme_accounting`.
+
+```sql
+CREATE TABLE market_profiles (
+  id TEXT PRIMARY KEY,
+  owner_company_id TEXT NOT NULL,
+  profile_key TEXT NOT NULL,
+  name TEXT NOT NULL,
+  target_segment TEXT NOT NULL,
+  current_version_id TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  FOREIGN KEY (owner_company_id) REFERENCES owner_companies(id) ON DELETE CASCADE,
+  UNIQUE(owner_company_id, profile_key)
+);
+```
+
+JSON shape:
+
+```json
+{
+  "id": "586e57f9-c90a-48f7-a55d-14e2f6f08f19",
+  "ownerCompanyId": "a2dd40fd-5a11-46d6-a1e6-b6b1f6a568b8",
+  "profileKey": "sme_accounting",
+  "name": "SME Accounting Profile",
+  "targetSegment": "SME accounting firms in Western Australia",
   "currentVersionId": "538b52f0-f52d-4f10-927e-77f978abf184",
   "createdAt": 1780876800000,
   "updatedAt": 1780876800000
@@ -39,7 +78,7 @@ JSON shape:
 
 ### `market_profile_versions`
 
-Stores versioned service-offering data for the company running Kindling. Matching and outreach use the active version referenced by `market_profiles.current_version_id`.
+Stores versioned service-offering and matching data for one market profile. Matching and outreach use the active version referenced by `market_profiles.current_version_id`.
 
 ```sql
 CREATE TABLE market_profile_versions (
@@ -59,14 +98,13 @@ CREATE TABLE market_profile_versions (
 
 ```json
 {
-  "company": {
-    "name": "Adapt by Design",
-    "summary": "Adapt helps businesses improve workflows with practical AI, automation, training, and implementation support.",
-    "website": "https://adaptbydesign.example",
-    "location": "Perth, WA"
+  "profile": {
+    "profileKey": "sme_accounting",
+    "name": "SME Accounting Profile",
+    "targetSegment": "SME accounting firms in Western Australia"
   },
   "positioning": {
-    "statement": "Practical AI and workflow improvement for service businesses that need usable systems, not theatre.",
+    "statement": "Practical AI and workflow improvement for accounting firms carrying manual client follow-up and recurring admin load.",
     "proofPoints": ["Workshop delivery", "Workflow automation", "Wingman implementation experience"]
   },
   "services": [
@@ -81,10 +119,10 @@ CREATE TABLE market_profile_versions (
     }
   ],
   "idealCustomerProfile": {
-    "industries": ["professional_services", "training", "local_service_businesses"],
+    "industries": ["accounting", "bookkeeping", "business_advisory"],
     "employeeCountBuckets": ["5-20", "20-50", "50-100"],
     "locations": ["Perth", "Western Australia"],
-    "positiveSignals": ["manual admin load", "public AI interest", "growth creating process strain"],
+    "positiveSignals": ["manual client follow-up", "public AI interest", "recurring compliance workload"],
     "exclusionRules": ["no public business footprint", "consumer-only microbusiness"]
   },
   "buyingTriggers": [
@@ -134,7 +172,7 @@ Allowed `data_ring` values:
 
 - `found`: public customer record exists with at least a name and source, website, or directory reference.
 - `enhanced`: source-backed customer profile has been generated.
-- `matched`: customer has been matched against the active service offering profile.
+- `matched`: customer has been matched against a market profile version.
 - `outreach`: outreach approach or draft exists.
 - `parked`: customer is not currently useful for matching or outreach.
 
@@ -423,7 +461,7 @@ JSON shape:
 
 ### `target_rankings`
 
-Stores match results between a prospective customer and the active service-offering version.
+Stores match results between a prospective customer and a market profile version.
 
 ```sql
 CREATE TABLE target_rankings (
@@ -441,7 +479,9 @@ CREATE TABLE target_rankings (
 
 ```json
 {
+  "marketProfileId": "586e57f9-c90a-48f7-a55d-14e2f6f08f19",
   "marketProfileVersionId": "538b52f0-f52d-4f10-927e-77f978abf184",
+  "profileKey": "sme_accounting",
   "overallScore": 82,
   "drivers": {
     "serviceFit": 0.86,
@@ -529,7 +569,8 @@ Response:
 
 ```json
 {
-  "profile": {},
+  "ownerCompany": {},
+  "marketProfiles": [],
   "companies": [],
   "pipelineRoles": [],
   "recentRuns": [],
@@ -542,16 +583,31 @@ Response:
 }
 ```
 
-### Service Offering Profile
+### Owner Company and Service Offering Profiles
 
 ```txt
-GET  /api/kindling/service-offering
-POST /api/kindling/service-offering
-GET  /api/kindling/service-offering/versions
-POST /api/kindling/service-offering/versions/:versionId/activate
+GET   /api/kindling/owner-company
+PATCH /api/kindling/owner-company
+GET   /api/kindling/market-profiles
+POST  /api/kindling/market-profiles
+GET   /api/kindling/market-profiles/:profileId
+PATCH /api/kindling/market-profiles/:profileId
+GET   /api/kindling/market-profiles/:profileId/versions
+POST  /api/kindling/market-profiles/:profileId/versions
+POST  /api/kindling/market-profiles/:profileId/versions/:versionId/activate
 ```
 
-`POST /api/kindling/service-offering` request:
+`POST /api/kindling/market-profiles` request:
+
+```json
+{
+  "profileKey": "sme_accounting",
+  "name": "SME Accounting Profile",
+  "targetSegment": "SME accounting firms in Western Australia"
+}
+```
+
+`POST /api/kindling/market-profiles/:profileId/versions` request:
 
 ```json
 {
@@ -572,7 +628,9 @@ Response when deferred:
         "pipelineRole": "develop_service_offering",
         "message": "We help local service businesses reduce manual follow-up and operational admin with practical AI workflows.",
         "localContext": {
-          "currentProfile": {}
+          "ownerCompany": {},
+          "marketProfile": {},
+          "currentVersion": {}
         }
       }
     }
@@ -587,11 +645,12 @@ Pipeline callback payload:
   "requestId": "f45bd30d-765e-46b9-93f2-b1ef3552765e",
   "role": "develop_service_offering",
   "status": "ok",
-  "response": "Created a sharper service offering profile.",
+  "response": "Created a sharper SME Accounting Profile version.",
   "result": {
     "outputKind": "market_profile_update",
+    "marketProfileId": "586e57f9-c90a-48f7-a55d-14e2f6f08f19",
     "profileVersionPatch": {},
-    "changeSummary": "Added AI workflow consulting service line.",
+    "changeSummary": "Added AI workflow consulting service line for SME accounting firms.",
     "rationaleNotes": ["The new service line matches the supplied positioning."],
     "sourceReferences": []
   }
@@ -723,11 +782,13 @@ Common trigger payload shape sent to Autopilot:
 
 ## Backend Work Implied
 
-1. Add `people` table.
-2. Add `customer_profile_versions` table.
-3. Add `outreach_feedback` table.
-4. Add `last_checked_at` and `last_checked_by_run_id` to `sources`.
-5. Normalize `companies.data_ring` to `found`, `enhanced`, `matched`, `outreach`, and `parked`.
-6. Add service-offering read/version/activate endpoints around `market_profiles` and `market_profile_versions`.
-7. Add source check-batch and check-result endpoints for agent daily cycles.
-8. Return `people`, `versions`, `match`, and `feedback` in company detail responses.
+1. Add `owner_companies` table.
+2. Add `owner_company_id`, `profile_key`, and `target_segment` to `market_profiles`.
+3. Add `people` table.
+4. Add `customer_profile_versions` table.
+5. Add `outreach_feedback` table.
+6. Add `last_checked_at` and `last_checked_by_run_id` to `sources`.
+7. Normalize `companies.data_ring` to `found`, `enhanced`, `matched`, `outreach`, and `parked`.
+8. Add owner-company and market-profile read/create/version/activate endpoints around `owner_companies`, `market_profiles`, and `market_profile_versions`.
+9. Add source check-batch and check-result endpoints for agent daily cycles.
+10. Return `people`, `versions`, `match`, and `feedback` in company detail responses.
