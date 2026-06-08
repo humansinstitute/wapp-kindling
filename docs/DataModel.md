@@ -577,7 +577,7 @@ Response:
   "counts": {
     "companies": 0,
     "enhanced": 0,
-    "outreachReady": 0,
+    "outreach": 0,
     "activeRuns": 0
   }
 }
@@ -699,7 +699,7 @@ Detail response:
   "people": [],
   "activities": [],
   "versions": [],
-  "match": {},
+  "matches": [],
   "drafts": [],
   "feedback": []
 }
@@ -769,7 +769,8 @@ Common trigger payload shape sent to Autopilot:
     "localContext": {
       "company": {},
       "knownSources": [],
-      "activeMarketProfile": {}
+      "marketProfile": {},
+      "marketProfileVersion": {}
     },
     "webhook": {
       "url": "https://kindling.example/api/kindling/pipeline-webhook",
@@ -791,4 +792,4 @@ Common trigger payload shape sent to Autopilot:
 7. Normalize `companies.data_ring` to `found`, `enhanced`, `matched`, `outreach`, and `parked`.
 8. Add owner-company and market-profile read/create/version/activate endpoints around `owner_companies`, `market_profiles`, and `market_profile_versions`.
 9. Add source check-batch and check-result endpoints for agent daily cycles.
-10. Return `people`, `versions`, `match`, and `feedback` in company detail responses.
+10. Return `people`, `versions`, `matches`, and `feedback` in company detail responses.
