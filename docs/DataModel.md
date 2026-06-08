@@ -21,7 +21,7 @@ The current SQLite schema already supports the first slice of this model:
 - `market_profiles` and `market_profile_versions`: Adapt's configurable positioning, ICP, services, triggers, and outreach voice.
 - `pipeline_roles` and `kindling_pipeline_runs`: the configured Autopilot role and run status for each app action.
 
-The current backend does not yet have first-class tables for people, score breakdowns, or field-level evidence. The first contract should add people as first-class records and avoid separate monitoring-point or signal records for now. Sources can carry optional recheck metadata, and activities can record what was found. When new evidence materially changes the customer profile, the backend should create a new customer-profile version.
+The current backend does not yet have first-class tables for people, score breakdowns, or field-level evidence. The first contract should add people as first-class records. Sources are the available inputs agents can check. Agents own the checking cycle: they can ask for sources ordered by `lastCheckedAt`, take a batch such as the oldest 20, inspect those sources, update any affected customer profiles, then mark the sources checked.
 
 ## Customer Profile Stages
 
@@ -33,7 +33,6 @@ Profiles move through stages as more data becomes available. A stage is not a st
 | Publicly findable | `publicly_findable` | seed data plus at least one source | candidate website, directory profile, map result, LinkedIn/company profile | Show source coverage and confidence. |
 | Basic profile | `basic_profile` | findable data plus structured summary | description, offer, customer types, size hints, source notes | Show customer summary card. |
 | People found | `people_found` | profile plus at least one relevant person | roles, profile URLs, buyer/influencer confidence | Show people/contact panel. |
-| Watched | `watched` | profile plus checkable sources | company blog, personal blog, LinkedIn activity, hiring page, news, events | Show checkable sources and latest activity. |
 | Scored | `scored` | profile plus score breakdown | service fit, timing, reachability, trigger strength, confidence | Show ranking and score drivers. |
 | Outreach candidate | `outreach_candidate` | scored plus clear next action | recommended service angle, missing data, risk | Show in today's targets. |
 | Outreach ready | `outreach_ready` | candidate plus source-backed pitch inputs | draft variants, subject, CTA, evidence, warnings | Enable outreach draft review/copy. |
@@ -49,16 +48,6 @@ Current backend mapping:
 ## Customer Profile Object
 
 Frontend fake data should start from this shape. Fields can be omitted or empty if the profile is sparse.
-
-<Comments> 
-For below model:
-
- - ID should be a UUID
- - name should be camel case. 
- - Size hints should come from optional buckets of 1 | <5 | 5 - 20 | 20 -50 | 50 - 100 | 100 - 500 | 500 +
- - note people should be there own first class record
-
-</Comments> 
 
 ```json
 {
@@ -153,14 +142,6 @@ Static profile data is the current best known state of the customer. It should b
 
 Activity data is what happened over time: scans, source checks, pipeline enrichments, failed attempts, public updates, meetings, manual edits, scoring runs, and outreach draft runs. It should be append-only where possible and visible as an audit timeline.
 
-<Comments> 
-
-- ids should always be UUID
-- I presume actor here is saying the pipeline updated i.e. auto and we could have manual updates? 
-- I think there are like key activities that we can track Meeting (likely manual) | blogs | Linkedin | Instragram | Twitter | Speaking | Podcasts there may be more... the thinking here is that we will identify several sources we can monitor for a company as we do our sweep. This may lead to updates to the customer as we monitor these inputs on a weekly. monthly sweep thorugh potententail targets. 
-
-</Comments> 
-
 ```json
 {
   "activity": {
@@ -169,12 +150,13 @@ Activity data is what happened over time: scans, source checks, pipeline enrichm
     "targetType": "customer",
     "targetId": "8fb4b145-8a80-44a0-a178-f731acfed5c9",
     "actor": "pipeline",
-    "activityType": "blog_post",
-    "actionType": "source_update_found",
-    "summary": "Found a new blog post about AI-enabled bookkeeping.",
+    "activityType": "source_checked",
+    "actionType": "source_checked",
+    "summary": "Checked the company website and found a new blog post about AI-enabled bookkeeping.",
     "payload": {
       "sourceId": "5e735698-7d4d-409a-b977-ad77e4eeccdc",
-      "proposedCustomerVersionId": "f8f875a1-2024-44ec-b20f-d48fb37adabf",
+      "customerVersionId": "f8f875a1-2024-44ec-b20f-d48fb37adabf",
+      "changed": true,
       "confidence": 0.81
     },
     "createdAt": "2026-06-08T00:00:00.000Z"
@@ -206,17 +188,9 @@ Suggested `activityType` values for the first frontend:
 
 ## Source Contract
 
-Sources are evidence records and optional future check inputs. They explain why the static profile says what it says, and they give weekly or monthly sweep jobs somewhere concrete to look again.
+Sources are evidence records and available check inputs. They explain why the static profile says what it says, and they give agents concrete places to look when cycling through possible updates.
 
-There should not be a separate monitoring-point table in the first version. A source can simply say whether it is worth checking again, how often, and when it was last checked. If a recheck finds something important, record an `activity` and, when appropriate, create a new customer-profile version.
-
-<Comments> 
-So these would be why for instance the static profile is how it is? 
-
-If I'm writing a static profile and then I enrich I presume this is sourcing the enhancements? So this could also be fed into a sweep for updates agent that runs once a week /month to say, thi sis where we foudn the info go check and update as appropriate. 
-
-These feel like these would be the enumerated lists for activity updates mentioned above. 
-</Comments> 
+The data model does not schedule source checks. Agents own that loop. A daily agent can request sources ordered by `lastCheckedAt`, take the top 20 oldest or never-checked sources, inspect them, write activities and customer-profile versions where useful, then mark those sources with the latest check timestamp.
 
 ```json
 {
@@ -233,11 +207,8 @@ These feel like these would be the enumerated lists for activity updates mention
     "services": ["Bookkeeping", "Tax"]
   },
   "confidence": 0.86,
-  "checkForUpdates": true,
-  "checkCadence": "monthly",
   "lastCheckedAt": "2026-06-08T00:00:00.000Z",
-  "nextCheckAt": "2026-07-08T00:00:00.000Z",
-  "priority": "medium",
+  "lastCheckedByRunId": "2a5ba3d4-ecf0-4e13-a6e1-a66c6edcbdab",
   "termsNotes": ""
 }
 ```
@@ -258,69 +229,6 @@ Suggested `sourceType` values:
 - `technology_profile`
 - `manual_note`
 - `pipeline_enrichment`
-
-## Deferred Monitoring Point Contract
-
-Monitoring points were considered as separate records, but they are likely over-engineering for the first Adapt contract. For now, use `sources.checkForUpdates`, `sources.checkCadence`, `activities`, and customer-profile versions.
-
-Do not build this as a separate first-version API unless source-level recheck metadata becomes too limiting. The old shape is kept here only as design history while the comments are being reviewed.
-
-<Comments> 
-Its not obvious to me why we have monitroing piotns nad sources? woudnt we jsut check everything or are these more trigger based.
-</Comments> 
-
-```json
-{
-  "id": "7cb0da06-6cd6-4c8b-a1dd-13c7117b7f8c",
-  "customerId": "8fb4b145-8a80-44a0-a178-f731acfed5c9",
-  "targetType": "person",
-  "targetId": "638dcd54-0424-4ed9-bc24-3fc4b4d7fd89",
-  "sourceType": "personal_blog",
-  "url": "https://sam.example/blog",
-  "label": "Sam Taylor personal blog",
-  "priority": "high",
-  "status": "active",
-  "checkCadence": "weekly",
-  "lastCheckedAt": null,
-  "nextCheckAt": "2026-06-15T00:00:00.000Z",
-  "reason": "Personal writing is the strongest available signal source.",
-  "createdAt": "2026-06-08T00:00:00.000Z",
-  "updatedAt": "2026-06-08T00:00:00.000Z"
-}
-```
-
-Suggested source `priority` values:
-
-- `high`: personal blog, company blog, first-party writing, high-signal LinkedIn activity.
-- `medium`: company website changes, job ads, events, newsletters.
-- `low`: directories, maps, technology profiles, indirect secondary updates.
-
-## Deferred Signal Contract
-
-Signals were considered as separate records, but this is also likely over-engineering for the first Adapt contract. A useful discovery from a source check should be recorded as an `activity`. If it changes the customer profile, create a new customer-profile version, flag the new version in the UI, and allow version history/restore.
-
-Do not build this as a separate first-version API unless activities and profile versions prove insufficient.
-
-<Comments> 
-I think this is over engineering what make sense it to up version a new version of a company when we have good data, but flag this in the UI and allow for version history to restore. 
-</Comments> 
-
-```json
-{
-  "id": "cd3864e9-8eea-41e7-91ea-395814b5387f",
-  "customerId": "8fb4b145-8a80-44a0-a178-f731acfed5c9",
-  "sourceId": "5e735698-7d4d-409a-b977-ad77e4eeccdc",
-  "monitoringPointId": "7cb0da06-6cd6-4c8b-a1dd-13c7117b7f8c",
-  "signalType": "ai_interest",
-  "title": "Blog post mentions using AI to reduce admin follow-up",
-  "observedAt": "2026-06-08T00:00:00.000Z",
-  "summary": "The director wrote about wanting to reduce manual client follow-up.",
-  "evidenceUrl": "https://sam.example/blog/ai-admin",
-  "relevance": 0.88,
-  "confidence": 0.82,
-  "recommendedAction": "Score against Adapt AI workflow consulting offer."
-}
-```
 
 ## Customer Profile Version Contract
 
@@ -601,7 +509,6 @@ Andy can build UI screens against a single JSON fixture with this shape:
     "publiclyFindable": 0,
     "basicProfile": 0,
     "peopleFound": 0,
-    "watched": 0,
     "scored": 0,
     "outreachCandidate": 0,
     "outreachReady": 0,
@@ -616,7 +523,6 @@ Recommended first fake records:
 - One `publicly_findable` customer with sources but weak profile.
 - One `basic_profile` customer with company summary and evidence.
 - One `people_found` customer with a likely decision maker.
-- One `watched` customer with checkable sources such as company blog and personal LinkedIn profile.
 - One `scored` customer with visible score drivers.
 - One `outreach_ready` customer with draft variants and warnings.
 - One `parked` customer with attempted searches and a clear parked reason.
@@ -629,6 +535,6 @@ To make the contract first-class rather than JSON-only, the next backend slice s
 2. Stable `profile_json` shape for `staticProfile`, `currentVersionId`, `primaryPersonIds`, `score`, `outreach`, and `gaps`.
 3. New list/detail serializers that expose `customer` aliases while preserving `company` compatibility.
 4. First-class `people` and `customer_profile_versions` tables.
-5. Source-level recheck fields: `check_for_updates`, `check_cadence`, `last_checked_at`, `next_check_at`, and `priority`.
-6. Pipeline callback normalisation for `find_people`, source recheck activities, profile-version proposals, and `monitor_and_score`.
+5. Source check metadata: `last_checked_at` and `last_checked_by_run_id`.
+6. Pipeline callback normalisation for `find_people`, source-check activities, profile-version proposals, and `monitor_and_score`.
 7. Optional later tables for `score_snapshots` if score history needs richer querying.
