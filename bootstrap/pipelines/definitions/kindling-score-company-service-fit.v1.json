@@ -1,0 +1,85 @@
+{
+  "name": "kindling-score-company-service-fit",
+  "description": "Kindling WApp service-fit scoring pipeline. Scores one company against one service offering identity, then writes the assessment to the WApp.",
+  "version": 1,
+  "tags": [
+    "kindling",
+    "wapp",
+    "http-trigger",
+    "webhook",
+    "service-fit-scoring"
+  ],
+  "input": {
+    "source": "kindling-wapp",
+    "pipelineRole": "score_company_service_fit",
+    "requestId": "",
+    "userNpub": "",
+    "companyId": "",
+    "companyName": "",
+    "serviceOfferingId": "",
+    "marketProfileVersionId": "",
+    "agent": "codex",
+    "workingDirectory": "/Users/mini/wingmen/wingman21",
+    "localContext": {
+      "company": {},
+      "customerProfileVersions": [],
+      "sources": [],
+      "signals": [],
+      "serviceOffering": {},
+      "marketProfileVersion": {},
+      "scoringRubric": {},
+      "writeApi": {}
+    },
+    "webhook": {
+      "url": "",
+      "authHeader": "x-kindling-pipeline-token",
+      "token": ""
+    }
+  },
+  "steps": [
+    {
+      "id": "score-service-fit",
+      "name": "score-service-fit",
+      "description": "Assess the supplied company against exactly one service offering identity.",
+      "type": "agent",
+      "agent": "$.agent",
+      "directory": "$.workingDirectory",
+      "timeoutMs": 1800000,
+      "input": {
+        "pick": {
+          "requestId": "$.requestId",
+          "companyId": "$.companyId",
+          "companyName": "$.companyName",
+          "serviceOfferingId": "$.serviceOfferingId",
+          "marketProfileVersionId": "$.marketProfileVersionId",
+          "localContext": "$.localContext",
+          "userNpub": "$.userNpub"
+        }
+      },
+      "prompt": "You are the Kindling service-fit scoring pipeline.\n\nGoal:\nScore one company against exactly one Adapt service offering identity. Do not rank top targets, draft outreach, discover people, or update the service offering profile.\n\nRules:\n- Treat localContext.company, localContext.customerProfileVersions, localContext.sources, localContext.signals, localContext.serviceOffering, localContext.marketProfileVersion, and localContext.scoringRubric as the authoritative WApp context.\n- Use only supplied or source-backed evidence. If evidence is weak, lower confidence and add caveats.\n- Keep companyId, serviceOfferingId, and marketProfileVersionId exactly as supplied.\n- Do not read or write Kindling SQLite directly.\n- Do not call the WApp webhook yourself; a deterministic step will write the assessment.\n\nReturn compact JSON only with this exact shape:\n{\n  \"companyId\": \"same company id\",\n  \"serviceOfferingId\": \"same service offering id\",\n  \"marketProfileVersionId\": \"same market profile version id\",\n  \"variantKey\": \"offering variant key if any\",\n  \"score\": 0,\n  \"band\": \"low|medium|high\",\n  \"confidence\": 0.0,\n  \"drivers\": [\n    {\"dimension\": \"service_fit\", \"score\": 0, \"reason\": \"evidence-backed reason\"}\n  ],\n  \"fitExplanation\": \"plain-English explanation of the fit\",\n  \"evidence\": [\n    {\"sourceId\": \"source id if known\", \"url\": \"https://...\", \"summary\": \"what this supports\", \"confidence\": 0.0}\n  ],\n  \"caveats\": [\"missing or weak evidence, disqualifiers, or risks\"],\n  \"recommendedAction\": \"next scoring/outreach action for this company-offering pair\",\n  \"outreachAngleSeed\": \"short optional outreach angle seed\",\n  \"humanReviewRequired\": false\n}",
+      "assign": "$.assessmentDraft"
+    },
+    {
+      "id": "deliver-service-assessment",
+      "name": "deliver-service-assessment",
+      "description": "Normalise the assessment and deliver it to the Kindling WApp write API and final webhook.",
+      "type": "code",
+      "function": "kindling.deliverServiceAssessment",
+      "input": {
+        "pick": {
+          "requestId": "$.requestId",
+          "pipelineRole": "$.pipelineRole",
+          "userNpub": "$.userNpub",
+          "companyId": "$.companyId",
+          "companyName": "$.companyName",
+          "serviceOfferingId": "$.serviceOfferingId",
+          "marketProfileVersionId": "$.marketProfileVersionId",
+          "localContext": "$.localContext",
+          "webhook": "$.webhook",
+          "assessmentDraft": "$.assessmentDraft"
+        }
+      },
+      "assign": "$.delivery"
+    }
+  ]
+}

@@ -113,6 +113,8 @@ The first API surface for this loop is:
 
 The scan-context response gives Autopilot the compact state needed to plan the next strategy. The scan-results endpoint allows repeatable partial writes, so long-running scans can preserve useful data even before the final webhook fires.
 
+Scheduled acquisition uses the same surface. `POST /api/kindling/scheduler/run-once?dryRun=false` creates one scheduler run, one discovery job, and one `scan_target_list` pipeline run when acquisition is selected and locks/concurrency allow work. The WApp passes the selected segment, geography, coverage slice, target count, prior executed strategies, write API, webhook, and scheduler correlation data in the trigger payload. Partial writes update the discovery job and coverage rollups immediately; the final webhook closes the scheduler run, while failed acquisition is recorded as retryable scheduler state.
+
 ## Agent-Led Discovery
 
 Agent-led discovery should support:

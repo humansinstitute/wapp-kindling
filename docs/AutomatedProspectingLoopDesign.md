@@ -471,12 +471,12 @@ Recommended additions:
 | Geography hierarchy | Location is free text. | `target_geographies(id,parent_id,label,kind,canonical_key,status)` and optional `coverage_slices.geography_id` |
 | Persistent coverage | `discovery_jobs` and `scan_strategy_attempts` are job/attempt history. | `coverage_slices(id,segment_id,geography_id,source_family,status,target_counts_json,current_counts_json,last_run_at,next_run_after_at,yield_json)` |
 | Scheduler config | No broad scheduler config. `auto-enrichment-job.ts` exists for one batch job. | `scheduler_settings`, `scheduler_runs`, `scheduler_locks` |
-| Queue state | `enrichment_requests` exists; no generic queue. | `work_queue(id,kind,target_type,target_id,segment_id,priority,status,attempts,next_run_after_at,locked_by_run_id,error,context_json)` or role-specific queue tables |
+| Queue state | `work_queue` stores company enrichment queue state and `enrichment_requests.work_queue_id` keeps manual/industry enrichment compatibility. | Reuse `work_queue(id,kind,target_type,target_id,segment_id,segment,priority,status,reason,attempts,next_run_after_at,locked_by_run_id,error,context_json)` for later scoring/outreach queue kinds when those tickets land. |
 | Signals | Enrichment signals currently live in JSON blobs. | `signals(id,company_id,signal_type,summary,source_id,source_url,observed_date,strength,confidence,adapt_relevance,created_at)` |
 | People | Documented but not implemented in `src/db.ts`. | `people` from `docs/DataModel.md` |
 | Profile versions | Documented but not implemented in `src/db.ts`. | `customer_profile_versions` |
 | Company matches | Documented but not implemented in `src/db.ts`. | `company_matches` for profile-level fit, plus service assessment tables |
-| Service offerings | Services currently live inside `market_profile_versions.structured_json`. | Keep JSON as source, add extracted `service_offerings(id,market_profile_version_id,key,name,variant_key,structured_json,status)` if querying/scoring requires it |
+| Service offerings | Services currently live inside `market_profile_versions.structured_json`. | Decision for scoring: keep JSON as the source profile document and extract version-tied `service_offerings(id,market_profile_version_id,key,name,variant_key,structured_json,status)` rows for stable scoring identities. |
 | Service assessment rows | `target_rankings.score_json` can hold one blended score only. | `service_fit_assessments(id,company_id,service_offering_id,market_profile_version_id,score,band,confidence,drivers_json,evidence_json,caveats_json,next_action,source_run_id,created_at)` |
 | Top-target snapshots | `target_rankings` exists but has no run/list snapshot. | `target_list_runs` and `target_list_items` or extend `target_rankings` with run/list fields |
 | Outreach versions | `outreach_drafts.pitch_text` stores markdown only. | `outreach_opportunities`, `outreach_versions`, `outreach_feedback` |
@@ -793,7 +793,7 @@ Do not build these in the next implementation pass unless Pete explicitly change
 - Should the canonical state name be `enhanced` from docs or `enriched` from current code paths? I recommend `enhanced` for data ring and `enrichment_*` for queue execution states.
 Fine
 - Should service offerings be extracted to relational rows immediately, or can scoring read them from active market-profile JSON for the first scoring phase?
-Service offering should be a profile with specific fields in the DB. This can be eidted directly or via a wingman agent or pipeline. 
+Resolved in Ticket 13: scoring lists extracted `service_offerings` rows tied to a `market_profile_version_id`, while `market_profile_versions.structured_json` remains the editable source profile. This keeps old assessment references interpretable after profile changes.
 - What are Pete's default operating targets for found, enhanced, scored, and outreach-ready counts per Tier 1 segment?
 Make up something relevant
 - Should the scheduler live in the WApp server process initially, or run as a separate local worker using the same SQLite database and APIs?

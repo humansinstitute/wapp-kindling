@@ -63,6 +63,8 @@ Profile versions should store:
 
 The first version can skip a rich diff if needed. The chat response should still tell the user what changed and why.
 
+Scoring reads extracted `service_offerings` rows for the active profile version. The editable profile content still lives in `market_profile_versions.structured_json`; extraction provides stable IDs/keys for company x offering assessment rows so older scores remain interpretable after later profile versions are created.
+
 ## Baseline Profile Shape
 
 The profile should include:

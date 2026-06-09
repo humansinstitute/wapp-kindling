@@ -11,6 +11,7 @@ The first Autopilot support set started as stubs so the WApp could exercise the 
 | `develop_service_offering` | `kindling-develop-service-offering` | `kindling-develop-service-offering-stub` | `kindling-develop-service-offering.v1` | `market_profile_update` |
 | `scan_target_list` | `kindling-scan-target-list` | `kindling-scan-target-list-stub` | `kindling-scan-target-list.v1` | `target_scan_result` |
 | `enrich_company` | `kindling-enrich-company` | `kindling-enrich-company-stub` | `kindling-enrich-company.v1` | `company_enrichment` |
+| `score_company_service_fit` | `kindling-score-company-service-fit` | `kindling-score-company-service-fit-stub` | `kindling-score-company-service-fit.v1` | `service_fit_assessment` |
 | `draft_outreach` | `kindling-draft-outreach` | `kindling-draft-outreach-stub` | `kindling-draft-outreach.v1` | `outreach_draft` |
 
 These are user-scoped Autopilot definitions for Pete's workspace. The WApp can trigger by default trigger key because the Autopilot HTTP trigger route accepts the definition name, while the pipeline discovery list will show the versioned slug or opaque definition ID. The WApp should store the selected value as admin-editable configuration rather than hard-coded behavior.
@@ -41,6 +42,7 @@ Role-specific fields can sit beside `message` and `localContext`. Examples:
 
 - `scan_target_list`: `industry`, `location`, `targetCount`.
 - `enrich_company`: `companyId`, `companyName`, `localContext.company`.
+- `score_company_service_fit`: `companyId`, `companyName`, `serviceOfferingId`, `marketProfileVersionId`, `localContext.company`, `localContext.serviceOffering`, `localContext.sources`, `localContext.signals`, `localContext.writeApi`.
 - `draft_outreach`: `companyId`, `companyName`, `localContext.activeProfileVersion`.
 - `develop_service_offering`: `history`, `localContext.marketProfileId`, `localContext.activeProfileVersionId`, `localContext.documents`.
 
@@ -143,6 +145,8 @@ The WApp API surface for strategy-aware scans is:
 - `POST /api/nip98/kindling/scan-results`: writes a partial or final scan batch through NIP-98 edit access.
 - `POST /api/kindling/pipeline-write/target-scan`: writes a token-scoped partial pipeline batch for runs that use webhook-token auth rather than NIP-98.
 
+When the scheduler triggers acquisition, it still uses `scan_target_list` rather than a new role. The trigger payload includes the selected segment/geography slice, coverage slice id, coverage target/current/yield counts, prior executed strategies for that slice, source-backed unique deficit, write API details, final webhook details, and a `localContext.scheduler.correlation` object with the scheduler run id and discovery job id. Partial writes keep using the target-scan write API or NIP-98 scan-results path. The final webhook closes the scheduler run; failed callbacks mark the scheduler run failed while leaving the coverage slice active so acquisition can be retried.
+
 Partial writes are repeatable and do not mark the run complete. The final webhook remains the pipeline completion signal, but the WApp discovery job should remain `partial` when the persisted matching company count is below the requested target. Planned next strategies must be displayed separately from strategies actually run.
 
 It returns:
@@ -163,6 +167,61 @@ It returns:
 - `result.confidence`
 
 The scan remains company-discovery only. People-finding, deeper profiling, scoring, and outreach stay in later stages.
+
+## Service Fit Assessment Pipeline
+
+`kindling-score-company-service-fit` scores one supplied company against one supplied service-offering row. It must not rank top targets or draft outreach.
+
+The WApp trigger includes stable company, service offering, market profile version, and request identifiers:
+
+```json
+{
+  "input": {
+    "pipelineRole": "score_company_service_fit",
+    "requestId": "local-request-id",
+    "companyId": "company_123",
+    "companyName": "Example Co",
+    "serviceOfferingId": "service_offering:profile_v1:ai_consulting:base",
+    "marketProfileVersionId": "profile_v1",
+    "localContext": {
+      "company": {},
+      "customerProfileVersions": [],
+      "sources": [],
+      "signals": [],
+      "serviceOffering": {},
+      "marketProfileVersion": {},
+      "scoringRubric": {},
+      "writeApi": {
+        "url": "https://kindling.example/api/kindling/pipeline-write/service-assessment",
+        "authHeader": "x-kindling-pipeline-token",
+        "token": "run-scoped-token"
+      }
+    },
+    "webhook": {
+      "url": "https://kindling.example/api/kindling/pipeline-webhook",
+      "authHeader": "x-kindling-pipeline-token",
+      "token": "run-scoped-token"
+    }
+  }
+}
+```
+
+It returns and/or writes:
+
+- `result.outputKind = "service_fit_assessment"`
+- `result.companyId`
+- `result.serviceOfferingId`
+- `result.marketProfileVersionId`
+- `result.score`
+- `result.band`
+- `result.confidence`
+- `result.drivers`
+- `result.fitExplanation`
+- `result.evidence`
+- `result.caveats`
+- `result.recommendedAction`
+
+The deterministic delivery function posts the assessment to `localContext.writeApi` and sends the normal final webhook. The WApp upsert key is company, service offering, market profile version, and local Kindling run.
 
 ## Company Enrichment Pipeline
 
