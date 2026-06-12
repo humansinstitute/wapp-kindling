@@ -528,7 +528,7 @@ function renderKindling() {
             <div><span>Enriched</span><strong>${Number(data.counts?.enriched || data.counts?.outreachReady || 0)}</strong></div>
             <div><span>Scored</span><strong>${Number(data.counts?.scored || 0)}</strong></div>
             <div><span>Active runs</span><strong>${Number(data.counts?.activeRuns || 0)}</strong></div>
-            <div><span>Queue backlog</span><strong>${Number(data.counts?.workQueue?.active || 0)}</strong></div>
+            <div><span>Queue</span><strong>${Number(data.counts?.workQueue?.queued || 0)} / ${Number(data.counts?.workQueue?.running || 0)} / ${Number(data.counts?.workQueue?.failed || 0)}</strong></div>
             <div><span>Status</span><strong id="kindlingStatus">${escapeHtml(state.kindlingStatus)}</strong></div>
           </section>
           ${renderKindlingView(data, company, canEdit)}
@@ -692,8 +692,9 @@ function renderResearchDeskView(data, canEdit) {
           <div class="panelHeader">
             <div>
               <h2>Work Queue</h2>
-              <span>${Number(data.workQueueItems?.length || 0)} items</span>
+              <span>${Number(data.counts?.workQueue?.queued || 0)} queued · ${Number(data.counts?.workQueue?.running || 0)} running · ${Number(data.counts?.workQueue?.failed || 0)} failed</span>
             </div>
+            <button type="button" data-action="clear-failed-work-queue" ${canEdit && Number(data.counts?.workQueue?.failed || 0) ? "" : "disabled"}>Clear failed</button>
           </div>
           ${renderWorkQueue(data.workQueueItems || [], canEdit)}
           ${renderPager(data.workQueueList, "workQueue")}
@@ -1888,6 +1889,20 @@ async function handleKindlingClick(event) {
     saveKindlingFilters();
     await loadKindlingScreen();
     setKindlingStatus("Company filters cleared");
+  }
+  if (action === "clear-failed-work-queue") {
+    const failedCount = Number(state.kindling?.counts?.workQueue?.failed || 0);
+    if (!failedCount) return;
+    const confirmed = window.confirm(`Clear ${failedCount} failed queue item${failedCount === 1 ? "" : "s"}? They will be marked cancelled and removed from backlog counts.`);
+    if (!confirmed) return;
+    setKindlingStatus("Clearing failed queue items");
+    const cleared = await api("/api/kindling/work-queue/clear-failed", {
+      method: "POST",
+      body: "{}",
+    });
+    state.kindlingPaging.workQueue = 0;
+    await loadKindlingScreen();
+    setKindlingStatus(`Cleared ${Number(cleared.cleared || 0)} failed queue item${Number(cleared.cleared || 0) === 1 ? "" : "s"}`);
   }
   if (action === "enrich-company" && selectedCompany()) {
     setKindlingStatus("Running enrichment role");

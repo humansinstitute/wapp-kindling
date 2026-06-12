@@ -3821,6 +3821,53 @@ describe("Kindling API contracts", () => {
     expect(db.query("SELECT enrichment_status FROM companies WHERE id = 'retry-company'").get()).toEqual({ enrichment_status: "queued" });
   });
 
+  test("failed work queue items can be cleared from backlog without deleting history", async () => {
+    const now = Date.now();
+    db.query(`
+      INSERT INTO companies(id, name, data_ring, duplicate_status, enrichment_status, confidence, profile_json, created_at, updated_at)
+      VALUES
+        ('clear-company-a', 'Clear A', 'found', 'unique', 'failed', 0.4, '{}', ?1, ?1),
+        ('clear-company-b', 'Clear B', 'found', 'unique', 'failed', 0.4, '{}', ?1, ?1)
+    `).run(now);
+    db.query(`
+      INSERT INTO work_queue(
+        id, kind, target_type, target_id, segment, priority, status, reason, attempts,
+        locked_by_run_id, error, context_json, created_at, updated_at
+      )
+      VALUES
+        ('clear-failed-a', 'company_enrichment', 'company', 'clear-company-a', 'Accounting', 15, 'failed', 'Prior timeout', 1, '', 'Timed out', '{}', ?1, ?1),
+        ('clear-failed-b', 'company_enrichment', 'company', 'clear-company-b', 'Accounting', 15, 'failed', 'Prior timeout', 1, '', 'Timed out', '{}', ?1, ?1),
+        ('clear-queued', 'company_enrichment', 'company', 'clear-company-b', 'Accounting', 15, 'queued', 'Still due', 0, '', '', '{}', ?1, ?1)
+    `).run(now);
+    db.query(`
+      INSERT INTO enrichment_requests(id, company_id, work_queue_id, status, request_kind, summary, created_at, updated_at)
+      VALUES
+        ('clear-failed-a', 'clear-company-a', 'clear-failed-a', 'failed', 'standard', 'Timed out', ?1, ?1),
+        ('clear-failed-b', 'clear-company-b', 'clear-failed-b', 'failed', 'standard', 'Timed out', ?1, ?1)
+    `).run(now);
+
+    const cleared = await api("/api/kindling/work-queue/clear-failed", { method: "POST" });
+    expect(cleared.res.status).toBe(200);
+    expect(cleared.payload).toMatchObject({
+      cleared: 2,
+      byKind: { company_enrichment: 2 },
+      counts: {
+        queued: 1,
+        failed: 0,
+        cancelled: 2,
+        active: 1,
+      },
+    });
+    expect(db.query("SELECT status, COUNT(*) AS count FROM work_queue GROUP BY status ORDER BY status").all()).toEqual([
+      { status: "cancelled", count: 2 },
+      { status: "queued", count: 1 },
+    ]);
+    expect(db.query("SELECT status, COUNT(*) AS count FROM enrichment_requests GROUP BY status").all()).toEqual([
+      { status: "cancelled", count: 2 },
+    ]);
+    expect(db.query("SELECT COUNT(*) AS count FROM work_queue").get()).toEqual({ count: 3 });
+  });
+
   test("accepts documented outreach webhook callback", async () => {
     db.query("INSERT INTO companies(id, name, data_ring, duplicate_status, enrichment_status, confidence, profile_json, created_at, updated_at) VALUES ('company-2', 'West Accounting', 'manual', 'unique', 'complete', 0.7, '{}', 1, 1)").run();
     seedKindlingRun("draft_outreach", "outreach-request", "outreach-token");

@@ -2162,6 +2162,48 @@ function retryWorkQueueItem(id: string, now = Date.now()) {
   return db.query("SELECT * FROM work_queue WHERE id = ?1").get(id) as Record<string, unknown>;
 }
 
+function clearFailedWorkQueueItems(input: { kind?: string; now?: number } = {}) {
+  const now = input.now ?? Date.now();
+  const kind = String(input.kind ?? "").trim();
+  const clauses = ["status = 'failed'"];
+  const values: string[] = [];
+  if (kind) {
+    values.push(kind);
+    clauses.push(`kind = ?${values.length}`);
+  }
+  const where = clauses.join(" AND ");
+  const rows = db.query(`SELECT * FROM work_queue WHERE ${where}`).all(...values) as Record<string, unknown>[];
+  if (!rows.length) return { cleared: 0, byKind: {}, ids: [] };
+
+  const byKind: Record<string, number> = {};
+  for (const row of rows) {
+    const rowKind = String(row.kind ?? "");
+    byKind[rowKind] = (byKind[rowKind] ?? 0) + 1;
+  }
+  const ids = rows.map((row) => String(row.id));
+
+  const transaction = db.transaction(() => {
+    db.query(`
+      UPDATE work_queue
+      SET status = 'cancelled',
+          locked_by_run_id = NULL,
+          updated_at = ?${values.length + 1}
+      WHERE ${where}
+    `).run(...values, now);
+    const placeholders = ids.map((_, index) => `?${index + 2}`).join(", ");
+    db.query(`
+      UPDATE enrichment_requests
+      SET status = 'cancelled',
+          summary = CASE WHEN summary = '' THEN 'Failed queue item cleared' ELSE summary END,
+          updated_at = ?1
+      WHERE work_queue_id IN (${placeholders})
+        AND status = 'failed'
+    `).run(now, ...ids);
+  });
+  transaction();
+  return { cleared: rows.length, byKind, ids };
+}
+
 const KINDLING_IMPORT_TABLES = {
   market_profiles: ["id", "name", "current_version_id", "created_at", "updated_at"],
   market_profile_versions: [
@@ -6479,6 +6521,20 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     const session = requireSession(req);
     if (!session) return json({ error: "unauthorized" }, 401);
     return json(listWorkQueueItems(url.searchParams));
+  }
+
+  if (pathname === "/api/kindling/work-queue/clear-failed" && req.method === "POST") {
+    const session = requireEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const body = await readJson(req);
+    const kind = typeof body.kind === "string" && body.kind.trim() ? body.kind.trim() : undefined;
+    const result = clearFailedWorkQueueItems({ kind });
+    recordActivity("work_queue", kind ?? "all", "user", "work_queue_failed_cleared", `Cleared ${result.cleared} failed queue item${result.cleared === 1 ? "" : "s"}`, {
+      pubkey: session.pubkey,
+      kind: kind ?? null,
+      byKind: result.byKind,
+    });
+    return json({ ...result, counts: workQueueCounts() });
   }
 
   const retryQueueMatch = pathname.match(/^\/api\/kindling\/work-queue\/([^/]+)\/retry$/);
