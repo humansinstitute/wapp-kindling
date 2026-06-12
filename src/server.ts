@@ -3402,6 +3402,11 @@ function buildCompanyFilterQuery(filters: URLSearchParams | null = null) {
   }
   add("duplicate_status", filters?.get("duplicateStatus") || null);
   add("enrichment_status", filters?.get("enrichmentStatus") || null);
+  const query = String(filters?.get("q") || filters?.get("search") || "").trim();
+  if (query) {
+    values.push(`%${query.toLowerCase()}%`);
+    clauses.push(`lower(name) LIKE ?${values.length}`);
+  }
   if (filters?.get("hasWebsite") === "yes") clauses.push("website IS NOT NULL AND website != ''");
   if (filters?.get("hasWebsite") === "no") clauses.push("(website IS NULL OR website = '')");
   const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
@@ -3417,6 +3422,19 @@ function countCompanies(filters: URLSearchParams | null = null) {
 function countOutreachReadyCompanies() {
   const row = db.query("SELECT COUNT(*) AS count FROM companies WHERE enrichment_status = 'complete'").get() as { count: number } | null;
   return Number(row?.count ?? 0);
+}
+
+function workQueueCounts() {
+  const rows = db.query("SELECT status, COUNT(*) AS count FROM work_queue GROUP BY status").all() as Record<string, unknown>[];
+  const counts = { queued: 0, running: 0, complete: 0, failed: 0, cancelled: 0, active: 0, total: 0 };
+  for (const row of rows) {
+    const status = String(row.status) as keyof typeof counts;
+    const count = Number(row.count ?? 0);
+    if (status in counts) counts[status] = count;
+    counts.total += count;
+  }
+  counts.active = counts.queued + counts.running + counts.failed;
+  return counts;
 }
 
 function listCompanies(filters: URLSearchParams | null = null) {
@@ -5686,7 +5704,9 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
       coverage,
       counts: {
         companies: countCompanies(),
+        enriched: countOutreachReadyCompanies(),
         outreachReady: countOutreachReadyCompanies(),
+        workQueue: workQueueCounts(),
         activeRuns: recentRuns.filter((run) => ["queued", "running", "mock"].includes(run.status)).length,
         coverage: coverage.totals,
         coverageExecutedAttempts: coverage.attempts.executed,
