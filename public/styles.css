@@ -893,6 +893,28 @@ button[aria-busy="true"]::after {
   color: white;
 }
 
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.pager div {
+  display: flex;
+  gap: 8px;
+}
+
+.pager button {
+  padding: 8px 12px;
+  background: var(--panel-soft);
+}
+
 .compactList div,
 .roleRow {
   border: 1px solid var(--line);

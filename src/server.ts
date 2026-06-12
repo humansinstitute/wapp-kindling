@@ -40,6 +40,8 @@ import { buildPipelineTriggerRequest, startPreparedChatPipeline, type PipelineTr
 
 const PUBLIC_DIR = join(import.meta.dir, "..", "public");
 const COMPANY_LIST_LIMIT = 500;
+const DEFAULT_PAGE_SIZE = 20;
+const MAX_PAGE_SIZE = 100;
 
 const json = (data: unknown, status = 200) =>
   new Response(JSON.stringify(data), {
@@ -142,6 +144,34 @@ function mapCompany(row: Record<string, unknown>) {
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
   };
+}
+
+function mapCompanyListItem(row: Record<string, unknown>) {
+  return {
+    id: String(row.id),
+    name: String(row.name),
+    location: String(row.location ?? ""),
+    industry: String(row.industry ?? ""),
+    website: String(row.website ?? ""),
+    dataRing: normalizeCompanyDataRing(row.data_ring),
+    duplicateStatus: String(row.duplicate_status),
+    enrichmentStatus: normalizeCompanyExecutionStatus(row.enrichment_status),
+    confidence: Number(row.confidence ?? 0),
+    createdAt: Number(row.created_at),
+    updatedAt: Number(row.updated_at),
+  };
+}
+
+function pagingFromParams(params: URLSearchParams, defaults: { limit?: number; max?: number } = {}) {
+  const fallbackLimit = defaults.limit ?? DEFAULT_PAGE_SIZE;
+  const maxLimit = defaults.max ?? MAX_PAGE_SIZE;
+  const limitValue = params.get("limit");
+  const offsetValue = params.get("offset");
+  const parsedLimit = limitValue === null ? fallbackLimit : Math.floor(Number(limitValue));
+  const parsedOffset = offsetValue === null ? 0 : Math.floor(Number(offsetValue));
+  const limit = Number.isFinite(parsedLimit) ? Math.max(1, Math.min(maxLimit, parsedLimit)) : fallbackLimit;
+  const offset = Number.isFinite(parsedOffset) ? Math.max(0, parsedOffset) : 0;
+  return { limit, offset };
 }
 
 function mapSource(row: Record<string, unknown>) {
@@ -1977,8 +2007,9 @@ function listWorkQueueItems(filters: URLSearchParams) {
   add("status", filters.get("status"));
   add("target_type", filters.get("targetType") || filters.get("target_type"));
   add("target_id", filters.get("targetId") || filters.get("target_id"));
-  const limit = Math.min(200, Math.max(1, Math.floor(Number(filters.get("limit") || 100))));
+  const { limit, offset } = pagingFromParams(filters);
   const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  const total = db.query(`SELECT COUNT(*) AS count FROM work_queue wq ${where}`).get(...values) as { count: number } | null;
   const rows = db.query(`
     SELECT wq.*, c.name AS company_name, c.industry AS company_industry, c.location AS company_location, c.website AS company_website
     FROM work_queue wq
@@ -1990,20 +2021,32 @@ function listWorkQueueItems(filters: URLSearchParams) {
       COALESCE(wq.next_run_after_at, 0) ASC,
       wq.updated_at ASC
     LIMIT ?${values.length + 1}
-  `).all(...values, limit) as Record<string, unknown>[];
-  return rows.map((row) => ({
-    ...mapWorkQueueItem(row),
-    target: row.company_name
-      ? {
-        id: String(row.target_id),
-        type: String(row.target_type),
-        name: String(row.company_name),
-        industry: String(row.company_industry ?? ""),
-        location: String(row.company_location ?? ""),
-        website: String(row.company_website ?? ""),
-      }
-      : { id: String(row.target_id), type: String(row.target_type) },
-  }));
+    OFFSET ?${values.length + 2}
+  `).all(...values, limit, offset) as Record<string, unknown>[];
+  const items = rows.map((row) => {
+    const mapped = mapWorkQueueItem(row);
+    return {
+      ...mapped,
+      context: undefined,
+      target: row.company_name
+        ? {
+          id: String(row.target_id),
+          type: String(row.target_type),
+          name: String(row.company_name),
+          industry: String(row.company_industry ?? ""),
+          location: String(row.company_location ?? ""),
+          website: String(row.company_website ?? ""),
+        }
+        : { id: String(row.target_id), type: String(row.target_type) },
+    };
+  });
+  return {
+    items,
+    total: Number(total?.count ?? 0),
+    returned: items.length,
+    limit,
+    offset,
+  };
 }
 
 function retryWorkQueueItem(id: string, now = Date.now()) {
@@ -3681,10 +3724,19 @@ function workQueueCounts() {
   return counts;
 }
 
-function listCompanies(filters: URLSearchParams | null = null) {
+function listCompanies(filters: URLSearchParams | null = null, options: { limit?: number; offset?: number; compact?: boolean } = {}) {
   const { where, values } = buildCompanyFilterQuery(filters);
-  const rows = db.query(`SELECT * FROM companies ${where} ORDER BY updated_at DESC, name ASC LIMIT ${COMPANY_LIST_LIMIT}`).all(...values) as Record<string, unknown>[];
-  return rows.map(mapCompany);
+  const limit = Math.max(1, Math.min(COMPANY_LIST_LIMIT, Math.floor(options.limit ?? COMPANY_LIST_LIMIT)));
+  const offset = Math.max(0, Math.floor(options.offset ?? 0));
+  const rows = db.query(`
+    SELECT *
+    FROM companies
+    ${where}
+    ORDER BY updated_at DESC, lower(name) ASC
+    LIMIT ?${values.length + 1}
+    OFFSET ?${values.length + 2}
+  `).all(...values, limit, offset) as Record<string, unknown>[];
+  return rows.map(options.compact ? mapCompanyListItem : mapCompany);
 }
 
 function normaliseIndustryBatchLimit(value: unknown): number {
@@ -3693,7 +3745,8 @@ function normaliseIndustryBatchLimit(value: unknown): number {
   return Math.min(parsed, INDUSTRY_ENRICHMENT_BATCH_LIMIT);
 }
 
-function listEnrichmentIndustries() {
+function listEnrichmentIndustries(filters: URLSearchParams | null = null) {
+  const { limit, offset } = pagingFromParams(filters ?? new URLSearchParams());
   const rows = db.query(`
     SELECT
       COALESCE(NULLIF(TRIM(industry), ''), '(blank)') AS industry,
@@ -3706,8 +3759,19 @@ function listEnrichmentIndustries() {
     GROUP BY COALESCE(NULLIF(TRIM(industry), ''), '(blank)')
     HAVING unprocessed_count > 0
     ORDER BY unprocessed_count DESC, industry ASC
-  `).all() as Record<string, unknown>[];
-  return rows.map((row) => ({
+    LIMIT ?1
+    OFFSET ?2
+  `).all(limit, offset) as Record<string, unknown>[];
+  const total = db.query(`
+    SELECT COUNT(*) AS count
+    FROM (
+      SELECT COALESCE(NULLIF(TRIM(industry), ''), '(blank)') AS industry
+      FROM companies
+      GROUP BY COALESCE(NULLIF(TRIM(industry), ''), '(blank)')
+      HAVING SUM(CASE WHEN enrichment_status IN ('not_started', 'failed') THEN 1 ELSE 0 END) > 0
+    )
+  `).get() as { count: number } | null;
+  const industries = rows.map((row) => ({
     industry: String(row.industry ?? ""),
     unprocessedCount: Number(row.unprocessed_count ?? 0),
     notStartedCount: Number(row.not_started_count ?? 0),
@@ -3715,6 +3779,13 @@ function listEnrichmentIndustries() {
     queuedCount: Number(row.queued_count ?? 0),
     completeCount: Number(row.complete_count ?? 0),
   }));
+  return {
+    industries,
+    total: Number(total?.count ?? 0),
+    returned: industries.length,
+    limit,
+    offset,
+  };
 }
 
 function listCompaniesForIndustryEnrichment(industry: string, limit: number) {
@@ -4886,9 +4957,11 @@ function mapTopTargetItem(row: Record<string, unknown>) {
   };
 }
 
-function getTopTargetRunDetail(runId: string, limit = 100) {
+function getTopTargetRunDetail(runId: string, limit = 100, offset = 0) {
   const run = db.query("SELECT * FROM target_list_runs WHERE id = ?1").get(runId) as Record<string, unknown> | null;
   if (!run) return null;
+  const safeLimit = Math.max(1, Math.min(500, Math.floor(limit)));
+  const safeOffset = Math.max(0, Math.floor(offset));
   const items = db.query(`
     SELECT tli.*, c.name, c.location, c.industry, c.website, c.data_ring, c.enrichment_status
     FROM target_list_items tli
@@ -4896,8 +4969,9 @@ function getTopTargetRunDetail(runId: string, limit = 100) {
     WHERE tli.target_list_run_id = ?1
     ORDER BY tli.rank ASC
     LIMIT ?2
-  `).all(runId, Math.max(1, Math.min(500, Math.floor(limit)))) as Record<string, unknown>[];
-  return { run: mapTopTargetRun(run), items: items.map(mapTopTargetItem) };
+    OFFSET ?3
+  `).all(runId, safeLimit, safeOffset) as Record<string, unknown>[];
+  return { run: mapTopTargetRun(run), items: items.map(mapTopTargetItem), limit: safeLimit, offset: safeOffset };
 }
 
 function latestTopTargetRunId() {
@@ -4982,12 +5056,12 @@ function runTopTargetAggregation(input: { reason?: string; limit?: number | null
   return getTopTargetRunDetail(runId, input.limit ?? 100)!;
 }
 
-function getOrBuildTopTargetDetail(limit = 100) {
+function getOrBuildTopTargetDetail(limit = 100, offset = 0) {
   const runId = latestTopTargetRunId();
-  const detail = runId ? getTopTargetRunDetail(runId, limit) : null;
+  const detail = runId ? getTopTargetRunDetail(runId, limit, offset) : null;
   if (detail) return { ...detail, rebuilt: false };
   const rebuilt = runTopTargetAggregation({ reason: "Read-through top-target aggregation", limit: null, createdBy: "local" });
-  const limitedDetail = getTopTargetRunDetail(rebuilt.run.id, limit) ?? rebuilt;
+  const limitedDetail = getTopTargetRunDetail(rebuilt.run.id, limit, offset) ?? rebuilt;
   return { ...limitedDetail, rebuilt: true };
 }
 
@@ -6230,7 +6304,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     if (!session) return json({ error: "unauthorized" }, 401);
     const compact = url.searchParams.get("compact") === "1" || url.searchParams.get("compact") === "true";
     if (!compact) await reconcileActiveKindlingRuns();
-    const companies = compact ? [] : listCompanies();
+    const companies = compact ? [] : listCompanies(null, { limit: COMPANY_LIST_LIMIT, offset: 0 });
     const recentRuns = (db.query("SELECT * FROM kindling_pipeline_runs ORDER BY updated_at DESC LIMIT 12").all() as Record<string, unknown>[]).map(mapRun);
     const discoveryJobs = (db.query("SELECT * FROM discovery_jobs ORDER BY updated_at DESC LIMIT 8").all() as Record<string, unknown>[]).map(mapDiscoveryJob);
     const coverage = compact ? buildLightCoverageSummary(25) : buildCoverageSummary();
@@ -6271,8 +6345,9 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
   if (pathname === "/api/kindling/enrichment-industries" && req.method === "GET") {
     const session = requireSession(req);
     if (!session) return json({ error: "unauthorized" }, 401);
+    const industryPage = listEnrichmentIndustries(url.searchParams);
     return json({
-      industries: listEnrichmentIndustries(),
+      ...industryPage,
       batchLimit: INDUSTRY_ENRICHMENT_BATCH_LIMIT,
       strategies: INDUSTRY_ENRICHMENT_STRATEGIES,
     });
@@ -6281,8 +6356,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
   if (pathname === "/api/kindling/work-queue" && req.method === "GET") {
     const session = requireSession(req);
     if (!session) return json({ error: "unauthorized" }, 401);
-    const items = listWorkQueueItems(url.searchParams);
-    return json({ items, returned: items.length });
+    return json(listWorkQueueItems(url.searchParams));
   }
 
   const retryQueueMatch = pathname.match(/^\/api\/kindling\/work-queue\/([^/]+)\/retry$/);
@@ -7124,12 +7198,14 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
   if (pathname === "/api/kindling/companies" && req.method === "GET") {
     const session = requireSession(req);
     if (!session) return json({ error: "unauthorized" }, 401);
-    const companies = listCompanies(url.searchParams);
+    const { limit, offset } = pagingFromParams(url.searchParams);
+    const companies = listCompanies(url.searchParams, { limit, offset, compact: true });
     return json({
       companies,
       total: countCompanies(url.searchParams),
       returned: companies.length,
-      limit: COMPANY_LIST_LIMIT,
+      limit,
+      offset,
     });
   }
 
@@ -7408,14 +7484,18 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
   if (pathname === "/api/kindling/top-targets" && req.method === "GET") {
     const session = requireSession(req);
     if (!session) return json({ error: "unauthorized" }, 401);
-    const limit = Math.max(1, Math.min(500, Math.floor(Number(url.searchParams.get("limit") ?? 100))));
-    const detail = getOrBuildTopTargetDetail(Number.isFinite(limit) ? limit : 100);
+    const { limit, offset } = pagingFromParams(url.searchParams);
+    const detail = getOrBuildTopTargetDetail(limit, offset);
     return json({
       targetListRunId: detail.run.id,
       source: "top_targets",
       rebuilt: detail.rebuilt,
       run: detail.run,
       targets: detail.items,
+      total: detail.run.rankedCount,
+      returned: detail.items.length,
+      limit: detail.limit ?? limit,
+      offset: detail.offset ?? offset,
     });
   }
 
@@ -7859,7 +7939,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
       requestId,
       run: run ? mapRun(run) : null,
       profile: getCurrentMarketProfile(),
-      companies: listCompanies(),
+      companies: listCompanies(null, { limit: COMPANY_LIST_LIMIT, offset: 0, compact: true }),
     });
   }
 
@@ -7867,7 +7947,9 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     const verified = await verifyNip98Request(req, url);
     if (!verified.ok) return json({ error: verified.error }, 401);
     if (!hasAccess(verified.pubkey, "read")) return json({ error: "read access required" }, 403);
-    return json({ companies: listCompanies(url.searchParams) });
+    const { limit, offset } = pagingFromParams(url.searchParams, { limit: COMPANY_LIST_LIMIT, max: COMPANY_LIST_LIMIT });
+    const companies = listCompanies(url.searchParams, { limit, offset, compact: true });
+    return json({ companies, total: countCompanies(url.searchParams), returned: companies.length, limit, offset });
   }
 
   if (pathname === "/api/nip98/companies" && req.method === "POST") {

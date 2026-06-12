@@ -3766,7 +3766,7 @@ describe("Kindling API contracts", () => {
     expect(payload.companies.map((company: { id: string }) => company.id)).toEqual(["match"]);
   });
 
-  test("reports total company counts separately from the 500 row list cap", async () => {
+  test("pages company lists while preserving full summary cap", async () => {
     const now = Date.now();
     const insert = db.query(`
       INSERT INTO companies(id, name, location, industry, website, data_ring, duplicate_status, enrichment_status, confidence, profile_json, created_at, updated_at)
@@ -3777,10 +3777,16 @@ describe("Kindling API contracts", () => {
     }
 
     const list = await api("/api/kindling/companies");
-    expect(list.payload.companies).toHaveLength(500);
-    expect(list.payload.returned).toBe(500);
+    expect(list.payload.companies).toHaveLength(20);
+    expect(list.payload.companies[0]).not.toHaveProperty("profile");
+    expect(list.payload.returned).toBe(20);
     expect(list.payload.total).toBe(505);
-    expect(list.payload.limit).toBe(500);
+    expect(list.payload.limit).toBe(20);
+    expect(list.payload.offset).toBe(0);
+
+    const secondPage = await api("/api/kindling/companies?limit=20&offset=20");
+    expect(secondPage.payload.companies).toHaveLength(20);
+    expect(secondPage.payload.offset).toBe(20);
 
     const summary = await api("/api/kindling/summary");
     expect(summary.payload.companies).toHaveLength(500);

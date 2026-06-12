@@ -580,6 +580,13 @@ CREATE INDEX IF NOT EXISTS idx_scheduler_locks_expiry ON scheduler_locks(lease_e
 CREATE INDEX IF NOT EXISTS idx_work_queue_next ON work_queue(kind, status, next_run_after_at, priority, updated_at);
 CREATE INDEX IF NOT EXISTS idx_work_queue_target ON work_queue(kind, target_type, target_id, status);
 CREATE INDEX IF NOT EXISTS idx_work_queue_segment ON work_queue(segment_id, segment, priority);
+CREATE INDEX IF NOT EXISTS idx_companies_updated_name ON companies(updated_at DESC, name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_companies_enrichment_updated ON companies(enrichment_status, updated_at DESC, name COLLATE NOCASE);
+CREATE INDEX IF NOT EXISTS idx_companies_industry_location ON companies(industry, location, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_companies_data_ring ON companies(data_ring, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_companies_duplicate_status ON companies(duplicate_status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_companies_website ON companies(website);
+CREATE INDEX IF NOT EXISTS idx_enrichment_industry_status ON companies(industry, enrichment_status);
 CREATE INDEX IF NOT EXISTS idx_service_offerings_version_status ON service_offerings(market_profile_version_id, status, key, variant_key);
 CREATE INDEX IF NOT EXISTS idx_service_fit_assessments_company ON service_fit_assessments(company_id, score DESC, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_service_fit_assessments_offering ON service_fit_assessments(service_offering_id, market_profile_version_id, updated_at DESC);
