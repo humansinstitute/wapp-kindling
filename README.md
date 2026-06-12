@@ -46,14 +46,28 @@ Repo-local bootstrap assets live in `bootstrap/`:
 
 The SQLite database is runtime state and is migrated separately. Use `bun scripts/export-migration.ts` to create a private migration bundle with a sanitized SQLite backup plus the repo-local bootstrap assets.
 
-## Local Run
+## Running As A WApp
+
+Kindling should normally be launched and tested from its Wingman Autopilot WApp card. WApps are registered app cards in Autopilot, and the card owns the runtime port and public app URL. Do not pick an arbitrary local port for normal testing.
+
+For Pete's local Wingman instance, the Kindling app card is:
+
+```txt
+App label: Kindling
+App ID: c8dc3b14-6869-444f-94c3-37ccb2348cc9
+User alias: honest-ivory-thicket
+```
+
+Open Kindling from the Autopilot WApps/apps screen. The process is launched by Wingman with app environment such as `APP_ID`, `APP_LABEL`, `USER_ALIAS`, and an assigned `PORT`.
+
+## Direct Developer Run
 
 ```bash
 bun install
 PORT=4317 WINGMAN_URL=https://<autopilot-public-host> bun src/server.ts
 ```
 
-Open the Kindling app URL assigned by Wingman.
+Use a direct run only for isolated development/debugging outside the WApp card runner. When testing the product flow, use the Kindling app card URL assigned by Wingman.
 
 You need a Nostr browser signer for login and for NIP-98 requests to Autopilot. Until access rules exist, the first signed-in user can bootstrap settings. After that, only configured read/edit npubs can use the app, and only edit users can change admin settings or role mappings.
 
