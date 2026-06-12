@@ -654,6 +654,15 @@ button:disabled {
   margin-bottom: 12px;
 }
 
+.schedulerHelp {
+  margin: 0 0 14px;
+  padding: 10px;
+  border: 1px solid rgba(17, 107, 93, 0.22);
+  border-radius: 8px;
+  background: #eef6f3;
+  color: var(--ink) !important;
+}
+
 .settingsNumberGrid {
   grid-template-columns: repeat(3, minmax(0, 1fr));
   margin-bottom: 10px;
@@ -671,6 +680,16 @@ button:disabled {
 
 .toggleControl input {
   width: auto;
+}
+
+.toggleControl span {
+  display: grid;
+  gap: 2px;
+}
+
+.toggleControl small {
+  color: var(--muted);
+  font-size: 12px;
 }
 
 .buttonGrid {

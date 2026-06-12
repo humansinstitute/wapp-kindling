@@ -379,7 +379,7 @@ function renderKindling() {
             <div><span>Companies</span><strong>${Number(data.counts?.companies || 0)}</strong></div>
             <div><span>Outreach ready</span><strong>${Number(data.counts?.outreachReady || 0)}</strong></div>
             <div><span>Active runs</span><strong>${Number(data.counts?.activeRuns || 0)}</strong></div>
-            <div><span>Queue</span><strong>${Number(data.workQueueItems?.filter((item) => ["queued", "running", "failed"].includes(item.status)).length || 0)}</strong></div>
+            <div><span>Queue backlog</span><strong>${Number(data.workQueueItems?.filter((item) => ["queued", "running", "failed"].includes(item.status)).length || 0)}</strong></div>
             <div><span>Status</span><strong id="kindlingStatus">${escapeHtml(state.kindlingStatus)}</strong></div>
           </section>
           ${renderKindlingView(data, company, canEdit)}
@@ -522,21 +522,25 @@ function renderKindlingView(data, company, canEdit) {
 
 function renderSchedulerView(data, canEdit) {
   const settings = data.scheduler || {};
+  const masterOff = !settings.enabled;
   return `
     <section class="kindlingGrid two schedulerLayout">
       <form class="kindlingPanel schedulerSettingsForm" data-form="scheduler-settings">
         <div class="panelHeader">
           <div>
             <h2>Scheduler</h2>
-            <span>${settings.enabled ? "Automated prospecting enabled" : "Automated prospecting paused"}</span>
+            <span>${settings.enabled ? "Master switch on" : "Master switch off"}</span>
           </div>
         </div>
+        <p class="schedulerHelp">${masterOff
+          ? "Automated runs are paused. The role checkboxes below are standby settings that will apply after the master switch is turned on."
+          : "Automated runs are enabled. The checked roles are eligible for scheduler selection."}</p>
         <div class="toggleGrid">
-          ${renderSchedulerToggle("enabled", "Scheduler", settings.enabled)}
-          ${renderSchedulerToggle("acquisitionEnabled", "Acquisition", settings.acquisitionEnabled)}
-          ${renderSchedulerToggle("enrichmentEnabled", "Enrichment", settings.enrichmentEnabled)}
-          ${renderSchedulerToggle("scoringEnabled", "Scoring", settings.scoringEnabled)}
-          ${renderSchedulerToggle("outreachEnabled", "Outreach", settings.outreachEnabled)}
+          ${renderSchedulerToggle("enabled", "Run scheduler", settings.enabled, "Master on/off switch")}
+          ${renderSchedulerToggle("acquisitionEnabled", "Allow acquisition", settings.acquisitionEnabled, "Eligible when scheduler is on")}
+          ${renderSchedulerToggle("enrichmentEnabled", "Allow enrichment", settings.enrichmentEnabled, "Eligible when scheduler is on")}
+          ${renderSchedulerToggle("scoringEnabled", "Allow scoring", settings.scoringEnabled, "Eligible when scheduler is on")}
+          ${renderSchedulerToggle("outreachEnabled", "Allow outreach", settings.outreachEnabled, "Eligible when scheduler is on")}
         </div>
         <div class="settingsNumberGrid">
           <label><span>Target pool size</span><input id="schedulerTargetPoolSize" type="number" min="1" step="1" value="${Number(settings.targetPoolSize || 0)}" /></label>
@@ -587,11 +591,11 @@ function renderSchedulerView(data, canEdit) {
   `;
 }
 
-function renderSchedulerToggle(key, label, checked) {
+function renderSchedulerToggle(key, label, checked, helper = "") {
   return `
     <label class="toggleControl">
       <input type="checkbox" id="scheduler_${escapeHtml(key)}" ${checked ? "checked" : ""} />
-      <span>${escapeHtml(label)}</span>
+      <span><strong>${escapeHtml(label)}</strong><small>${escapeHtml(helper)}</small></span>
     </label>
   `;
 }
@@ -602,7 +606,7 @@ function renderSchedulerLock(lock) {
 }
 
 function renderSchedulerRuns(runs) {
-  if (!runs.length) return "<p>No scheduler runs yet.</p>";
+  if (!runs.length) return "<p>No scheduler runs yet. Use Dry run to record the first decision without launching a pipeline.</p>";
   return `<div class="compactList schedulerRunList">
     ${runs.slice(0, 10).map((run) => `
       <div>
