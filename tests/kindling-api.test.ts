@@ -2268,7 +2268,7 @@ describe("Kindling API contracts", () => {
     });
     expect(started.payload.acquisition).toMatchObject({
       coverageSliceId: "scheduler-acquisition-slice",
-      targetCount: 15,
+      targetCount: 1000,
       correlation: {
         schedulerRunId: started.payload.run.id,
         acquisitionJobId: started.payload.jobId,
@@ -2282,7 +2282,7 @@ describe("Kindling API contracts", () => {
       requestId: started.payload.jobId,
       industry: "Accounting, tax, bookkeeping, and business advisory",
       location: "Perth",
-      targetCount: 15,
+      targetCount: 1000,
       localContext: {
         scheduler: {
           action: "acquisition",
@@ -2314,6 +2314,9 @@ describe("Kindling API contracts", () => {
         authHeader: "x-kindling-pipeline-token",
       },
     });
+    const coverage = db.query("SELECT target_counts_json FROM coverage_slices WHERE id = 'scheduler-acquisition-slice'")
+      .get() as Record<string, string>;
+    expect(JSON.parse(coverage.target_counts_json).found).toBe(1000);
 
     const counts = db.query(`
       SELECT
@@ -2328,6 +2331,69 @@ describe("Kindling API contracts", () => {
       pipeline_runs: 1,
       discovery_jobs: 1,
     });
+  });
+
+  test("scheduled segment-default acquisition requests one thousand prospects and clears stale active scan blockers", async () => {
+    const now = Date.now();
+    await api("/api/kindling/scheduler-settings", {
+      method: "PATCH",
+      body: {
+        enabled: true,
+        cooldowns: { acquisitionMs: 0 },
+      },
+    });
+    db.query(`
+      UPDATE target_segments
+      SET coverage_targets_json = '{"found":0}', default_target_count = 0
+    `).run();
+    db.query(`
+      UPDATE target_segments
+      SET priority = 1,
+          coverage_targets_json = '{"found":140}',
+          default_target_count = 140
+      WHERE id = 'adapt-tier-1-accounting-tax-bookkeeping-business-advisory'
+    `).run();
+    db.query(`
+      INSERT INTO kindling_pipeline_runs(
+        id, role_key, local_request_id, autopilot_run_id, status, webhook_token, trigger_payload_json, error, created_at, updated_at
+      )
+      VALUES (
+        'stale-scan-run',
+        'scan_target_list',
+        'stale-scan-job',
+        'remote-stale-scan',
+        'running',
+        'stale-token',
+        '{}',
+        '',
+        ?1,
+        ?1
+      )
+    `).run(now - 7 * 60 * 60 * 1000);
+
+    const started = await api("/api/kindling/scheduler/run-once?dryRun=false", {
+      method: "POST",
+      body: { deferAutopilotAuth: true },
+    });
+    expect(started.res.status).toBe(202);
+    expect(started.payload.decision).toMatchObject({
+      workAvailable: true,
+      action: "acquisition",
+      roleKey: "scan_target_list",
+      item: {
+        segmentId: "adapt-tier-1-accounting-tax-bookkeeping-business-advisory",
+        selection: { source: "segment_default" },
+      },
+    });
+    expect(started.payload.acquisition.targetCount).toBe(1000);
+    expect(started.payload.triggerRequest.body.input.targetCount).toBe(1000);
+    const coverage = db.query("SELECT target_counts_json FROM coverage_slices WHERE id = ?1")
+      .get(String(started.payload.acquisition.coverageSliceId)) as Record<string, string>;
+    expect(JSON.parse(coverage.target_counts_json).found).toBe(1000);
+    const staleRun = db.query("SELECT status, error FROM kindling_pipeline_runs WHERE id = 'stale-scan-run'")
+      .get() as Record<string, string>;
+    expect(staleRun.status).toBe("failed");
+    expect(staleRun.error).toContain("Timed out after 6 hours");
   });
 
   test("run-once directly triggers one scheduled acquisition Autopilot run", async () => {
@@ -2369,7 +2435,7 @@ describe("Kindling API contracts", () => {
         requestId: started.payload.jobId,
         industry: "Accounting, tax, bookkeeping, and business advisory",
         location: "Perth",
-        targetCount: 15,
+        targetCount: 1000,
         localContext: {
           scheduler: {
             action: "acquisition",
@@ -2415,7 +2481,7 @@ describe("Kindling API contracts", () => {
       expect(started.payload.run.autopilotRunId).toBe("remote-scheduler-direct-run");
       expect(started.payload.acquisition).toMatchObject({
         coverageSliceId: "scheduler-direct-acquisition-slice",
-        targetCount: 15,
+        targetCount: 1000,
         correlation: {
           schedulerRunId: started.payload.run.id,
           acquisitionJobId: started.payload.jobId,
@@ -2505,7 +2571,7 @@ describe("Kindling API contracts", () => {
         action: "acquisition",
         acquisition: {
           coverageSliceId: "scheduler-auto-acquisition-slice",
-          targetCount: 15,
+          targetCount: 1000,
         },
       });
       expect(fetchCalls).toHaveLength(1);
@@ -2517,7 +2583,7 @@ describe("Kindling API contracts", () => {
         roleKey: "scan_target_list",
         industry: "Accounting, tax, bookkeeping, and business advisory",
         location: "Perth",
-        targetCount: 15,
+        targetCount: 1000,
         userNpub: "scheduler",
         localContext: {
           scheduler: {
@@ -2896,6 +2962,8 @@ describe("Kindling API contracts", () => {
       },
     });
     seedKindlingRun("scan_target_list", "active-scan", "active-scan-token");
+    db.query("UPDATE kindling_pipeline_runs SET updated_at = ?1 WHERE local_request_id = 'active-scan'")
+      .run(Date.now());
     const limited = await api("/api/kindling/scheduler/run-once?dryRun=true", { method: "POST" });
     const acquisition = limited.payload.decision.evaluatedRoles.find((role: { action: string }) => role.action === "acquisition");
     expect(acquisition).toMatchObject({

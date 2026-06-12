@@ -1,4 +1,7 @@
 import { join } from "node:path";
+import { sha256 } from "@noble/hashes/sha256";
+import { bytesToHex } from "@noble/hashes/utils";
+import { finalizeEvent, nip19 } from "nostr-tools";
 import type { Event as NostrEvent } from "nostr-tools";
 import {
   addAccessRule,
@@ -51,6 +54,39 @@ const json = (data: unknown, status = 200) =>
 
 const text = (data: string, status = 200) =>
   new Response(data, { status, headers: { "content-type": "text/plain; charset=utf-8" } });
+
+function envText(key: string) {
+  return String(process.env[key] ?? "").trim();
+}
+
+function autopilotSecretKeyFromEnv(): Uint8Array | null {
+  for (const key of ["KINDLING_AUTOPILOT_NSEC", "WINGMAN_NSEC", "WINGMAN_PRIV", "AGENT_NSEC"]) {
+    const value = envText(key);
+    if (!value) continue;
+    if (/^[0-9a-f]{64}$/i.test(value)) return Uint8Array.from(Buffer.from(value, "hex"));
+    if (value.startsWith("nsec1")) {
+      const decoded = nip19.decode(value);
+      if (decoded.type === "nsec") return decoded.data;
+    }
+  }
+  return null;
+}
+
+function buildServerNip98Authorization(url: string, method: string, bodyText: string) {
+  const secretKey = autopilotSecretKeyFromEnv();
+  if (!secretKey) return "";
+  const event = finalizeEvent({
+    kind: 27235,
+    created_at: Math.floor(Date.now() / 1000),
+    tags: [
+      ["u", url],
+      ["method", method],
+      ["payload", bytesToHex(sha256(new TextEncoder().encode(bodyText)))],
+    ],
+    content: "",
+  }, secretKey);
+  return `Nostr ${btoa(JSON.stringify(event))}`;
+}
 
 async function readJson(req: Request): Promise<Record<string, unknown>> {
   try {
@@ -397,6 +433,12 @@ function targetCountsForCoverage(segmentId: string | null, fallbackFound: number
   return fallbackFound > 0 ? { found: fallbackFound } : {};
 }
 
+function targetCountsForScheduledAcquisition(segmentId: string | null, targetCount: number) {
+  const targets = targetCountsForCoverage(segmentId, targetCount);
+  const found = Math.max(targetCount, numericField(targets, "found", targetCount));
+  return { ...targets, found };
+}
+
 function getOrCreateCoverageSlice(input: {
   segmentId: string | null;
   geographyId: string | null;
@@ -610,6 +652,8 @@ function schedulerSettingsPatchFromBody(body: Record<string, unknown>): Schedule
 
 type SchedulerActionKey = "acquisition" | "enrichment" | "scoring" | "outreach";
 const PROSPECTING_LOOP_INTERVAL_MS = 21 * 60 * 1000;
+const STALE_ACTIVE_PIPELINE_RUN_MS = 6 * 60 * 60 * 1000;
+const SCHEDULED_ACQUISITION_TARGET_COUNT = 1000;
 
 type SchedulerRoleEvaluation = {
   action: SchedulerActionKey;
@@ -691,6 +735,25 @@ function roleConcurrencyState(roleKey: string, settings = getSchedulerSettings()
           ? `role ${roleKey} is at concurrency limit ${activeCount}/${concurrencyLimit}`
           : "",
   };
+}
+
+function reconcileStaleActiveKindlingRuns(now = Date.now()) {
+  const staleBefore = now - STALE_ACTIVE_PIPELINE_RUN_MS;
+  const rows = db.query(`
+    SELECT *
+    FROM kindling_pipeline_runs
+    WHERE status IN ('queued', 'running', 'mock')
+      AND updated_at < ?1
+    ORDER BY updated_at ASC
+    LIMIT 50
+  `).all(staleBefore) as Record<string, unknown>[];
+  for (const row of rows) {
+    markKindlingRunFailedFromAutopilot(
+      row,
+      `Timed out after ${Math.round(STALE_ACTIVE_PIPELINE_RUN_MS / 3_600_000)} hours without completion callback`,
+    );
+  }
+  return rows.length;
 }
 
 function schedulerCompanyCounts() {
@@ -1199,6 +1262,7 @@ function selectOutreachDryRun(settings = getSchedulerSettings()) {
 }
 
 function computeSchedulerDryRunDecision(now = Date.now()): SchedulerDryRunDecision {
+  reconcileStaleActiveKindlingRuns(now);
   const settings = getSchedulerSettings();
   const lock = activeSchedulerLock(now);
   const evaluatedRoles: SchedulerRoleEvaluation[] = [];
@@ -1307,6 +1371,7 @@ function computeSchedulerDryRunDecision(now = Date.now()): SchedulerDryRunDecisi
 }
 
 function computeProspectingLoopDecision(now = Date.now()): SchedulerDryRunDecision {
+  reconcileStaleActiveKindlingRuns(now);
   const settings = getSchedulerSettings();
   const lock = activeSchedulerLock(now);
   const evaluatedRoles: SchedulerRoleEvaluation[] = [];
@@ -1419,7 +1484,7 @@ function schedulerAcquisitionTargetCount(item: SchedulerAcquisitionWork) {
   const targetFound = numericField(deficit, "targetFound", numericField(targetCounts, "found", 25));
   const sourceBackedDeficit = numericField(deficit, "sourceBackedUnique", targetFound);
   const currentFound = numericField(currentCounts, "found", 0);
-  return clampTargetCount(Math.max(1, currentFound + sourceBackedDeficit));
+  return clampTargetCount(Math.max(SCHEDULED_ACQUISITION_TARGET_COUNT, currentFound + sourceBackedDeficit));
 }
 
 function listPriorAcquisitionStrategies(input: {
@@ -1555,15 +1620,18 @@ function buildScheduledAcquisitionJob(input: {
   const strategyType = String(item.strategyType ?? "search").trim() || "search";
   const targetCount = schedulerAcquisitionTargetCount(item);
   const scanMode = scanModeForTargetCount(targetCount);
+  const scheduledTargetCounts = targetCountsForScheduledAcquisition(segmentId, targetCount);
   const coverageSliceId = String(item.coverageSliceId ?? "").trim() || getOrCreateCoverageSlice({
     segmentId,
     geographyId,
     geographyText,
     sourceFamily,
     strategyType,
-    targetCounts: targetCountsForCoverage(segmentId, targetCount),
+    targetCounts: scheduledTargetCounts,
     now,
   });
+  db.query("UPDATE coverage_slices SET target_counts_json = ?1, updated_at = ?2 WHERE id = ?3")
+    .run(JSON.stringify(scheduledTargetCounts), now, coverageSliceId);
   const jobId = crypto.randomUUID();
   db.query(`
     INSERT INTO discovery_jobs(
@@ -5129,13 +5197,15 @@ async function startKindlingRun(runId: string, authorization?: string) {
   if (!role?.enabled) throw new Error("pipeline role is disabled");
 
   try {
+    const bodyText = JSON.stringify(triggerRequest.body);
+    const effectiveAuthorization = authorization || buildServerNip98Authorization(triggerRequest.url, triggerRequest.method, bodyText);
     const res = await fetch(triggerRequest.url, {
       method: triggerRequest.method,
       headers: {
         "content-type": "application/json",
-        ...(authorization ? { authorization } : {}),
+        ...(effectiveAuthorization ? { authorization: effectiveAuthorization } : {}),
       },
-      body: JSON.stringify(triggerRequest.body),
+      body: bodyText,
     });
     const payload = await res.json().catch(() => ({})) as Record<string, unknown>;
     if (!res.ok) throw new Error(String(payload.error ?? res.statusText));
@@ -8086,6 +8156,11 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
 
 if (import.meta.main) {
   setInterval(cleanupExpiredAuthRows, 15 * 60 * 1000);
+  setTimeout(() => {
+    void runAutomatedProspectingLoop().catch((error) => {
+      console.error("automated prospecting startup pass failed", error);
+    });
+  }, 1000);
   setInterval(() => {
     void runAutomatedProspectingLoop().catch((error) => {
       console.error("automated prospecting loop failed", error);
