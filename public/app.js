@@ -136,7 +136,11 @@ function normalizedPath(pathname = window.location.pathname) {
 }
 
 function kindlingViewForPath(pathname = window.location.pathname) {
-  return KINDLING_ROUTE_TO_VIEW[normalizedPath(pathname)] || null;
+  const path = normalizedPath(pathname);
+  if (KINDLING_ROUTE_TO_VIEW[path]) return KINDLING_ROUTE_TO_VIEW[path];
+  const match = Object.entries(KINDLING_ROUTE_TO_VIEW)
+    .find(([route]) => route !== "/act" && path.endsWith(route));
+  return match ? match[1] : null;
 }
 
 function routeForKindlingView(view) {
@@ -426,7 +430,7 @@ function renderKindling() {
     ["targets", "Targets", `${Number(data.topTargets?.length || 0)} ranked`],
     ["match", "Match", state.selectedTargetId ? "Selected" : "Review"],
   ];
-  if (canEdit && state.activeKindlingView === "research") views.push(["research", "Research Desk", data.scheduler?.enabled ? "Enabled" : "Paused"]);
+  if (state.activeKindlingView === "research") views.push(["research", "Research Desk", data.scheduler?.enabled ? "Enabled" : "Paused"]);
   if (canEdit && state.activeKindlingView === "admin") views.push(["admin", "Pipeline admin", "Operator"]);
   if (state.activeKindlingView === "admin" && !canEdit) state.activeKindlingView = "service";
   $("actPage").innerHTML = `
