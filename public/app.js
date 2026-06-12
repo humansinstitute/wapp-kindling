@@ -107,8 +107,52 @@ function profileInitial(rule, profile) {
   return displayNameForRule(rule, profile).slice(0, 1).toUpperCase();
 }
 
+const KINDLING_ROUTE_TO_VIEW = {
+  "/act": "service",
+  "/service-offerings": "service",
+  "/serviceofferings": "service",
+  "/companies": "companies",
+  "/enriched-companies": "enriched",
+  "/enriched": "enriched",
+  "/targets": "targets",
+  "/match": "match",
+  "/researchdesk": "research",
+  "/research-desk": "research",
+};
+
+const KINDLING_VIEW_TO_ROUTE = {
+  service: "/service-offerings",
+  companies: "/companies",
+  enriched: "/enriched-companies",
+  targets: "/targets",
+  match: "/match",
+  research: "/researchdesk",
+  admin: "/settings",
+};
+
+function normalizedPath(pathname = window.location.pathname) {
+  const path = pathname.replace(/\/+$/, "");
+  return path || "/";
+}
+
+function kindlingViewForPath(pathname = window.location.pathname) {
+  return KINDLING_ROUTE_TO_VIEW[normalizedPath(pathname)] || null;
+}
+
+function routeForKindlingView(view) {
+  return KINDLING_VIEW_TO_ROUTE[view] || "/service-offerings";
+}
+
+function setKindlingView(view) {
+  state.activeKindlingView = view;
+  localStorage.setItem("kindling_view", view);
+}
+
 function appRoute() {
-  return ["/act", "/chat", "/settings"].includes(window.location.pathname) ? window.location.pathname : "/";
+  const pathname = normalizedPath();
+  if (["/chat", "/settings"].includes(pathname)) return pathname;
+  if (kindlingViewForPath(pathname)) return "/act";
+  return "/";
 }
 
 function navigate(path) {
@@ -151,6 +195,8 @@ async function renderRoute() {
   }
 
   if (state.route === "/act") {
+    const view = kindlingViewForPath(window.location.pathname);
+    if (view) setKindlingView(view);
     showOnly("actPage");
     await loadKindlingScreen();
     return;
@@ -184,7 +230,6 @@ async function login() {
     state.token = result.token;
     state.me = result;
     localStorage.setItem("chat_wapp_token", result.token);
-    if (window.location.pathname !== "/") history.pushState({}, "", "/");
     await bootApp();
   } catch (error) {
     $("loginError").textContent = error.message;
@@ -255,8 +300,7 @@ async function loadSettings() {
 
 async function loadKindlingScreen() {
   if (["scheduler", "targets", "today"].includes(state.activeKindlingView)) {
-    state.activeKindlingView = state.activeKindlingView === "scheduler" ? "research" : "targets";
-    localStorage.setItem("kindling_view", state.activeKindlingView);
+    setKindlingView(state.activeKindlingView === "scheduler" ? "research" : "targets");
   }
   const companyQuery = new URLSearchParams();
   for (const [key, value] of Object.entries(state.kindlingFilters)) {
@@ -373,8 +417,7 @@ function renderKindling() {
   const company = selectedCompany();
   const canEdit = Boolean(state.me?.access?.edit);
   if (state.activeKindlingView === "act") {
-    state.activeKindlingView = "service";
-    localStorage.setItem("kindling_view", "service");
+    setKindlingView("service");
   }
   const views = [
     ["service", "Service Offerings", data.profile?.version ? `v${escapeHtml(data.profile.version.versionNumber || "active")}` : "Draft"],
@@ -1638,9 +1681,9 @@ async function handleKindlingClick(event) {
   }
   const viewButton = event.target.closest("[data-kindling-view]");
   if (viewButton) {
-    state.activeKindlingView = viewButton.dataset.kindlingView;
-    localStorage.setItem("kindling_view", state.activeKindlingView);
-    renderKindling();
+    const nextView = viewButton.dataset.kindlingView;
+    setKindlingView(nextView);
+    navigate(routeForKindlingView(nextView));
     return;
   }
   const scanJobButton = event.target.closest("[data-scan-job]");
@@ -1696,9 +1739,8 @@ async function handleKindlingClick(event) {
     if (state.selectedCompanyId) {
       state.companyDetail = await api(`/api/kindling/companies/${encodeURIComponent(state.selectedCompanyId)}`);
     }
-    state.activeKindlingView = "match";
-    localStorage.setItem("kindling_view", "match");
-    renderKindling();
+    setKindlingView("match");
+    navigate("/match");
     setKindlingStatus("Match loaded");
     return;
   }
@@ -2255,37 +2297,35 @@ $("loginButton").addEventListener("click", login);
 $("logoutButton").addEventListener("click", logout);
 $("newChatButton").addEventListener("click", newChat);
 $("homeActButton").addEventListener("click", () => {
-  state.activeKindlingView = "companies";
-  localStorage.setItem("kindling_view", "companies");
-  navigate("/act");
+  setKindlingView("companies");
+  navigate("/companies");
 });
 $("homeServiceButton").addEventListener("click", () => {
-  state.activeKindlingView = "service";
-  localStorage.setItem("kindling_view", "service");
-  navigate("/act");
+  setKindlingView("service");
+  navigate("/service-offerings");
 });
 $("homeTargetsButton").addEventListener("click", () => {
-  state.activeKindlingView = "targets";
-  localStorage.setItem("kindling_view", "targets");
-  navigate("/act");
+  setKindlingView("targets");
+  navigate("/targets");
 });
 $("homeEnrichedButton").addEventListener("click", () => {
-  state.activeKindlingView = "enriched";
-  localStorage.setItem("kindling_view", "enriched");
-  navigate("/act");
+  setKindlingView("enriched");
+  navigate("/enriched-companies");
 });
 $("homeMatchButton").addEventListener("click", () => {
-  state.activeKindlingView = "match";
-  localStorage.setItem("kindling_view", "match");
-  navigate("/act");
+  setKindlingView("match");
+  navigate("/match");
+});
+$("homeResearchButton").addEventListener("click", () => {
+  setKindlingView("research");
+  navigate("/researchdesk");
 });
 $("homeChatButton").addEventListener("click", () => navigate("/chat"));
 $("homeSettingsButton").addEventListener("click", () => navigate("/settings"));
 $("settingsHomeButton").addEventListener("click", () => navigate("/"));
 $("researchDeskButton").addEventListener("click", () => {
-  state.activeKindlingView = "research";
-  localStorage.setItem("kindling_view", "research");
-  navigate("/act");
+  setKindlingView("research");
+  navigate("/researchdesk");
 });
 $("saveSettingsButton").addEventListener("click", (event) => {
   setBusyElement(event.currentTarget, true);
