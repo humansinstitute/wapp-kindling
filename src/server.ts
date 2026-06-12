@@ -3391,6 +3391,58 @@ function buildCoverageSummary() {
   };
 }
 
+function buildLightCoverageSummary(limit = 25) {
+  const rows = db.query(`
+    SELECT cs.*, ts.label AS segment_label, tg.label AS geography_label
+    FROM coverage_slices cs
+    LEFT JOIN target_segments ts ON ts.id = cs.segment_id
+    LEFT JOIN target_geographies tg ON tg.id = cs.geography_id
+    ORDER BY COALESCE(cs.next_run_after_at, 0) ASC, COALESCE(cs.last_run_at, 0) ASC, ts.priority ASC, COALESCE(tg.label, cs.geography_text) ASC
+    LIMIT ?1
+  `).all(limit) as Record<string, unknown>[];
+  const attemptTotals = coverageAttemptStats();
+  return {
+    totals: emptyCoverageCompanyCounts(),
+    attempts: {
+      executed: attemptTotals.executedAttempts,
+      resultCount: attemptTotals.resultCount,
+      planned: 0,
+      recommended: 0,
+    },
+    slices: rows.map((row) => ({
+      id: String(row.id),
+      segmentId: row.segment_id ? String(row.segment_id) : null,
+      segmentLabel: row.segment_label ? String(row.segment_label) : "",
+      geographyId: row.geography_id ? String(row.geography_id) : null,
+      geographyText: String(row.geography_text ?? row.geography_label ?? ""),
+      geographyLabel: row.geography_label ? String(row.geography_label) : "",
+      sourceFamily: String(row.source_family ?? ""),
+      strategyType: String(row.strategy_type ?? ""),
+      status: String(row.status ?? "active"),
+      targetCounts: jsonParse<Record<string, unknown>>(row.target_counts_json, {}),
+      storedCounts: jsonParse<Record<string, unknown>>(row.current_counts_json, {}),
+      currentCounts: jsonParse<Record<string, unknown>>(row.current_counts_json, {}),
+      yieldMetrics: jsonParse<Record<string, unknown>>(row.yield_metrics_json, {}),
+      attempts: {
+        executed: 0,
+        resultCount: 0,
+        planned: 0,
+        recommended: 0,
+      },
+      recommendations: [],
+      lastRunAt: row.last_run_at ? Number(row.last_run_at) : null,
+      nextRunAfterAt: row.next_run_after_at ? Number(row.next_run_after_at) : null,
+      stalledReason: row.stalled_reason ? String(row.stalled_reason) : "",
+      createdAt: Number(row.created_at ?? 0),
+      updatedAt: Number(row.updated_at ?? 0),
+    })),
+    bySegment: [],
+    byGeography: [],
+    recommendations: [],
+    light: true,
+  };
+}
+
 function buildScanContext(industry: string, location: string, targetCount: number) {
   linkLegacyCoverageForScan(industry, location);
   const counts = db.query(`
@@ -6176,11 +6228,12 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
   if (pathname === "/api/kindling/summary" && req.method === "GET") {
     const session = requireSession(req);
     if (!session) return json({ error: "unauthorized" }, 401);
-    await reconcileActiveKindlingRuns();
-    const companies = listCompanies();
+    const compact = url.searchParams.get("compact") === "1" || url.searchParams.get("compact") === "true";
+    if (!compact) await reconcileActiveKindlingRuns();
+    const companies = compact ? [] : listCompanies();
     const recentRuns = (db.query("SELECT * FROM kindling_pipeline_runs ORDER BY updated_at DESC LIMIT 12").all() as Record<string, unknown>[]).map(mapRun);
     const discoveryJobs = (db.query("SELECT * FROM discovery_jobs ORDER BY updated_at DESC LIMIT 8").all() as Record<string, unknown>[]).map(mapDiscoveryJob);
-    const coverage = buildCoverageSummary();
+    const coverage = compact ? buildLightCoverageSummary(25) : buildCoverageSummary();
     const outreachDrafts = (db.query(`
       SELECT od.*, c.name AS company_name
       FROM outreach_drafts od
@@ -6211,6 +6264,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
         total: countCompanies(),
         limit: COMPANY_LIST_LIMIT,
       },
+      compact,
     });
   }
 

@@ -3791,6 +3791,17 @@ describe("Kindling API contracts", () => {
       total: 505,
       limit: 500,
     });
+
+    const compactSummary = await api("/api/kindling/summary?compact=1");
+    expect(compactSummary.payload.compact).toBe(true);
+    expect(compactSummary.payload.companies).toHaveLength(0);
+    expect(compactSummary.payload.coverage.light).toBe(true);
+    expect(compactSummary.payload.counts.companies).toBe(505);
+    expect(compactSummary.payload.companyList).toMatchObject({
+      returned: 0,
+      total: 505,
+      limit: 500,
+    });
   });
 
   test("queues an industry enrichment batch of up to 21 unprocessed companies", async () => {

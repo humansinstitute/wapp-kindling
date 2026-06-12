@@ -311,15 +311,16 @@ async function loadKindlingScreen() {
     if (value) companyQuery.set(key, value);
   }
   if (state.activeKindlingView === "enriched") companyQuery.set("enrichmentStatus", "complete");
+  const needsCompanyList = state.activeKindlingView === "companies" || state.activeKindlingView === "enriched";
   const [summary, targets] = await Promise.all([
-    api("/api/kindling/summary"),
+    api("/api/kindling/summary?compact=1"),
     state.activeKindlingView === "targets" || state.activeKindlingView === "match" ? api("/api/kindling/top-targets?limit=100") : Promise.resolve({ targets: [] }),
   ]);
   const needsResearch = state.activeKindlingView === "research";
   const needsScoring = state.activeKindlingView === "targets" || state.activeKindlingView === "match";
   const [enrichmentIndustries, filtered, scheduler, schedulerPreview, workQueue, scoringOfferings, rankingRuns] = await Promise.all([
     needsResearch ? api("/api/kindling/enrichment-industries") : Promise.resolve({ industries: [], batchLimit: 21, strategies: [] }),
-    api(`/api/kindling/companies${companyQuery.toString() ? `?${companyQuery}` : ""}`),
+    needsCompanyList ? api(`/api/kindling/companies${companyQuery.toString() ? `?${companyQuery}` : ""}`) : Promise.resolve({ companies: [], total: summary.counts?.companies || 0, returned: 0, limit: summary.companyList?.limit || 500 }),
     needsResearch ? api("/api/kindling/scheduler-settings") : Promise.resolve({ settings: null, recentRuns: [], activeLock: null }),
     needsResearch ? api("/api/kindling/scheduler/preview") : Promise.resolve({ decision: null }),
     needsResearch ? api("/api/kindling/work-queue?limit=50") : Promise.resolve({ items: [] }),
@@ -352,7 +353,7 @@ async function loadKindlingScreen() {
     marketProfileVersionId: scoringOfferings.marketProfileVersionId || "",
     rankingRuns: rankingRuns.runs || [],
   };
-  if (state.selectedCompanyId && !state.kindling.companies?.some((company) => company.id === state.selectedCompanyId)) {
+  if (needsCompanyList && state.selectedCompanyId && !state.kindling.companies?.some((company) => company.id === state.selectedCompanyId)) {
     if (state.activeKindlingView !== "match") state.selectedCompanyId = "";
   }
   if (state.activeKindlingView === "match") {
