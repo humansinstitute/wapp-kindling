@@ -579,6 +579,7 @@ function schedulerSettingsPatchFromBody(body: Record<string, unknown>): Schedule
 }
 
 type SchedulerActionKey = "acquisition" | "enrichment" | "scoring" | "outreach";
+const SCORING_LOOP_INTERVAL_MS = 21 * 60 * 1000;
 
 type SchedulerRoleEvaluation = {
   action: SchedulerActionKey;
@@ -663,6 +664,9 @@ function roleConcurrencyState(roleKey: string, settings = getSchedulerSettings()
 }
 
 function schedulerCompanyCounts() {
+  const activeScoring = listActiveScoringOfferings();
+  const marketProfileVersionId = activeScoring.profile?.currentVersionId ?? "";
+  const offeringCount = activeScoring.offerings.length;
   const row = db.query(`
     SELECT
       COUNT(*) AS total_count,
@@ -674,13 +678,23 @@ function schedulerCompanyCounts() {
       SUM(CASE
         WHEN data_ring IN ('scored', 'outreach_ready', 'outreach', 'contacted')
           OR EXISTS (SELECT 1 FROM target_rankings tr WHERE tr.company_id = companies.id)
+          OR (
+            ?1 != ''
+            AND ?2 > 0
+            AND (
+              SELECT COUNT(DISTINCT sfa.service_offering_id)
+              FROM service_fit_assessments sfa
+              WHERE sfa.company_id = companies.id
+                AND sfa.market_profile_version_id = ?1
+            ) >= ?2
+          )
         THEN 1 ELSE 0 END) AS scored_count,
       SUM(CASE
         WHEN data_ring IN ('outreach_ready', 'outreach', 'contacted')
           OR EXISTS (SELECT 1 FROM outreach_drafts od WHERE od.company_id = companies.id)
         THEN 1 ELSE 0 END) AS outreach_ready_count
     FROM companies
-  `).get() as Record<string, unknown> | null;
+  `).get(marketProfileVersionId, offeringCount) as Record<string, unknown> | null;
   return {
     total: Number(row?.total_count ?? 0),
     activePool: Number(row?.active_pool_count ?? 0),
@@ -1084,6 +1098,12 @@ function selectEnrichmentDryRun(settings = getSchedulerSettings()) {
 
 function selectScoringDryRun(settings = getSchedulerSettings()) {
   const counts = schedulerCompanyCounts();
+  const activeScoring = listActiveScoringOfferings();
+  const marketProfileVersionId = activeScoring.profile?.currentVersionId ?? "";
+  const offeringCount = activeScoring.offerings.length;
+  if (!marketProfileVersionId || !offeringCount) {
+    return { item: null, reason: "no active service offerings are available for scoring" };
+  }
   if (counts.scored >= settings.topTargetCount) {
     return { item: null, reason: `top-target scoring target is met at ${counts.scored}/${settings.topTargetCount}` };
   }
@@ -1094,18 +1114,23 @@ function selectScoringDryRun(settings = getSchedulerSettings()) {
     LEFT JOIN target_segments ts ON ts.id = cseg.segment_id
     WHERE (c.enrichment_status = 'complete' OR c.data_ring IN ('enhanced', 'ranked', 'stale'))
       AND c.data_ring NOT IN ('scored', 'outreach_ready', 'outreach', 'contacted', 'parked')
-      AND NOT EXISTS (SELECT 1 FROM target_rankings tr WHERE tr.company_id = c.id)
+      AND (
+        SELECT COUNT(DISTINCT sfa.service_offering_id)
+        FROM service_fit_assessments sfa
+        WHERE sfa.company_id = c.id
+          AND sfa.market_profile_version_id = ?1
+      ) < ?2
     GROUP BY c.id
     ORDER BY segment_priority ASC, c.confidence DESC, c.updated_at ASC, lower(c.name) ASC
     LIMIT 1
-  `).get() as Record<string, unknown> | null;
+  `).get(marketProfileVersionId, offeringCount) as Record<string, unknown> | null;
   if (!row) return { item: null, reason: `top-target scoring target is ${counts.scored}/${settings.topTargetCount}, but no enriched unscored company exists` };
   return {
     item: {
       kind: "company",
       company: mapCompany(row),
     },
-    reason: `top-target scoring target is ${counts.scored}/${settings.topTargetCount}; company ${String(row.name)} is enriched and unscored`,
+    reason: `top-target scoring target is ${counts.scored}/${settings.topTargetCount}; company ${String(row.name)} is enriched and needs scoring against ${offeringCount} offering${offeringCount === 1 ? "" : "s"}`,
   };
 }
 
@@ -1180,7 +1205,7 @@ function computeSchedulerDryRunDecision(now = Date.now()): SchedulerDryRunDecisi
   }> = [
     { action: "acquisition", roleKey: "scan_target_list", enabled: settings.acquisitionEnabled, select: () => selectAcquisitionDryRun(settings, now) },
     { action: "enrichment", roleKey: "enrich_company", enabled: settings.enrichmentEnabled, select: () => selectEnrichmentDryRun(settings) },
-    { action: "scoring", roleKey: "monitor_and_score", enabled: settings.scoringEnabled, select: () => selectScoringDryRun(settings) },
+    { action: "scoring", roleKey: "score_company_service_fit", enabled: settings.scoringEnabled, select: () => selectScoringDryRun(settings) },
     { action: "outreach", roleKey: "draft_outreach", enabled: settings.outreachEnabled, select: () => selectOutreachDryRun(settings) },
   ];
 
@@ -1296,6 +1321,7 @@ function listPriorAcquisitionStrategies(input: {
 function updateSchedulerRunForRequest(input: {
   requestId: string;
   status: "running" | "complete" | "failed";
+  roleKey?: string;
   result?: Record<string, unknown>;
   error?: string;
   autopilotRunId?: string | null;
@@ -1306,11 +1332,11 @@ function updateSchedulerRunForRequest(input: {
     SELECT *
     FROM scheduler_runs
     WHERE local_request_id = ?1
-      AND role_key = 'scan_target_list'
+      AND role_key = ?2
       AND run_type != 'dry_run'
     ORDER BY created_at DESC
     LIMIT 1
-  `).get(input.requestId) as Record<string, unknown> | null;
+  `).get(input.requestId, input.roleKey ?? "scan_target_list") as Record<string, unknown> | null;
   if (!schedulerRun) return null;
   const now = Date.now();
   const existingResult = jsonParse<Record<string, unknown>>(schedulerRun.result_json, {});
@@ -2698,6 +2724,17 @@ function serviceFitIdentityFromRun(run: Record<string, unknown>) {
   };
 }
 
+function serviceFitAllowedOfferingIdsFromRun(run: Record<string, unknown>) {
+  const trigger = jsonParse<Record<string, unknown>>(run.trigger_payload_json, {});
+  const body = objectRecord(trigger.body);
+  const input = objectRecord(body.input);
+  const localContext = objectRecord(input.localContext);
+  const offerings = Array.isArray(localContext.serviceOfferings) ? localContext.serviceOfferings : [];
+  return new Set(offerings
+    .map((offering) => String(objectRecord(offering).id ?? "").trim())
+    .filter(Boolean));
+}
+
 function validateServiceFitRunIdentity(
   payload: ReturnType<typeof serviceFitAssessmentPayload>,
   marketProfileVersionId: string,
@@ -2709,6 +2746,10 @@ function validateServiceFitRunIdentity(
   }
   if (expected.serviceOfferingId && payload.serviceOfferingId !== expected.serviceOfferingId) {
     return { ok: false as const, error: "serviceOfferingId does not match service assessment run" };
+  }
+  const allowedOfferingIds = serviceFitAllowedOfferingIdsFromRun(run);
+  if (!expected.serviceOfferingId && allowedOfferingIds.size && !allowedOfferingIds.has(payload.serviceOfferingId)) {
+    return { ok: false as const, error: "serviceOfferingId is not in service assessment run offering set" };
   }
   if (expected.marketProfileVersionId && marketProfileVersionId !== expected.marketProfileVersionId) {
     return { ok: false as const, error: "marketProfileVersionId does not match service assessment run" };
@@ -2829,6 +2870,46 @@ function persistServiceFitAssessment(input: { body: Record<string, unknown>; run
       AND sfa.source_run_id = ?4
   `).get(payload.companyId, payload.serviceOfferingId, marketProfileVersionId, sourceRunId) as Record<string, unknown>;
   return { ok: true as const, assessment: mapServiceFitAssessment(row) };
+}
+
+function serviceFitAssessmentBodies(body: Record<string, unknown>) {
+  const result = objectRecord(body.result);
+  const directAssessments = Array.isArray(body.assessments) ? body.assessments : [];
+  const resultAssessments = Array.isArray(result.assessments) ? result.assessments : [];
+  const assessments = (directAssessments.length ? directAssessments : resultAssessments)
+    .map(objectRecord)
+    .filter((assessment) => Object.keys(assessment).length);
+  if (!assessments.length) return [body];
+  return assessments.map((assessment) => ({
+    ...body,
+    result: {
+      ...assessment,
+      outputKind: String(assessment.outputKind ?? "service_fit_assessment"),
+      companyId: String(assessment.companyId ?? result.companyId ?? body.companyId ?? ""),
+      marketProfileVersionId: String(assessment.marketProfileVersionId ?? result.marketProfileVersionId ?? body.marketProfileVersionId ?? ""),
+    },
+  }));
+}
+
+function persistServiceFitAssessmentBatch(input: { body: Record<string, unknown>; run: Record<string, unknown>; now?: number }) {
+  const persisted = [];
+  for (const body of serviceFitAssessmentBodies(input.body)) {
+    const result = persistServiceFitAssessment({ body, run: input.run, now: input.now });
+    if (!result.ok) return result;
+    persisted.push(result.assessment);
+  }
+  if (persisted.length) {
+    runTopTargetAggregation({
+      reason: `Service-fit scoring updated ${persisted.length} assessment${persisted.length === 1 ? "" : "s"}`,
+      limit: null,
+      createdBy: "pipeline",
+    });
+  }
+  return {
+    ok: true as const,
+    assessment: persisted[0],
+    assessments: persisted,
+  };
 }
 
 function listServiceFitAssessmentsForCompany(companyId: string) {
@@ -3501,12 +3582,14 @@ function knownSourcesForCompany(companyId: string) {
   }));
 }
 
-function buildServiceFitScoringContext(company: Record<string, unknown>, offering: Record<string, unknown>, req: Request, webhookToken: string) {
+function buildServiceFitScoringContext(company: Record<string, unknown>, offeringsInput: Record<string, unknown>[], origin: string, webhookToken: string) {
   const companyId = String(company.id);
   const marketProfile = getCurrentMarketProfile();
+  const offerings = offeringsInput.map(mapServiceOffering);
+  const firstOffering = offeringsInput[0] ?? {};
   const offeringMarketProfileVersion = mapMarketProfileVersionForContext(
     db.query("SELECT * FROM market_profile_versions WHERE id = ?1")
-      .get(String(offering.market_profile_version_id)) as Record<string, unknown> | null,
+      .get(String(firstOffering.market_profile_version_id ?? marketProfile?.currentVersionId ?? "")) as Record<string, unknown> | null,
   );
   const sources = (db.query("SELECT * FROM sources WHERE company_id = ?1 ORDER BY confidence DESC, created_at DESC").all(companyId) as Record<string, unknown>[])
     .map(mapSource);
@@ -3535,9 +3618,10 @@ function buildServiceFitScoringContext(company: Record<string, unknown>, offerin
     signals,
     evidence: { sources, signals },
     segments: listCompanySegments(companyId),
-    serviceOfferingId: String(offering.id),
-    serviceOffering: mapServiceOffering(offering),
-    marketProfileVersionId: String(offering.market_profile_version_id),
+    serviceOfferingId: offerings.length === 1 ? String(firstOffering.id ?? "") : "",
+    serviceOffering: offerings[0] ?? null,
+    serviceOfferings: offerings,
+    marketProfileVersionId: String(firstOffering.market_profile_version_id ?? marketProfile?.currentVersionId ?? ""),
     marketProfile,
     marketProfileVersion: offeringMarketProfileVersion,
     scoringRubric: {
@@ -3556,7 +3640,7 @@ function buildServiceFitScoringContext(company: Record<string, unknown>, offerin
       bands: { high: "75-100", medium: "50-74", low: "0-49" },
     },
     writeApi: {
-      url: `${webhookOrigin(req)}/api/kindling/pipeline-write/service-assessment`,
+      url: `${origin}/api/kindling/pipeline-write/service-assessment`,
       token: webhookToken,
       authHeader: "x-kindling-pipeline-token",
     },
@@ -3588,6 +3672,50 @@ function createServiceFitAssessmentQueueItem(input: {
     JSON.stringify(input.context),
   );
   return input.id;
+}
+
+function createServiceFitScoringRun(input: {
+  company: Record<string, unknown>;
+  origin: string;
+  userPubkey: string;
+  userNpub: string;
+  reason?: string;
+  priority?: number;
+  now?: number;
+}) {
+  const activeScoring = listActiveScoringOfferings();
+  const offeringRows = (activeScoring.offerings || [])
+    .map((offering) => db.query("SELECT * FROM service_offerings WHERE id = ?1").get(String(offering.id)) as Record<string, unknown> | null)
+    .filter(Boolean) as Record<string, unknown>[];
+  if (!offeringRows.length) throw new Error("no active service offerings to score against");
+  const marketProfileVersionId = String(activeScoring.profile?.currentVersionId ?? offeringRows[0]?.market_profile_version_id ?? "");
+  const now = input.now ?? Date.now();
+  const requestId = crypto.randomUUID();
+  const webhookToken = crypto.randomUUID().replaceAll("-", "");
+  const reason = input.reason || `Score ${String(input.company.name)} against all active Adapt service offerings`;
+  const context = buildServiceFitScoringContext(input.company, offeringRows, input.origin, webhookToken);
+  const queueId = createServiceFitAssessmentQueueItem({
+    id: requestId,
+    companyId: String(input.company.id),
+    serviceOfferingId: "all",
+    marketProfileVersionId,
+    reason,
+    priority: input.priority ?? 40,
+    context,
+    now,
+  });
+  const triggerRequest = buildKindlingTriggerRequest({
+    roleKey: "score_company_service_fit",
+    localRequestId: requestId,
+    message: reason,
+    context,
+    webhookUrl: `${input.origin}/api/kindling/pipeline-webhook`,
+    webhookToken,
+    userPubkey: input.userPubkey,
+    userNpub: input.userNpub,
+  });
+  const runId = createKindlingRun({ roleKey: "score_company_service_fit", localRequestId: requestId, triggerRequest, status: "queued" });
+  return { runId, requestId, queueId, offeringCount: offeringRows.length, triggerRequest };
 }
 
 function scanJobInputFromRun(run: Record<string, unknown> | null, job: ReturnType<typeof mapDiscoveryJob>) {
@@ -3760,6 +3888,16 @@ function markKindlingRunFailedFromAutopilot(run: Record<string, unknown>, error:
   }
   if (roleKey === "enrich_company" || roleKey === "enrich_industry_segment") {
     failEnrichmentQueueForRun(run, error, now);
+  }
+  if (roleKey === "score_company_service_fit") {
+    db.query(`
+      UPDATE work_queue
+      SET status = 'failed',
+          error = ?1,
+          updated_at = ?2
+      WHERE id = ?3
+        AND kind = 'service_fit_assessment'
+    `).run(error, now, requestId);
   }
 }
 
@@ -4719,6 +4857,31 @@ function markKindlingStartFailed(run: Record<string, unknown>, error: string) {
   if (roleKey === "enrich_company" || roleKey === "enrich_industry_segment") {
     failEnrichmentQueueForRun(run, error, now);
   }
+  if (roleKey === "score_company_service_fit") {
+    db.query(`
+      UPDATE work_queue
+      SET status = 'failed',
+          error = ?1,
+          locked_by_run_id = NULL,
+          updated_at = ?2
+      WHERE id = ?3
+        AND kind = 'service_fit_assessment'
+        AND status IN ('queued', 'running')
+    `).run(error, now, requestId);
+    updateSchedulerRunForRequest({
+      requestId,
+      roleKey: "score_company_service_fit",
+      status: "failed",
+      result: {
+        terminalStatus: "failed",
+        retryable: true,
+        source: "autopilot_start",
+      },
+      error,
+      finish: true,
+      releaseLock: true,
+    });
+  }
 }
 
 async function startKindlingRun(runId: string, authorization?: string) {
@@ -4746,6 +4909,17 @@ async function startKindlingRun(runId: string, authorization?: string) {
     if (String(run.role_key ?? "") === "scan_target_list") {
       updateSchedulerRunForRequest({
         requestId: String(run.local_request_id ?? ""),
+        status: "running",
+        autopilotRunId: String(remoteRun.id ?? payload.runId ?? "") || null,
+        result: {
+          autopilotRunId: String(remoteRun.id ?? payload.runId ?? "") || null,
+        },
+      });
+    }
+    if (String(run.role_key ?? "") === "score_company_service_fit") {
+      updateSchedulerRunForRequest({
+        requestId: String(run.local_request_id ?? ""),
+        roleKey: "score_company_service_fit",
         status: "running",
         autopilotRunId: String(remoteRun.id ?? payload.runId ?? "") || null,
         result: {
@@ -5457,11 +5631,19 @@ function applyKindlingCallback(body: Record<string, unknown>, token: string) {
         WHERE id = ?3
           AND kind = 'service_fit_assessment'
       `).run(storedError, now, requestId);
+      updateSchedulerRunForRequest({
+        requestId,
+        roleKey: "score_company_service_fit",
+        status: "failed",
+        error: storedError,
+        finish: true,
+        releaseLock: true,
+      });
     } else {
       const assessment = records.serviceAssessment as Record<string, unknown> | undefined;
-      if (assessment?.companyId && assessment?.serviceOfferingId && assessment?.score !== undefined) {
-        const persisted = persistServiceFitAssessment({
-          body: { ...body, result: assessment },
+      if (assessment?.companyId || Array.isArray(objectRecord(body.result).assessments)) {
+        const persisted = persistServiceFitAssessmentBatch({
+          body: Array.isArray(objectRecord(body.result).assessments) ? body : { ...body, result: assessment },
           run,
           now,
         });
@@ -5476,6 +5658,29 @@ function applyKindlingCallback(body: Record<string, unknown>, token: string) {
             WHERE id = ?3
               AND kind = 'service_fit_assessment'
           `).run(storedError, now, requestId);
+          updateSchedulerRunForRequest({
+            requestId,
+            roleKey: "score_company_service_fit",
+            status: "failed",
+            error: storedError,
+            finish: true,
+            releaseLock: true,
+          });
+        } else {
+          updateSchedulerRunForRequest({
+            requestId,
+            roleKey: "score_company_service_fit",
+            status: "complete",
+            autopilotRunId: String(body.runId ?? "") || null,
+            result: {
+              terminalStatus: storedStatus,
+              assessmentCount: persisted.assessments.length,
+              rebuiltTopTargets: true,
+              source: "final_webhook",
+            },
+            finish: true,
+            releaseLock: true,
+          });
         }
       }
     }
@@ -5550,6 +5755,102 @@ function requestPublicOrigin(req: Request): string {
 
 function webhookOrigin(req: Request): string {
   return PUBLIC_ORIGIN || requestPublicOrigin(req);
+}
+
+async function runAutomatedScoringLoop() {
+  const now = Date.now();
+  const settings = getSchedulerSettings();
+  if (!settings.enabled || !settings.scoringEnabled) return null;
+  if (activeSchedulerLock(now)) return null;
+  const topTargets = getOrBuildTopTargetDetail(settings.topTargetCount || 100);
+  const rankedCount = Number(topTargets.run?.rankedCount ?? topTargets.items?.length ?? 0);
+  if (rankedCount >= settings.topTargetCount) return null;
+
+  const decision = computeSchedulerDryRunDecision(now);
+  if (!decision.workAvailable || decision.action !== "scoring" || decision.roleKey !== "score_company_service_fit" || !decision.item) {
+    return null;
+  }
+  const schedulerRun = createSchedulerRun({
+    runType: "scheduled",
+    status: "running",
+    selectedAction: "scoring",
+    roleKey: "score_company_service_fit",
+    context: {
+      dryRun: false,
+      automated: true,
+      evaluatedRoles: decision.evaluatedRoles,
+      selectedScoringWork: decision.item,
+    },
+    result: {
+      dryRun: false,
+      automated: true,
+      decision,
+    },
+    startedAt: now,
+    now,
+  });
+  const lock = acquireSchedulerLock({
+    runId: schedulerRun.id,
+    ownerId: "scheduler:auto-score",
+    leaseMs: Math.max(10 * 60 * 1000, Number(settings.cooldowns.scoringMs ?? 0)),
+    now,
+  });
+  if (!lock) {
+    db.query(`
+      UPDATE scheduler_runs
+      SET status = 'skipped',
+          skip_reason = 'scheduler lock prospecting could not be acquired',
+          finished_at = ?1,
+          updated_at = ?1
+      WHERE id = ?2
+    `).run(Date.now(), schedulerRun.id);
+    return null;
+  }
+
+  const item = objectRecord(decision.item);
+  const company = objectRecord(item.company);
+  const scoringRun = createServiceFitScoringRun({
+    company,
+    origin: PUBLIC_ORIGIN || `http://localhost:${PORT}`,
+    userPubkey: "scheduler",
+    userNpub: "scheduler",
+    reason: `Scheduled scoring: ${String(company.name ?? company.id)} against active Adapt service offerings`,
+    now,
+  });
+  db.query(`
+    UPDATE scheduler_runs
+    SET local_request_id = ?1,
+        result_json = ?2,
+        updated_at = ?3
+    WHERE id = ?4
+  `).run(
+    scoringRun.requestId,
+    JSON.stringify({ dryRun: false, automated: true, decision, scoringRun: { requestId: scoringRun.requestId, queueId: scoringRun.queueId, offeringCount: scoringRun.offeringCount } }),
+    Date.now(),
+    schedulerRun.id,
+  );
+  try {
+    const start = await startKindlingRun(scoringRun.runId);
+    db.query(`
+      UPDATE work_queue
+      SET status = 'running',
+          attempts = attempts + 1,
+          locked_by_run_id = ?1,
+          updated_at = ?2
+      WHERE id = ?3
+    `).run(scoringRun.runId, Date.now(), scoringRun.queueId);
+    return { schedulerRunId: schedulerRun.id, runId: scoringRun.runId, requestId: scoringRun.requestId, start };
+  } catch (error) {
+    updateSchedulerRunForRequest({
+      requestId: scoringRun.requestId,
+      roleKey: "score_company_service_fit",
+      status: "failed",
+      error: error instanceof Error ? error.message : String(error),
+      finish: true,
+      releaseLock: true,
+    });
+    return null;
+  }
 }
 
 export async function handleApi(req: Request, url: URL): Promise<Response | null> {
@@ -5895,6 +6196,141 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     const now = Date.now();
     const decision = computeSchedulerDryRunDecision(now);
     if (!dryRun) {
+      const body = await readJson(req);
+      if (decision.workAvailable && decision.action === "scoring" && decision.roleKey === "score_company_service_fit" && decision.item) {
+        const schedulerRun = createSchedulerRun({
+          runType: "scheduled",
+          status: "running",
+          selectedAction: "scoring",
+          roleKey: "score_company_service_fit",
+          context: {
+            dryRun: false,
+            userPubkey: session.pubkey,
+            evaluatedRoles: decision.evaluatedRoles,
+            selectedScoringWork: decision.item,
+          },
+          result: {
+            dryRun: false,
+            decision,
+          },
+          startedAt: now,
+          now,
+        });
+        const lock = acquireSchedulerLock({
+          runId: schedulerRun.id,
+          ownerId: `scheduler:${session.pubkey.slice(0, 16)}`,
+          leaseMs: Math.max(10 * 60 * 1000, Number(getSchedulerSettings().cooldowns.scoringMs ?? 0)),
+          now,
+        });
+        if (!lock) {
+          const reason = "scheduler lock prospecting could not be acquired";
+          db.query(`
+            UPDATE scheduler_runs
+            SET status = 'skipped',
+                skip_reason = ?1,
+                result_json = ?2,
+                finished_at = ?3,
+                updated_at = ?3
+            WHERE id = ?4
+          `).run(reason, JSON.stringify({ dryRun: false, decision, lockAcquired: false }), Date.now(), schedulerRun.id);
+          return json({
+            dryRun: false,
+            decision: { ...decision, dryRun: false, workAvailable: false, reason },
+            run: listSchedulerRuns(1)[0],
+            settings: getSchedulerSettings(),
+            recentRuns: listSchedulerRuns(20),
+            activeLock: activeSchedulerLock(Date.now()),
+          }, 409);
+        }
+        const item = objectRecord(decision.item);
+        const company = objectRecord(item.company);
+        const scoringRun = createServiceFitScoringRun({
+          company,
+          origin: webhookOrigin(req),
+          userPubkey: session.pubkey,
+          userNpub: pubkeyToNpub(session.pubkey),
+          reason: `Scheduled scoring: ${String(company.name ?? company.id)} against active Adapt service offerings`,
+          now,
+        });
+        db.query(`
+          UPDATE scheduler_runs
+          SET local_request_id = ?1,
+              result_json = ?2,
+              updated_at = ?3
+          WHERE id = ?4
+        `).run(
+          scoringRun.requestId,
+          JSON.stringify({ dryRun: false, decision, scoringRun: { requestId: scoringRun.requestId, queueId: scoringRun.queueId, offeringCount: scoringRun.offeringCount } }),
+          Date.now(),
+          schedulerRun.id,
+        );
+        if (shouldDeferKindlingAutopilotAuth(body, "score_company_service_fit")) {
+          return json({
+            dryRun: false,
+            decision: { ...decision, dryRun: false },
+            run: listSchedulerRuns(1)[0],
+            lock,
+            requiresAutopilotAuth: true,
+            runId: scoringRun.runId,
+            requestId: scoringRun.requestId,
+            queueId: scoringRun.queueId,
+            offeringCount: scoringRun.offeringCount,
+            triggerRequest: scoringRun.triggerRequest,
+            settings: getSchedulerSettings(),
+            recentRuns: listSchedulerRuns(20),
+            activeLock: activeSchedulerLock(Date.now()),
+          }, 202);
+        }
+        try {
+          const start = await startKindlingRun(
+            scoringRun.runId,
+            typeof body.autopilotAuthorization === "string" ? body.autopilotAuthorization.trim() : "",
+          );
+          db.query(`
+            UPDATE work_queue
+            SET status = 'running',
+                attempts = attempts + 1,
+                locked_by_run_id = ?1,
+                updated_at = ?2
+            WHERE id = ?3
+          `).run(scoringRun.runId, Date.now(), scoringRun.queueId);
+          return json({
+            dryRun: false,
+            decision: { ...decision, dryRun: false },
+            run: listSchedulerRuns(1)[0],
+            lock,
+            start,
+            runId: scoringRun.runId,
+            requestId: scoringRun.requestId,
+            queueId: scoringRun.queueId,
+            offeringCount: scoringRun.offeringCount,
+            triggerRequest: scoringRun.triggerRequest,
+            settings: getSchedulerSettings(),
+            recentRuns: listSchedulerRuns(20),
+            activeLock: activeSchedulerLock(Date.now()),
+          }, 201);
+        } catch (error) {
+          updateSchedulerRunForRequest({
+            requestId: scoringRun.requestId,
+            roleKey: "score_company_service_fit",
+            status: "failed",
+            error: error instanceof Error ? error.message : String(error),
+            finish: true,
+            releaseLock: true,
+          });
+          return json({
+            error: error instanceof Error ? error.message : String(error),
+            dryRun: false,
+            decision: { ...decision, dryRun: false },
+            run: listSchedulerRuns(1)[0],
+            runId: scoringRun.runId,
+            requestId: scoringRun.requestId,
+            settings: getSchedulerSettings(),
+            recentRuns: listSchedulerRuns(20),
+            activeLock: activeSchedulerLock(Date.now()),
+          }, 502);
+        }
+      }
       if (!decision.workAvailable || decision.action !== "acquisition" || decision.roleKey !== "scan_target_list" || !decision.item) {
         const skippedRun = createSchedulerRun({
           runType: "scheduled",
@@ -5982,7 +6418,6 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
         }, 409);
       }
 
-      const body = await readJson(req);
       const acquisitionJob = buildScheduledAcquisitionJob({
         item: decision.item,
         decision,
@@ -6130,25 +6565,31 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     const companyId = String(body.companyId ?? "").trim();
     const serviceOfferingId = String(body.serviceOfferingId ?? "").trim();
     if (!companyId) return json({ error: "companyId is required" }, 400);
-    if (!serviceOfferingId) return json({ error: "serviceOfferingId is required" }, 400);
     const company = db.query("SELECT * FROM companies WHERE id = ?1").get(companyId) as Record<string, unknown> | null;
     if (!company) return json({ error: "company not found" }, 404);
-    const offering = db.query("SELECT * FROM service_offerings WHERE id = ?1").get(serviceOfferingId) as Record<string, unknown> | null;
-    if (!offering) return json({ error: "service offering not found" }, 404);
-    const marketProfileVersionId = String(body.marketProfileVersionId ?? offering.market_profile_version_id ?? "").trim();
-    if (marketProfileVersionId !== String(offering.market_profile_version_id)) {
+    const activeScoring = listActiveScoringOfferings();
+    const offeringRows = serviceOfferingId
+      ? [db.query("SELECT * FROM service_offerings WHERE id = ?1").get(serviceOfferingId) as Record<string, unknown> | null].filter(Boolean) as Record<string, unknown>[]
+      : (activeScoring.offerings || []).map((offering) => db.query("SELECT * FROM service_offerings WHERE id = ?1").get(String(offering.id)) as Record<string, unknown>).filter(Boolean);
+    if (!offeringRows.length) return json({ error: serviceOfferingId ? "service offering not found" : "no active service offerings to score against" }, 404);
+    const marketProfileVersionId = String(body.marketProfileVersionId ?? offeringRows[0]?.market_profile_version_id ?? activeScoring.profile?.currentVersionId ?? "").trim();
+    if (offeringRows.some((offering) => marketProfileVersionId !== String(offering.market_profile_version_id))) {
       return json({ error: "service offering does not belong to marketProfileVersionId" }, 400);
     }
 
     const now = Date.now();
     const requestId = crypto.randomUUID();
     const webhookToken = crypto.randomUUID().replaceAll("-", "");
-    const reason = String(body.reason ?? `Score ${String(company.name)} against ${String(offering.name)}`).trim();
-    const context = buildServiceFitScoringContext(company, offering, req, webhookToken);
+    const reason = String(body.reason ?? (
+      serviceOfferingId
+        ? `Score ${String(company.name)} against ${String(offeringRows[0]?.name)}`
+        : `Score ${String(company.name)} against all active Adapt service offerings`
+    )).trim();
+    const context = buildServiceFitScoringContext(company, offeringRows, webhookOrigin(req), webhookToken);
     const queueId = createServiceFitAssessmentQueueItem({
       id: requestId,
       companyId,
-      serviceOfferingId,
+      serviceOfferingId: serviceOfferingId || "all",
       marketProfileVersionId,
       reason,
       priority: Number(body.priority ?? 40),
@@ -6167,7 +6608,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     });
     const runId = createKindlingRun({ roleKey: "score_company_service_fit", localRequestId: requestId, triggerRequest, status: "queued" });
     if (shouldDeferKindlingAutopilotAuth(body, "score_company_service_fit")) {
-      return json({ requiresAutopilotAuth: true, runId, requestId, queueId, triggerRequest }, 202);
+      return json({ requiresAutopilotAuth: true, runId, requestId, queueId, offeringCount: offeringRows.length, triggerRequest }, 202);
     }
     await startKindlingRun(runId, typeof body.autopilotAuthorization === "string" ? body.autopilotAuthorization.trim() : "");
     db.query(`
@@ -6178,7 +6619,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
           updated_at = ?2
       WHERE id = ?3
     `).run(runId, Date.now(), queueId);
-    return json({ runId, requestId, queueId, triggerRequest }, 201);
+    return json({ runId, requestId, queueId, offeringCount: offeringRows.length, triggerRequest }, 201);
   }
 
   if (pathname === "/api/kindling/target-segments" && req.method === "GET") {
@@ -6891,7 +7332,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     const requestId = String(body.requestId ?? "").trim();
     const run = requestId && token ? findKindlingRun(requestId, "score_company_service_fit", token) : null;
     if (!run) return json({ error: "webhook target not found" }, 400);
-    const persisted = persistServiceFitAssessment({
+    const persisted = persistServiceFitAssessmentBatch({
       body: {
         ...body,
         role: "score_company_service_fit",
@@ -6901,7 +7342,11 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     if (!persisted.ok) return json({ error: persisted.error }, 400);
     db.query("UPDATE kindling_pipeline_runs SET status = 'running', updated_at = ?1 WHERE id = ?2")
       .run(Date.now(), String(run.id));
-    return json({ ok: true, persisted: persisted.assessment });
+    return json({
+      ok: true,
+      persisted: persisted.assessments.length === 1 ? persisted.assessment : persisted.assessments,
+      assessments: persisted.assessments,
+    });
   }
 
   if (pathname === "/api/chats" && req.method === "GET") {
@@ -7302,6 +7747,11 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
 
 if (import.meta.main) {
   setInterval(cleanupExpiredAuthRows, 15 * 60 * 1000);
+  setInterval(() => {
+    void runAutomatedScoringLoop().catch((error) => {
+      console.error("automated scoring loop failed", error);
+    });
+  }, SCORING_LOOP_INTERVAL_MS);
 
   const server = Bun.serve({
     port: PORT,

@@ -819,6 +819,110 @@ describe("Kindling API contracts", () => {
     });
   });
 
+  test("scores one enriched company against all active service offerings in one run", async () => {
+    await api("/api/settings", {
+      method: "PUT",
+      body: { autopilotUrl: "https://rick.runwingman.com" },
+    });
+    const now = Date.now();
+    db.query("INSERT INTO market_profiles(id, name, current_version_id, created_at, updated_at) VALUES ('profile-1', 'Adapt profile', 'profile-version-1', ?1, ?1)")
+      .run(now);
+    db.query(`
+      INSERT INTO market_profile_versions(
+        id, profile_id, version_number, structured_json, summary, rationale, source_references_json, created_at
+      )
+      VALUES ('profile-version-1', 'profile-1', 1, '{}', 'Adapt services', 'Initial test profile', '[]', ?1)
+    `).run(now);
+    db.query(`
+      INSERT INTO service_offerings(
+        id, market_profile_version_id, key, name, variant_key, structured_json, status, created_at, updated_at
+      )
+      VALUES
+        ('service-offering-a', 'profile-version-1', 'advisory', 'Advisory', 'base', '{"detail":"Advisory offer"}', 'active', ?1, ?1),
+        ('service-offering-b', 'profile-version-1', 'automation', 'Automation', 'base', '{"detail":"Automation offer"}', 'active', ?1, ?1)
+    `).run(now);
+    db.query(`
+      INSERT INTO companies(
+        id, name, location, industry, website, data_ring, duplicate_status, enrichment_status, confidence, profile_json, created_at, updated_at
+      )
+      VALUES ('company-batch', 'Batch Company', 'Perth', 'Accounting advisory', 'https://batch.example', 'enhanced', 'unique', 'complete', 0.82, '{}', ?1, ?1)
+    `).run(now);
+
+    const trigger = await api("/api/kindling/service-assessments", {
+      method: "POST",
+      body: { companyId: "company-batch", deferAutopilotAuth: true },
+    });
+    expect(trigger.res.status).toBe(202);
+    expect(trigger.payload.offeringCount).toBe(2);
+    const triggerInput = trigger.payload.triggerRequest.body.input as Record<string, unknown>;
+    expect(triggerInput.serviceOfferingId).toBe("");
+    expect(triggerInput.localContext).toMatchObject({
+      companyId: "company-batch",
+      serviceOfferingId: "",
+      marketProfileVersionId: "profile-version-1",
+    });
+    expect((triggerInput.localContext as { serviceOfferings: Array<Record<string, unknown>> }).serviceOfferings.map((offering) => offering.id)).toEqual([
+      "service-offering-a",
+      "service-offering-b",
+    ]);
+    expect(db.query("SELECT target_id FROM work_queue WHERE id = ?1").get(trigger.payload.queueId)).toEqual({
+      target_id: "company-batch:all:profile-version-1",
+    });
+
+    const written = await api("/api/kindling/pipeline-write/service-assessment", {
+      method: "POST",
+      headers: { "x-kindling-pipeline-token": triggerInput.webhook.token },
+      body: {
+        requestId: triggerInput.requestId,
+        result: {
+          outputKind: "service_fit_assessment_batch",
+          companyId: "company-batch",
+          marketProfileVersionId: "profile-version-1",
+          assessments: [
+            {
+              outputKind: "service_fit_assessment",
+              companyId: "company-batch",
+              serviceOfferingId: "service-offering-a",
+              marketProfileVersionId: "profile-version-1",
+              score: 77,
+              band: "high",
+              confidence: 0.74,
+              drivers: [{ dimension: "service_fit", score: 77, reason: "Advisory fit" }],
+              fitExplanation: "Good advisory fit.",
+              evidence: [{ summary: "Enriched profile supports advisory fit." }],
+              caveats: [],
+              recommendedAction: "Review advisory angle",
+            },
+            {
+              outputKind: "service_fit_assessment",
+              companyId: "company-batch",
+              serviceOfferingId: "service-offering-b",
+              marketProfileVersionId: "profile-version-1",
+              score: 64,
+              band: "medium",
+              confidence: 0.68,
+              drivers: [{ dimension: "service_fit", score: 64, reason: "Automation fit" }],
+              fitExplanation: "Moderate automation fit.",
+              evidence: [{ summary: "Some automation signals." }],
+              caveats: ["No explicit AI budget signal"],
+              recommendedAction: "Review automation angle",
+            },
+          ],
+        },
+      },
+    });
+    expect(written.res.status).toBe(200);
+    expect(written.payload.assessments).toHaveLength(2);
+    expect(db.query("SELECT COUNT(*) AS count FROM service_fit_assessments WHERE company_id = 'company-batch'").get())
+      .toEqual({ count: 2 });
+    expect(db.query("SELECT data_ring FROM companies WHERE id = 'company-batch'").get()).toEqual({ data_ring: "scored" });
+    const topTargets = await api("/api/kindling/top-targets");
+    expect(topTargets.payload.targets[0]).toMatchObject({
+      companyId: "company-batch",
+      bestOffering: { id: "service-offering-a" },
+    });
+  });
+
   test("rejects service-fit writes that do not match the triggered company and offering", async () => {
     await api("/api/settings", {
       method: "PUT",
@@ -2320,6 +2424,116 @@ describe("Kindling API contracts", () => {
     }
   });
 
+  test("run-once directly triggers one scheduled all-offerings scoring run", async () => {
+    await api("/api/settings", {
+      method: "PUT",
+      body: {
+        autopilotUrl: "http://127.0.0.1:9",
+      },
+    });
+    await api("/api/kindling/scheduler-settings", {
+      method: "PATCH",
+      body: {
+        enabled: true,
+        acquisitionEnabled: false,
+        enrichmentEnabled: false,
+        scoringEnabled: true,
+        outreachEnabled: false,
+        cooldowns: { scoringMs: 0 },
+      },
+    });
+    const now = Date.now();
+    db.query("INSERT INTO market_profiles(id, name, current_version_id, created_at, updated_at) VALUES ('score-profile', 'Adapt profile', 'score-profile-version', ?1, ?1)")
+      .run(now);
+    db.query(`
+      INSERT INTO market_profile_versions(
+        id, profile_id, version_number, structured_json, summary, rationale, source_references_json, created_at
+      )
+      VALUES ('score-profile-version', 'score-profile', 1, '{}', 'Adapt services', 'Scoring test profile', '[]', ?1)
+    `).run(now);
+    db.query(`
+      INSERT INTO service_offerings(
+        id, market_profile_version_id, key, name, variant_key, structured_json, status, created_at, updated_at
+      )
+      VALUES
+        ('score-offering-a', 'score-profile-version', 'advisory', 'Advisory', 'base', '{}', 'active', ?1, ?1),
+        ('score-offering-b', 'score-profile-version', 'automation', 'Automation', 'base', '{}', 'active', ?1, ?1)
+    `).run(now);
+    db.query(`
+      INSERT INTO companies(
+        id, name, location, industry, website, data_ring, duplicate_status, enrichment_status, confidence, profile_json, created_at, updated_at
+      )
+      VALUES ('scheduler-score-direct', 'Scheduler Score Direct', 'Perth', 'Accounting', 'https://score-direct.example', 'enhanced', 'unique', 'complete', 0.91, '{}', ?1, ?1)
+    `).run(now);
+
+    const fetchCalls: Array<{ url: string; init: RequestInit | undefined; body: Record<string, unknown> }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const body = typeof init?.body === "string" ? JSON.parse(init.body) as Record<string, unknown> : {};
+      fetchCalls.push({ url: String(url), init, body });
+      return Response.json({ run: { id: "remote-scheduler-score-run", status: "running" } });
+    }) as typeof fetch;
+    try {
+      const started = await api("/api/kindling/scheduler/run-once?dryRun=false", {
+        method: "POST",
+      });
+      expect(started.res.status).toBe(201);
+      expect(fetchCalls).toHaveLength(1);
+      expect(fetchCalls[0]?.url).toBe("http://127.0.0.1:9/api/pipelines/triggers/http/kindling-score-company-service-fit");
+      const triggerInput = fetchCalls[0]?.body.input as Record<string, unknown>;
+      expect(triggerInput).toMatchObject({
+        source: "kindling-wapp",
+        pipelineRole: "score_company_service_fit",
+        roleKey: "score_company_service_fit",
+        requestId: started.payload.requestId,
+        companyId: "scheduler-score-direct",
+        serviceOfferingId: "",
+        marketProfileVersionId: "score-profile-version",
+        localContext: {
+          companyId: "scheduler-score-direct",
+          serviceOfferingId: "",
+          marketProfileVersionId: "score-profile-version",
+          writeApi: {
+            url: "http://kindling.test/api/kindling/pipeline-write/service-assessment",
+            authHeader: "x-kindling-pipeline-token",
+          },
+        },
+      });
+      expect((triggerInput.localContext as { serviceOfferings: Array<Record<string, unknown>> }).serviceOfferings.map((offering) => offering.id)).toEqual([
+        "score-offering-a",
+        "score-offering-b",
+      ]);
+      expect(started.payload).toMatchObject({
+        offeringCount: 2,
+        start: {
+          mode: "autopilot-http",
+          runId: "remote-scheduler-score-run",
+          status: "running",
+        },
+      });
+      expect(db.query("SELECT status, target_id, locked_by_run_id FROM work_queue WHERE id = ?1").get(started.payload.queueId))
+        .toMatchObject({
+          status: "running",
+          target_id: "scheduler-score-direct:all:score-profile-version",
+          locked_by_run_id: started.payload.runId,
+        });
+      const schedulerRun = db.query(`
+        SELECT status, role_key, local_request_id, autopilot_run_id, finished_at
+        FROM scheduler_runs
+        WHERE id = ?1
+      `).get(started.payload.run.id) as Record<string, unknown>;
+      expect(schedulerRun).toMatchObject({
+        status: "running",
+        role_key: "score_company_service_fit",
+        local_request_id: started.payload.requestId,
+        autopilot_run_id: "remote-scheduler-score-run",
+        finished_at: null,
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   test("run-once direct Autopilot start failure marks acquisition retryable and releases lock", async () => {
     await api("/api/settings", {
       method: "PUT",
@@ -2575,6 +2789,20 @@ describe("Kindling API contracts", () => {
       method: "PATCH",
       body: { enrichmentEnabled: false },
     });
+    db.query("INSERT INTO market_profiles(id, name, current_version_id, created_at, updated_at) VALUES ('scheduler-profile', 'Adapt profile', 'scheduler-profile-version', 20, 20)")
+      .run();
+    db.query(`
+      INSERT INTO market_profile_versions(
+        id, profile_id, version_number, structured_json, summary, rationale, source_references_json, created_at
+      )
+      VALUES ('scheduler-profile-version', 'scheduler-profile', 1, '{}', 'Adapt services', 'Scheduler profile', '[]', 20)
+    `).run();
+    db.query(`
+      INSERT INTO service_offerings(
+        id, market_profile_version_id, key, name, variant_key, structured_json, status, created_at, updated_at
+      )
+      VALUES ('scheduler-offering', 'scheduler-profile-version', 'advisory', 'Advisory', 'base', '{}', 'active', 20, 20)
+    `).run();
     db.query(`
       INSERT INTO companies(id, name, location, industry, website, data_ring, duplicate_status, enrichment_status, confidence, profile_json, created_at, updated_at)
       VALUES ('scheduler-score-company', 'Scheduler Score Co', 'Perth', 'Accounting', 'https://score.example', 'enhanced', 'unique', 'complete', 0.9, '{}', 20, 20)
@@ -2583,7 +2811,7 @@ describe("Kindling API contracts", () => {
     expect(scoring.payload.decision).toMatchObject({
       workAvailable: true,
       action: "scoring",
-      roleKey: "monitor_and_score",
+      roleKey: "score_company_service_fit",
       item: {
         kind: "company",
         company: { id: "scheduler-score-company" },

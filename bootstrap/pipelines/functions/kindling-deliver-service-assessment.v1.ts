@@ -80,6 +80,19 @@ function buildAssessment(input: JsonObject): JsonObject {
   };
 }
 
+function buildAssessmentFromDraft(input: JsonObject, draft: JsonObject): JsonObject {
+  return buildAssessment({ ...input, assessmentDraft: draft });
+}
+
+function buildAssessments(input: JsonObject): JsonObject[] {
+  const draft = objectValue(input.assessmentDraft);
+  const nestedAssessments = arrayValue(draft.assessments).map(objectValue).filter((assessment) => Object.keys(assessment).length);
+  const inputAssessments = arrayValue(input.assessments).map(objectValue).filter((assessment) => Object.keys(assessment).length);
+  const assessments = nestedAssessments.length ? nestedAssessments : inputAssessments;
+  if (!assessments.length) return [buildAssessment(input)];
+  return assessments.map((assessment) => buildAssessmentFromDraft(input, assessment));
+}
+
 async function postJson(endpoint: { url: string; authHeader: string; token: string }, body: JsonObject) {
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (endpoint.token) headers[endpoint.authHeader] = endpoint.token;
@@ -97,7 +110,16 @@ async function postJson(endpoint: { url: string; authHeader: string; token: stri
 
 export default async function run(input: JsonObject) {
   const localContext = objectValue(input.localContext);
-  const assessment = buildAssessment(input);
+  const assessments = buildAssessments(input);
+  const assessment = assessments[0] ?? buildAssessment(input);
+  const result = assessments.length === 1
+    ? assessment
+    : {
+      outputKind: "service_fit_assessment_batch",
+      companyId: text(assessment.companyId, text(input.companyId, text(localContext.companyId))),
+      marketProfileVersionId: text(assessment.marketProfileVersionId, text(input.marketProfileVersionId, text(localContext.marketProfileVersionId))),
+      assessments,
+    };
   const requestId = text(input.requestId);
   const payload = {
     requestId,
@@ -105,8 +127,10 @@ export default async function run(input: JsonObject) {
     status: "ok",
     stub: false,
     generatedAt: new Date().toISOString(),
-    response: text(input.response, `Scored service fit at ${assessment.score}/100.`),
-    result: assessment,
+    response: text(input.response, assessments.length === 1
+      ? `Scored service fit at ${assessment.score}/100.`
+      : `Scored service fit against ${assessments.length} offerings.`),
+    result,
     metadata: {
       source: "kindling-service-fit-assessment-pipeline",
       pipelineRole: "score_company_service_fit",
@@ -119,7 +143,7 @@ export default async function run(input: JsonObject) {
   if (writeApi) {
     writeStatus = await postJson(writeApi, {
       requestId,
-      result: assessment,
+      result,
     });
   }
 
