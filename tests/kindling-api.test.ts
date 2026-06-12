@@ -19,7 +19,7 @@ const {
   ensureDefaultTargetSegments,
   getSchedulerSettings,
 } = await import("../src/db.ts");
-const { handleApi } = await import("../src/server.ts");
+const { handleApi, runAutomatedProspectingLoop } = await import("../src/server.ts");
 const { runAutoEnrichNextIndustry } = await import("../src/auto-enrichment-job.ts");
 
 const secretKey = new Uint8Array(32).fill(7);
@@ -2418,6 +2418,95 @@ describe("Kindling API contracts", () => {
           runId: started.payload.run.id,
         },
       });
+      expect(fetchCalls).toHaveLength(1);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("automated prospecting loop walks due acquisition slices every interval", async () => {
+    await api("/api/settings", {
+      method: "PUT",
+      body: {
+        autopilotUrl: "http://127.0.0.1:9",
+      },
+    });
+    await api("/api/kindling/scheduler-settings", {
+      method: "PATCH",
+      body: {
+        enabled: true,
+        cooldowns: { acquisitionMs: 0 },
+      },
+    });
+    seedSchedulerAcquisitionSlice("scheduler-auto-acquisition-slice");
+
+    const fetchCalls: Array<{ url: string; init: RequestInit | undefined; body: Record<string, unknown> }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const body = typeof init?.body === "string" ? JSON.parse(init.body) as Record<string, unknown> : {};
+      fetchCalls.push({ url: String(url), init, body });
+      return Response.json({ run: { id: "remote-scheduler-auto-acquisition-run", status: "running" } });
+    }) as typeof fetch;
+    try {
+      const started = await runAutomatedProspectingLoop();
+      expect(started).toMatchObject({
+        action: "acquisition",
+        acquisition: {
+          coverageSliceId: "scheduler-auto-acquisition-slice",
+          targetCount: 15,
+        },
+      });
+      expect(fetchCalls).toHaveLength(1);
+      expect(fetchCalls[0]?.url).toBe("http://127.0.0.1:9/api/pipelines/triggers/http/kindling-scan-target-list");
+      const triggerInput = fetchCalls[0]?.body.input as Record<string, unknown>;
+      expect(triggerInput).toMatchObject({
+        source: "kindling-wapp",
+        pipelineRole: "scan_target_list",
+        roleKey: "scan_target_list",
+        industry: "Accounting, tax, bookkeeping, and business advisory",
+        location: "Perth",
+        targetCount: 15,
+        userNpub: "scheduler",
+        localContext: {
+          scheduler: {
+            action: "acquisition",
+            correlation: {
+              coverageSliceId: "scheduler-auto-acquisition-slice",
+              roleKey: "scan_target_list",
+            },
+          },
+          acquisition: {
+            coverageSlice: {
+              id: "scheduler-auto-acquisition-slice",
+              sourceFamily: "directory",
+              strategyType: "directory",
+            },
+          },
+          writeApi: {
+            url: expect.stringContaining("/api/kindling/pipeline-write/target-scan"),
+            authHeader: "x-kindling-pipeline-token",
+          },
+        },
+        webhook: {
+          url: expect.stringContaining("/api/kindling/pipeline-webhook"),
+          authHeader: "x-kindling-pipeline-token",
+        },
+      });
+      const schedulerRun = db.query(`
+        SELECT status, selected_action, role_key, autopilot_run_id, context_json
+        FROM scheduler_runs
+        WHERE id = ?1
+      `).get(started?.schedulerRunId) as Record<string, unknown>;
+      expect(schedulerRun).toMatchObject({
+        status: "running",
+        selected_action: "acquisition",
+        role_key: "scan_target_list",
+        autopilot_run_id: "remote-scheduler-auto-acquisition-run",
+      });
+      expect(JSON.parse(String(schedulerRun.context_json))).toMatchObject({
+        automated: true,
+      });
+      expect(await runAutomatedProspectingLoop()).toBeNull();
       expect(fetchCalls).toHaveLength(1);
     } finally {
       globalThis.fetch = originalFetch;

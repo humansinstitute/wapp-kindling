@@ -579,7 +579,7 @@ function schedulerSettingsPatchFromBody(body: Record<string, unknown>): Schedule
 }
 
 type SchedulerActionKey = "acquisition" | "enrichment" | "scoring" | "outreach";
-const SCORING_LOOP_INTERVAL_MS = 21 * 60 * 1000;
+const PROSPECTING_LOOP_INTERVAL_MS = 21 * 60 * 1000;
 
 type SchedulerRoleEvaluation = {
   action: SchedulerActionKey;
@@ -1403,8 +1403,10 @@ function buildScheduledAcquisitionJob(input: {
   item: SchedulerAcquisitionWork;
   decision: SchedulerDryRunDecision;
   schedulerRunId: string;
-  req: Request;
-  session: { pubkey: string };
+  req?: Request;
+  origin?: string;
+  automated?: boolean;
+  session: { pubkey: string; npub?: string };
 }) {
   const now = Date.now();
   const item = input.item;
@@ -1448,6 +1450,7 @@ function buildScheduledAcquisitionJob(input: {
   );
 
   const webhookToken = crypto.randomUUID().replaceAll("-", "");
+  const origin = input.req ? webhookOrigin(input.req) : input.origin || PUBLIC_ORIGIN || `http://localhost:${PORT}`;
   const scanContext = buildScanContext(industry, location, targetCount);
   const priorScanStrategies = listPriorAcquisitionStrategies({
     coverageSliceId,
@@ -1514,19 +1517,19 @@ function buildScheduledAcquisitionJob(input: {
       priorScanStrategies,
       priorExecutedStrategies: priorScanStrategies,
       scanContextApi: {
-        url: `${webhookOrigin(input.req)}/api/nip98/kindling/scan-context?industry=${encodeURIComponent(industry)}&location=${encodeURIComponent(location)}&targetCount=${targetCount}`,
+        url: `${origin}/api/nip98/kindling/scan-context?industry=${encodeURIComponent(industry)}&location=${encodeURIComponent(location)}&targetCount=${targetCount}`,
         auth: "nip98-read",
       },
       writeApi: {
-        url: `${webhookOrigin(input.req)}/api/kindling/pipeline-write/target-scan`,
+        url: `${origin}/api/kindling/pipeline-write/target-scan`,
         token: webhookToken,
         authHeader: "x-kindling-pipeline-token",
       },
     },
-    webhookUrl: `${webhookOrigin(input.req)}/api/kindling/pipeline-webhook`,
+    webhookUrl: `${origin}/api/kindling/pipeline-webhook`,
     webhookToken,
     userPubkey: input.session.pubkey,
-    userNpub: pubkeyToNpub(input.session.pubkey),
+    userNpub: input.session.npub || pubkeyToNpub(input.session.pubkey),
   });
   const kindlingRunId = createKindlingRun({ roleKey: "scan_target_list", localRequestId: jobId, triggerRequest, status: "queued" });
   db.query(`
@@ -1540,6 +1543,7 @@ function buildScheduledAcquisitionJob(input: {
     jobId,
     JSON.stringify({
       dryRun: false,
+      automated: Boolean(input.automated),
       userPubkey: input.session.pubkey,
       evaluatedRoles: input.decision.evaluatedRoles,
       selectedAcquisitionWork: item,
@@ -1547,6 +1551,7 @@ function buildScheduledAcquisitionJob(input: {
     }),
     JSON.stringify({
       dryRun: false,
+      automated: Boolean(input.automated),
       decision: input.decision,
       jobId,
       kindlingRunId,
@@ -5757,6 +5762,80 @@ function webhookOrigin(req: Request): string {
   return PUBLIC_ORIGIN || requestPublicOrigin(req);
 }
 
+async function runAutomatedAcquisitionLoop() {
+  const now = Date.now();
+  const settings = getSchedulerSettings();
+  if (!settings.enabled || !settings.acquisitionEnabled) return null;
+  if (activeSchedulerLock(now)) return null;
+  const decision = computeSchedulerDryRunDecision(now);
+  if (!decision.workAvailable || decision.action !== "acquisition" || decision.roleKey !== "scan_target_list" || !decision.item) {
+    return null;
+  }
+
+  const schedulerRun = createSchedulerRun({
+    runType: "scheduled",
+    status: "running",
+    selectedAction: "acquisition",
+    roleKey: "scan_target_list",
+    context: {
+      dryRun: false,
+      automated: true,
+      evaluatedRoles: decision.evaluatedRoles,
+      selectedAcquisitionWork: decision.item,
+    },
+    result: {
+      dryRun: false,
+      automated: true,
+      decision,
+    },
+    startedAt: now,
+    now,
+  });
+  const lock = acquireSchedulerLock({
+    runId: schedulerRun.id,
+    ownerId: "scheduler:auto-acquisition",
+    leaseMs: Math.max(10 * 60 * 1000, Number(settings.cooldowns.acquisitionMs ?? 0)),
+    now,
+  });
+  if (!lock) {
+    db.query(`
+      UPDATE scheduler_runs
+      SET status = 'skipped',
+          skip_reason = 'scheduler lock prospecting could not be acquired',
+          finished_at = ?1,
+          updated_at = ?1
+      WHERE id = ?2
+    `).run(Date.now(), schedulerRun.id);
+    return null;
+  }
+
+  const acquisitionJob = buildScheduledAcquisitionJob({
+    item: decision.item,
+    decision,
+    schedulerRunId: schedulerRun.id,
+    origin: PUBLIC_ORIGIN || `http://localhost:${PORT}`,
+    automated: true,
+    session: { pubkey: "scheduler", npub: "scheduler" },
+  });
+  try {
+    const start = await startKindlingRun(acquisitionJob.kindlingRunId);
+    return {
+      schedulerRunId: schedulerRun.id,
+      runId: acquisitionJob.kindlingRunId,
+      jobId: acquisitionJob.jobId,
+      acquisition: {
+        coverageSliceId: acquisitionJob.coverageSliceId,
+        targetCount: acquisitionJob.targetCount,
+        scanMode: acquisitionJob.scanMode,
+        correlation: acquisitionJob.correlation,
+      },
+      start,
+    };
+  } catch {
+    return null;
+  }
+}
+
 async function runAutomatedScoringLoop() {
   const now = Date.now();
   const settings = getSchedulerSettings();
@@ -5851,6 +5930,14 @@ async function runAutomatedScoringLoop() {
     });
     return null;
   }
+}
+
+export async function runAutomatedProspectingLoop() {
+  const acquisition = await runAutomatedAcquisitionLoop();
+  if (acquisition) return { action: "acquisition", ...acquisition };
+  const scoring = await runAutomatedScoringLoop();
+  if (scoring) return { action: "scoring", ...scoring };
+  return null;
 }
 
 export async function handleApi(req: Request, url: URL): Promise<Response | null> {
@@ -7748,10 +7835,10 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
 if (import.meta.main) {
   setInterval(cleanupExpiredAuthRows, 15 * 60 * 1000);
   setInterval(() => {
-    void runAutomatedScoringLoop().catch((error) => {
-      console.error("automated scoring loop failed", error);
+    void runAutomatedProspectingLoop().catch((error) => {
+      console.error("automated prospecting loop failed", error);
     });
-  }, SCORING_LOOP_INTERVAL_MS);
+  }, PROSPECTING_LOOP_INTERVAL_MS);
 
   const server = Bun.serve({
     port: PORT,
