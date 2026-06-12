@@ -153,7 +153,7 @@ button:disabled {
 
 .homeActions {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 10px;
 }
 
@@ -313,7 +313,7 @@ button:disabled {
 
 .kindlingStats {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 10px;
 }
 
@@ -364,6 +364,11 @@ button:disabled {
 
 .kindlingGrid.companiesLayout {
   grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+}
+
+.schedulerLayout,
+.targetReviewLayout {
   align-items: start;
 }
 
@@ -589,6 +594,7 @@ button:disabled {
   display: flex;
   justify-content: flex-end;
   gap: 10px;
+  flex-wrap: wrap;
 }
 
 .kindlingPanel button[type="submit"],
@@ -634,6 +640,55 @@ button:disabled {
 .roleList {
   display: grid;
   gap: 8px;
+}
+
+.toggleGrid,
+.settingsNumberGrid,
+.buttonGrid {
+  display: grid;
+  gap: 10px;
+}
+
+.toggleGrid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-bottom: 12px;
+}
+
+.settingsNumberGrid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-bottom: 10px;
+}
+
+.toggleControl {
+  display: flex !important;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.toggleControl input {
+  width: auto;
+}
+
+.buttonGrid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-bottom: 14px;
+}
+
+.buttonGrid button:first-child,
+.buttonGrid button:last-child {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
+.sectionSubhead {
+  margin-top: 18px !important;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
 }
 
 .companyFilters {
@@ -683,6 +738,15 @@ button:disabled {
   min-width: 0;
 }
 
+.workQueueList div {
+  align-items: start;
+}
+
+.workQueueList button {
+  justify-self: start;
+  margin-top: 6px;
+}
+
 .scanJobButton {
   display: grid;
   gap: 3px;
@@ -730,6 +794,36 @@ button:disabled {
 .targetList span {
   color: var(--muted);
   font-size: 13px;
+}
+
+.topTargetList button {
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 10px;
+}
+
+.topTargetList strong,
+.topTargetList span,
+.topTargetList small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.topTargetList strong {
+  grid-column: 2;
+}
+
+.topTargetList span:not(.targetRank),
+.topTargetList small {
+  grid-column: 2;
+}
+
+.targetRank {
+  grid-row: span 4;
+  align-self: start;
+  min-width: 58px;
+  color: var(--accent-dark) !important;
+  font-weight: 800;
+  font-size: 12px;
 }
 
 .companyRowMain {
@@ -1367,8 +1461,26 @@ textarea {
   .kindlingGrid.two,
   .kindlingGrid.companiesLayout,
   .profileColumns,
-  .companyProfileGrid {
+  .companyProfileGrid,
+  .toggleGrid,
+  .settingsNumberGrid,
+  .buttonGrid {
     grid-template-columns: 1fr;
+  }
+
+  .topTargetList button {
+    grid-template-columns: 1fr;
+  }
+
+  .topTargetList strong,
+  .topTargetList span:not(.targetRank),
+  .topTargetList small {
+    grid-column: 1;
+  }
+
+  .targetRank {
+    grid-row: auto;
+    min-width: 0;
   }
 
   .profileChatPanel {

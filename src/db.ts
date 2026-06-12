@@ -517,6 +517,48 @@ CREATE TABLE IF NOT EXISTS outreach_drafts (
   FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
 );
 
+`);
+
+for (const migration of [
+  "ALTER TABLE sources ADD COLUMN title TEXT",
+  "ALTER TABLE sources ADD COLUMN extracted_data_json TEXT NOT NULL DEFAULT '{}'",
+  "ALTER TABLE sources ADD COLUMN last_checked_at INTEGER",
+  "ALTER TABLE sources ADD COLUMN last_checked_by_run_id TEXT",
+  "ALTER TABLE sources ADD COLUMN terms_notes TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE enrichment_requests ADD COLUMN work_queue_id TEXT",
+  "ALTER TABLE pipeline_runs ADD COLUMN trigger_payload_json TEXT",
+  "ALTER TABLE discovery_jobs ADD COLUMN target_count INTEGER NOT NULL DEFAULT 25",
+  "ALTER TABLE discovery_jobs ADD COLUMN scan_mode TEXT NOT NULL DEFAULT 'interactive'",
+  "ALTER TABLE discovery_jobs ADD COLUMN segment_id TEXT",
+  "ALTER TABLE discovery_jobs ADD COLUMN geography_id TEXT",
+  "ALTER TABLE discovery_jobs ADD COLUMN geography_text TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE discovery_jobs ADD COLUMN coverage_slice_id TEXT",
+  "ALTER TABLE scan_strategy_attempts ADD COLUMN segment_id TEXT",
+  "ALTER TABLE scan_strategy_attempts ADD COLUMN geography_id TEXT",
+  "ALTER TABLE scan_strategy_attempts ADD COLUMN geography_text TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE scan_strategy_attempts ADD COLUMN coverage_slice_id TEXT",
+  "ALTER TABLE scan_strategy_attempts ADD COLUMN source_family TEXT NOT NULL DEFAULT 'web'",
+  "ALTER TABLE coverage_slices ADD COLUMN segment_id TEXT",
+  "ALTER TABLE coverage_slices ADD COLUMN geography_id TEXT",
+  "ALTER TABLE coverage_slices ADD COLUMN geography_text TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE coverage_slices ADD COLUMN source_family TEXT NOT NULL DEFAULT 'web'",
+  "ALTER TABLE coverage_slices ADD COLUMN strategy_type TEXT NOT NULL DEFAULT 'search'",
+  "ALTER TABLE work_queue ADD COLUMN segment_id TEXT",
+  "ALTER TABLE work_queue ADD COLUMN segment TEXT NOT NULL DEFAULT ''",
+  "ALTER TABLE work_queue ADD COLUMN next_run_after_at INTEGER",
+  "ALTER TABLE work_queue ADD COLUMN locked_by_run_id TEXT",
+  "ALTER TABLE work_queue ADD COLUMN error TEXT NOT NULL DEFAULT ''",
+  "UPDATE discovery_jobs SET geography_text = location WHERE geography_text = ''",
+  "UPDATE scan_strategy_attempts SET geography_text = location WHERE geography_text = ''",
+]) {
+  try {
+    db.query(migration).run();
+  } catch {
+    // Column already exists on an existing local demo database.
+  }
+}
+
+db.exec(`
 CREATE INDEX IF NOT EXISTS idx_target_segments_parent_priority ON target_segments(parent_id, priority, label);
 CREATE INDEX IF NOT EXISTS idx_target_segments_status_priority ON target_segments(status, priority, label);
 CREATE INDEX IF NOT EXISTS idx_company_segments_segment ON company_segments(segment_id, confidence);
