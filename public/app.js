@@ -269,10 +269,11 @@ async function loadKindlingScreen() {
   ]);
   const needsResearch = state.activeKindlingView === "research";
   const needsScoring = state.activeKindlingView === "targets" || state.activeKindlingView === "match";
-  const [enrichmentIndustries, filtered, scheduler, workQueue, scoringOfferings, rankingRuns] = await Promise.all([
+  const [enrichmentIndustries, filtered, scheduler, schedulerPreview, workQueue, scoringOfferings, rankingRuns] = await Promise.all([
     needsResearch ? api("/api/kindling/enrichment-industries") : Promise.resolve({ industries: [], batchLimit: 21, strategies: [] }),
     api(`/api/kindling/companies${companyQuery.toString() ? `?${companyQuery}` : ""}`),
     needsResearch ? api("/api/kindling/scheduler-settings") : Promise.resolve({ settings: null, recentRuns: [], activeLock: null }),
+    needsResearch ? api("/api/kindling/scheduler/preview") : Promise.resolve({ decision: null }),
     needsResearch ? api("/api/kindling/work-queue?limit=50") : Promise.resolve({ items: [] }),
     needsScoring ? api("/api/kindling/scoring/offerings") : Promise.resolve({ profile: null, offerings: [], marketProfileVersionId: "" }),
     needsResearch || needsScoring ? api("/api/kindling/initial-ranking/runs?limit=10") : Promise.resolve({ runs: [] }),
@@ -296,6 +297,7 @@ async function loadKindlingScreen() {
     scheduler: scheduler.settings || null,
     schedulerRecentRuns: scheduler.recentRuns || [],
     schedulerActiveLock: scheduler.activeLock || null,
+    schedulerPreview: schedulerPreview.decision || null,
     workQueueItems: workQueue.items || [],
     scoringProfile: scoringOfferings.profile || null,
     scoringOfferings: scoringOfferings.offerings || [],
@@ -518,18 +520,77 @@ function renderKindlingView(data, company, canEdit) {
 function renderResearchDeskView(data, canEdit) {
   const settings = data.scheduler || {};
   const masterOff = !settings.enabled;
+  const preview = data.schedulerPreview || {};
   return `
-    <section class="kindlingGrid two schedulerLayout">
-      <form class="kindlingPanel schedulerSettingsForm" data-form="scheduler-settings">
+    <section class="researchDesk">
+      <div class="researchHero kindlingPanel">
         <div class="panelHeader">
           <div>
             <h2>Research Desk</h2>
-            <span>${settings.enabled ? "Master switch on" : "Master switch off"}</span>
+            <span>${settings.enabled ? "Automated prospecting is on" : "Automated prospecting is paused"}</span>
+          </div>
+          <div class="formActions inlineActions">
+            <button type="button" data-action="scheduler-dry-run" ${canEdit ? "" : "disabled"}>Preview and log</button>
+            <button type="button" data-action="scheduler-run-once" ${canEdit ? "" : "disabled"}>Run next now</button>
           </div>
         </div>
+        <div class="researchSummaryGrid">
+          ${renderResearchMetric("Scheduler", settings.enabled ? "On" : "Paused", masterOff ? "No automated loop will start" : "Runs every 21 minutes")}
+          ${renderResearchMetric("Next action", schedulerActionLabel(preview.action), preview.reason || "No preview loaded")}
+          ${renderResearchMetric("Target pool", Number(settings.targetPoolSize || 0).toLocaleString(), `${Number(data.counts?.companies || 0).toLocaleString()} companies in database`)}
+          ${renderResearchMetric("Top targets", Number(settings.topTargetCount || 0).toLocaleString(), `${Number(data.topTargets?.length || 0)} currently loaded`)}
+        </div>
+        ${renderSchedulerLock(data.schedulerActiveLock)}
+      </div>
+
+      <div class="researchOpsGrid">
+        <div class="kindlingPanel nextRunPanel">
+          <div class="panelHeader">
+            <div>
+              <h2>Next Run</h2>
+              <span>${preview.workAvailable ? "Ready" : "No work selected"}</span>
+            </div>
+          </div>
+          ${renderSchedulerPreview(preview)}
+        </div>
+        <div class="kindlingPanel">
+          <div class="panelHeader">
+            <div>
+              <h2>Run History</h2>
+              <span>${data.schedulerActiveLock ? "Lock active" : "No active lock"}</span>
+            </div>
+          </div>
+          ${renderSchedulerRuns(data.schedulerRecentRuns || [])}
+        </div>
+      </div>
+
+      <div class="researchOpsGrid">
+        <div class="kindlingPanel">
+          <div class="panelHeader">
+            <div>
+              <h2>Coverage To Walk</h2>
+              <span>${Number(data.coverage?.slices?.length || 0)} slices</span>
+            </div>
+          </div>
+          ${renderCoverageSlices(data.coverage?.slices || [])}
+        </div>
+        <div class="kindlingPanel">
+          <div class="panelHeader">
+            <div>
+              <h2>Work Queue</h2>
+              <span>${Number(data.workQueueItems?.length || 0)} items</span>
+            </div>
+          </div>
+          ${renderWorkQueue(data.workQueueItems || [], canEdit)}
+        </div>
+      </div>
+
+      <details class="researchAdvanced kindlingPanel">
+        <summary>Scheduler Settings</summary>
+        <form class="schedulerSettingsForm" data-form="scheduler-settings">
         <p class="schedulerHelp">${masterOff
-          ? "Automated runs are paused. The role checkboxes below are standby settings that will apply after the master switch is turned on."
-          : "Automated runs are enabled. The checked roles are eligible for scheduler selection."}</p>
+          ? "Automated runs are paused. These controls define what will be eligible after the scheduler is turned on."
+          : "Automated runs are enabled. Acquisition is selected first when the target pool is below coverage goals; scoring fills targets when acquisition has no due work."}</p>
         <div class="toggleGrid">
           ${renderSchedulerToggle("enabled", "Run scheduler", settings.enabled, "Master on/off switch")}
           ${renderSchedulerToggle("acquisitionEnabled", "Allow acquisition", settings.acquisitionEnabled, "Eligible when scheduler is on")}
@@ -545,31 +606,13 @@ function renderResearchDeskView(data, canEdit) {
         <label><span>Per-role concurrency JSON</span><textarea id="schedulerConcurrency" rows="5">${escapeHtml(JSON.stringify(settings.perRoleConcurrency || {}, null, 2))}</textarea></label>
         <label><span>Cooldowns JSON</span><textarea id="schedulerCooldowns" rows="5">${escapeHtml(JSON.stringify(settings.cooldowns || {}, null, 2))}</textarea></label>
         <div class="formActions">
-          <button type="button" data-action="scheduler-dry-run" ${canEdit ? "" : "disabled"}>Dry run</button>
-          <button type="button" data-action="scheduler-run-once" ${canEdit ? "" : "disabled"}>Run once</button>
           <button type="submit" ${canEdit ? "" : "disabled"}>Save settings</button>
         </div>
-      </form>
-      <div class="kindlingPanel">
-        <div class="panelHeader">
-          <div>
-            <h2>Decision log</h2>
-            <span>${data.schedulerActiveLock ? "Lock active" : "No active lock"}</span>
-          </div>
-        </div>
-        ${renderSchedulerLock(data.schedulerActiveLock)}
-        ${renderSchedulerRuns(data.schedulerRecentRuns || [])}
-      </div>
-      <div class="kindlingPanel">
-        <div class="panelHeader">
-          <div>
-            <h2>Work queue</h2>
-            <span>${Number(data.workQueueItems?.length || 0)} items</span>
-          </div>
-        </div>
-        ${renderWorkQueue(data.workQueueItems || [], canEdit)}
-      </div>
-      <div class="kindlingPanel">
+        </form>
+      </details>
+
+      <section class="kindlingGrid two schedulerLayout">
+        <div class="kindlingPanel">
         <div class="panelHeader">
           <div>
             <h2>Ranking rebuilds</h2>
@@ -613,7 +656,69 @@ function renderResearchDeskView(data, canEdit) {
           `).join("") || "<p>No enrichment strategies configured.</p>"}
         </div>
       </div>
+      </section>
     </section>
+  `;
+}
+
+function schedulerActionLabel(action) {
+  const labels = {
+    acquisition: "Find companies",
+    enrichment: "Enrich company",
+    scoring: "Score targets",
+    outreach: "Draft outreach",
+    no_work: "No work",
+  };
+  return labels[action] || "No work";
+}
+
+function renderResearchMetric(label, value, helper) {
+  return `
+    <div class="researchMetric">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+      <small>${escapeHtml(helper || "")}</small>
+    </div>
+  `;
+}
+
+function renderSchedulerPreview(decision) {
+  if (!decision) return "<p>Scheduler preview is unavailable.</p>";
+  const item = decision.item || {};
+  const company = item.company || {};
+  const queueItem = item.queueItem || {};
+  const lines = [];
+  if (decision.action === "acquisition") {
+    lines.push(["Target area", `${item.segmentLabel || "Unlabelled segment"} in ${item.geographyText || "unspecified geography"}`]);
+    lines.push(["Coverage target", `${Number(item.deficit?.sourceBackedUnique || 0)} more source-backed unique companies`]);
+    lines.push(["Source", `${item.sourceFamily || "web"} / ${item.strategyType || "search"}`]);
+    lines.push(["Slice", item.coverageSliceId || "segment default"]);
+  } else if (decision.action === "scoring") {
+    lines.push(["Company", company.name || company.id || "Unknown company"]);
+    lines.push(["Reason", decision.reason || "Needs scoring"]);
+  } else if (decision.action === "enrichment") {
+    lines.push(["Company", company.name || company.id || queueItem.targetId || "Unknown company"]);
+    lines.push(["Queue", queueItem.id || item.kind || "new enrichment"]);
+  } else if (decision.action === "outreach") {
+    lines.push(["Company", company.name || company.id || "Unknown company"]);
+    lines.push(["Ranking", item.ranking?.rank ? `#${item.ranking.rank}` : "Top target"]);
+  }
+  return `
+    <div class="nextRunStatus ${decision.workAvailable ? "ready" : "idle"}">
+      <strong>${escapeHtml(schedulerActionLabel(decision.action))}</strong>
+      <span>${escapeHtml(decision.reason || "No scheduler work is currently available.")}</span>
+    </div>
+    ${lines.length ? `<dl class="compactFacts">${lines.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("")}</dl>` : ""}
+    ${Array.isArray(decision.evaluatedRoles) && decision.evaluatedRoles.length ? `
+      <div class="roleDecisionList">
+        ${decision.evaluatedRoles.map((role) => `
+          <div>
+            <strong>${escapeHtml(schedulerActionLabel(role.action))}</strong>
+            <span>${escapeHtml(role.status)} - ${escapeHtml(role.reason || "")}</span>
+          </div>
+        `).join("")}
+      </div>
+    ` : ""}
   `;
 }
 
@@ -636,11 +741,52 @@ function renderSchedulerRuns(runs) {
   return `<div class="compactList schedulerRunList">
     ${runs.slice(0, 10).map((run) => `
       <div>
-        <strong>${escapeHtml(run.runType)} - ${escapeHtml(run.status)}</strong>
-        <span>${escapeHtml(run.selectedAction || run.roleKey || "no action")} ${run.skipReason ? `- ${escapeHtml(run.skipReason)}` : ""}</span>
-        <small>${formatDate(run.updatedAt)}${run.error ? ` - ${escapeHtml(run.error)}` : ""}</small>
+        <strong>${escapeHtml(schedulerActionLabel(run.selectedAction || run.roleKey))} - ${escapeHtml(run.status)}</strong>
+        <span>${escapeHtml(schedulerRunSubject(run))}</span>
+        <small>${escapeHtml(run.runType)} - ${formatDate(run.updatedAt)}${run.error ? ` - ${escapeHtml(run.error)}` : ""}</small>
       </div>
     `).join("")}
+  </div>`;
+}
+
+function schedulerRunSubject(run) {
+  const context = run.context || {};
+  const result = run.result || {};
+  const acquisition = context.selectedAcquisitionWork || result.decision?.item || {};
+  const scoring = context.selectedScoringWork || result.decision?.item || {};
+  if (run.skipReason) return run.skipReason;
+  if (run.selectedAction === "acquisition") {
+    return `${acquisition.segmentLabel || "Target area"} in ${acquisition.geographyText || "unspecified geography"}`;
+  }
+  if (run.selectedAction === "scoring") {
+    return scoring.company?.name || scoring.company?.id || result.scoringRun?.requestId || "Service-fit scoring";
+  }
+  if (run.selectedAction === "enrichment") {
+    return scoring.company?.name || scoring.queueItem?.targetId || "Company enrichment";
+  }
+  if (run.selectedAction === "outreach") {
+    return scoring.company?.name || scoring.company?.id || "Outreach drafting";
+  }
+  return run.roleKey || "No action";
+}
+
+function renderCoverageSlices(slices) {
+  if (!slices.length) return "<p>No coverage slices yet. Acquisition will create slices from active target segments as it walks the list.</p>";
+  return `<div class="compactList coverageSliceList">
+    ${slices.slice(0, 12).map((slice) => {
+      const current = slice.currentCounts || {};
+      const target = slice.targetCounts || {};
+      const foundTarget = Number(target.found || 0);
+      const sourceBacked = Number(current.sourceBackedUnique || 0);
+      const remaining = Math.max(0, foundTarget - sourceBacked);
+      return `
+        <div>
+          <strong>${escapeHtml(slice.segmentLabel || "Unlabelled segment")}</strong>
+          <span>${escapeHtml(slice.geographyText || slice.geographyLabel || "No geography")} - ${escapeHtml(slice.sourceFamily || "web")} / ${escapeHtml(slice.strategyType || "search")}</span>
+          <small>${sourceBacked}/${foundTarget || "?"} source-backed unique${remaining ? ` - needs ${remaining}` : ""}${slice.nextRunAfterAt ? ` - next after ${formatDate(slice.nextRunAfterAt)}` : ""}</small>
+        </div>
+      `;
+    }).join("")}
   </div>`;
 }
 

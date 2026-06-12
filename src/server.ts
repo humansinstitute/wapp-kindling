@@ -6263,6 +6263,16 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     });
   }
 
+  if (pathname === "/api/kindling/scheduler/preview" && req.method === "GET") {
+    const session = requireSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    return json({
+      decision: computeSchedulerDryRunDecision(Date.now()),
+      settings: getSchedulerSettings(),
+      activeLock: getSchedulerLock("prospecting"),
+    });
+  }
+
   if (pathname === "/api/kindling/scheduler-settings" && req.method === "PATCH") {
     const session = requireEditSession(req);
     if (!session) return json({ error: "edit access required" }, 403);

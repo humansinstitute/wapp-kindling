@@ -1984,6 +1984,29 @@ describe("Kindling API contracts", () => {
     expect(counts).toEqual({ pipeline_runs: 0, discovery_jobs: 0 });
   });
 
+  test("scheduler preview returns next decision without writing an audit run", async () => {
+    await api("/api/kindling/scheduler-settings", {
+      method: "PATCH",
+      body: {
+        enabled: true,
+        cooldowns: { acquisitionMs: 0 },
+      },
+    });
+    seedSchedulerAcquisitionSlice("scheduler-preview-slice");
+
+    const preview = await api("/api/kindling/scheduler/preview");
+    expect(preview.res.status).toBe(200);
+    expect(preview.payload.decision).toMatchObject({
+      workAvailable: true,
+      action: "acquisition",
+      roleKey: "scan_target_list",
+      item: {
+        coverageSliceId: "scheduler-preview-slice",
+      },
+    });
+    expect(db.query("SELECT COUNT(*) AS count FROM scheduler_runs").get()).toEqual({ count: 0 });
+  });
+
   test("dry-run acquisition selector uses source-backed deficits and skips parked or cooling slices", async () => {
     const now = Date.now();
     await api("/api/kindling/scheduler-settings", {
