@@ -722,7 +722,7 @@ function roleConcurrencyState(roleKey: string, settings = getSchedulerSettings()
       AND status = 'running'
       AND run_type != 'dry_run'
   `).get(roleKey) as Record<string, unknown> | null;
-  const activeCount = Number(activeKindling?.count ?? 0) + Number(activeScheduler?.count ?? 0);
+  const activeCount = Math.max(Number(activeKindling?.count ?? 0), Number(activeScheduler?.count ?? 0));
   return {
     roleEnabled,
     activeCount,
@@ -1200,7 +1200,20 @@ function selectScoringDryRun(settings = getSchedulerSettings()) {
   if (counts.scored >= settings.topTargetCount) {
     return { item: null, reason: `top-target scoring target is met at ${counts.scored}/${settings.topTargetCount}` };
   }
-  const row = db.query(`
+  const row = selectScoringCandidateRows(marketProfileVersionId, offeringCount, 1)[0] ?? null;
+  if (!row) return { item: null, reason: `top-target scoring target is ${counts.scored}/${settings.topTargetCount}, but no enriched unscored company exists` };
+  return {
+    item: {
+      kind: "company",
+      company: mapCompany(row),
+    },
+    reason: `top-target scoring target is ${counts.scored}/${settings.topTargetCount}; company ${String(row.name)} is enriched and needs scoring against ${offeringCount} offering${offeringCount === 1 ? "" : "s"}`,
+  };
+}
+
+function selectScoringCandidateRows(marketProfileVersionId: string, offeringCount: number, limit: number) {
+  if (!marketProfileVersionId || offeringCount <= 0 || limit <= 0) return [];
+  return db.query(`
     SELECT c.*, COALESCE(MIN(ts.priority), 999999) AS segment_priority
     FROM companies c
     LEFT JOIN company_segments cseg ON cseg.company_id = c.id
@@ -1213,18 +1226,20 @@ function selectScoringDryRun(settings = getSchedulerSettings()) {
         WHERE sfa.company_id = c.id
           AND sfa.market_profile_version_id = ?1
       ) < ?2
+      AND NOT EXISTS (
+        SELECT 1
+        FROM work_queue wq
+        WHERE wq.kind = 'service_fit_assessment'
+          AND wq.status IN ('queued', 'running')
+          AND (
+            wq.target_id = c.id || ':all:' || ?1
+            OR wq.target_id LIKE c.id || ':%:' || ?1
+          )
+      )
     GROUP BY c.id
     ORDER BY segment_priority ASC, c.confidence DESC, c.updated_at ASC, lower(c.name) ASC
-    LIMIT 1
-  `).get(marketProfileVersionId, offeringCount) as Record<string, unknown> | null;
-  if (!row) return { item: null, reason: `top-target scoring target is ${counts.scored}/${settings.topTargetCount}, but no enriched unscored company exists` };
-  return {
-    item: {
-      kind: "company",
-      company: mapCompany(row),
-    },
-    reason: `top-target scoring target is ${counts.scored}/${settings.topTargetCount}; company ${String(row.name)} is enriched and needs scoring against ${offeringCount} offering${offeringCount === 1 ? "" : "s"}`,
-  };
+    LIMIT ?3
+  `).all(marketProfileVersionId, offeringCount, Math.max(1, Math.min(100, Math.floor(limit)))) as Record<string, unknown>[];
 }
 
 function selectOutreachDryRun(settings = getSchedulerSettings()) {
@@ -3774,8 +3789,33 @@ function countCompanies(filters: URLSearchParams | null = null) {
   return Number(row?.count ?? 0);
 }
 
-function countOutreachReadyCompanies() {
+function countEnrichedCompanies() {
   const row = db.query("SELECT COUNT(*) AS count FROM companies WHERE enrichment_status = 'complete'").get() as { count: number } | null;
+  return Number(row?.count ?? 0);
+}
+
+function countServiceFitAssessments() {
+  const row = db.query("SELECT COUNT(*) AS count FROM service_fit_assessments").get() as { count: number } | null;
+  return Number(row?.count ?? 0);
+}
+
+function countScoredCompanies() {
+  const row = db.query(`
+    SELECT COUNT(*) AS count
+    FROM companies c
+    WHERE c.data_ring IN ('scored', 'outreach_ready', 'outreach', 'contacted')
+      OR EXISTS (SELECT 1 FROM service_fit_assessments sfa WHERE sfa.company_id = c.id)
+  `).get() as { count: number } | null;
+  return Number(row?.count ?? 0);
+}
+
+function countOutreachReadyCompanies() {
+  const row = db.query(`
+    SELECT COUNT(*) AS count
+    FROM companies c
+    WHERE c.data_ring IN ('outreach_ready', 'outreach', 'contacted')
+      OR EXISTS (SELECT 1 FROM outreach_drafts od WHERE od.company_id = c.id)
+  `).get() as { count: number } | null;
   return Number(row?.count ?? 0);
 }
 
@@ -6142,96 +6182,106 @@ async function runAutomatedScoringLoop() {
   const now = Date.now();
   const settings = getSchedulerSettings();
   if (!settings.enabled || !settings.scoringEnabled) return null;
-  if (activeSchedulerLock(now)) return null;
   const topTargets = getOrBuildTopTargetDetail(settings.topTargetCount || 100);
   const rankedCount = Number(topTargets.run?.rankedCount ?? topTargets.items?.length ?? 0);
   if (rankedCount >= settings.topTargetCount) return null;
 
-  const decision = computeProspectingLoopDecision(now);
-  if (!decision.workAvailable || decision.action !== "scoring" || decision.roleKey !== "score_company_service_fit" || !decision.item) {
-    return null;
-  }
-  const schedulerRun = createSchedulerRun({
-    runType: "scheduled",
-    status: "running",
-    selectedAction: "scoring",
-    roleKey: "score_company_service_fit",
-    context: {
-      dryRun: false,
-      automated: true,
-      evaluatedRoles: decision.evaluatedRoles,
-      selectedScoringWork: decision.item,
-    },
-    result: {
-      dryRun: false,
-      automated: true,
-      decision,
-    },
-    startedAt: now,
-    now,
-  });
-  const lock = acquireSchedulerLock({
-    runId: schedulerRun.id,
-    ownerId: "scheduler:auto-score",
-    leaseMs: Math.max(10 * 60 * 1000, Number(settings.cooldowns.scoringMs ?? 0)),
-    now,
-  });
-  if (!lock) {
-    db.query(`
-      UPDATE scheduler_runs
-      SET status = 'skipped',
-          skip_reason = 'scheduler lock prospecting could not be acquired',
-          finished_at = ?1,
-          updated_at = ?1
-      WHERE id = ?2
-    `).run(Date.now(), schedulerRun.id);
+  const concurrency = roleConcurrencyState("score_company_service_fit", settings);
+  if (concurrency.blockedReason) return null;
+  const activeScoring = listActiveScoringOfferings();
+  const marketProfileVersionId = activeScoring.profile?.currentVersionId ?? "";
+  const offeringCount = activeScoring.offerings.length;
+  if (!marketProfileVersionId || !offeringCount) return null;
+  const availableSlots = Math.max(0, concurrency.concurrencyLimit - concurrency.activeCount);
+  const companies = selectScoringCandidateRows(marketProfileVersionId, offeringCount, availableSlots);
+  if (!companies.length) {
     return null;
   }
 
-  const item = objectRecord(decision.item);
-  const company = objectRecord(item.company);
-  const scoringRun = createServiceFitScoringRun({
-    company,
-    origin: PUBLIC_ORIGIN || `http://localhost:${PORT}`,
-    userPubkey: "scheduler",
-    userNpub: "scheduler",
-    reason: `Scheduled scoring: ${String(company.name ?? company.id)} against active Adapt service offerings`,
-    now,
-  });
-  db.query(`
-    UPDATE scheduler_runs
-    SET local_request_id = ?1,
-        result_json = ?2,
-        updated_at = ?3
-    WHERE id = ?4
-  `).run(
-    scoringRun.requestId,
-    JSON.stringify({ dryRun: false, automated: true, decision, scoringRun: { requestId: scoringRun.requestId, queueId: scoringRun.queueId, offeringCount: scoringRun.offeringCount } }),
-    Date.now(),
-    schedulerRun.id,
-  );
-  try {
-    const start = await startKindlingRun(scoringRun.runId);
-    db.query(`
-      UPDATE work_queue
-      SET status = 'running',
-          attempts = attempts + 1,
-          locked_by_run_id = ?1,
-          updated_at = ?2
-      WHERE id = ?3
-    `).run(scoringRun.runId, Date.now(), scoringRun.queueId);
-    return { schedulerRunId: schedulerRun.id, runId: scoringRun.runId, requestId: scoringRun.requestId, start };
-  } catch (error) {
-    updateSchedulerRunForRequest({
-      requestId: scoringRun.requestId,
+  const startedRuns: Array<Record<string, unknown>> = [];
+  for (const company of companies) {
+    const item = { kind: "company", company: mapCompany(company) };
+    const decision = {
+      dryRun: false,
+      workAvailable: true,
+      action: "scoring",
       roleKey: "score_company_service_fit",
-      status: "failed",
-      error: error instanceof Error ? error.message : String(error),
-      finish: true,
-      releaseLock: true,
+      item,
+      reason: `company ${String(company.name ?? company.id)} is enriched and needs scoring against ${offeringCount} offering${offeringCount === 1 ? "" : "s"}`,
+      evaluatedRoles: [{
+        action: "scoring",
+        roleKey: "score_company_service_fit",
+        status: "selected",
+        reason: "automated scoring batch selected company",
+        activeCount: concurrency.activeCount + startedRuns.length,
+        concurrencyLimit: concurrency.concurrencyLimit,
+      }],
+      activeLock: activeSchedulerLock(now),
+    };
+    const schedulerRun = createSchedulerRun({
+      runType: "scheduled",
+      status: "running",
+      selectedAction: "scoring",
+      roleKey: "score_company_service_fit",
+      lockKey: "scoring",
+      context: {
+        dryRun: false,
+        automated: true,
+        scoringBatch: true,
+        selectedScoringWork: item,
+      },
+      result: {
+        dryRun: false,
+        automated: true,
+        scoringBatch: true,
+        decision,
+      },
+      startedAt: now,
+      now,
     });
-    return null;
+    const scoringRun = createServiceFitScoringRun({
+      company,
+      origin: PUBLIC_ORIGIN || `http://localhost:${PORT}`,
+      userPubkey: "scheduler",
+      userNpub: "scheduler",
+      reason: `Scheduled scoring: ${String(company.name ?? company.id)} against active Adapt service offerings`,
+      now,
+    });
+    db.query(`
+      UPDATE scheduler_runs
+      SET local_request_id = ?1,
+          result_json = ?2,
+          updated_at = ?3
+      WHERE id = ?4
+    `).run(
+      scoringRun.requestId,
+      JSON.stringify({ dryRun: false, automated: true, scoringBatch: true, decision, scoringRun: { requestId: scoringRun.requestId, queueId: scoringRun.queueId, offeringCount: scoringRun.offeringCount } }),
+      Date.now(),
+      schedulerRun.id,
+    );
+    try {
+      const start = await startKindlingRun(scoringRun.runId);
+      db.query(`
+        UPDATE work_queue
+        SET status = 'running',
+            attempts = attempts + 1,
+            locked_by_run_id = ?1,
+            updated_at = ?2
+        WHERE id = ?3
+      `).run(scoringRun.runId, Date.now(), scoringRun.queueId);
+      startedRuns.push({ schedulerRunId: schedulerRun.id, runId: scoringRun.runId, requestId: scoringRun.requestId, queueId: scoringRun.queueId, start });
+    } catch (error) {
+      updateSchedulerRunForRequest({
+        requestId: scoringRun.requestId,
+        roleKey: "score_company_service_fit",
+        status: "failed",
+        error: error instanceof Error ? error.message : String(error),
+        finish: true,
+        releaseLock: false,
+      });
+    }
   }
+  return startedRuns.length ? { count: startedRuns.length, runs: startedRuns } : null;
 }
 
 export async function runAutomatedProspectingLoop() {
@@ -6395,7 +6445,9 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
       coverage,
       counts: {
         companies: countCompanies(),
-        enriched: countOutreachReadyCompanies(),
+        enriched: countEnrichedCompanies(),
+        scored: countScoredCompanies(),
+        serviceFitAssessments: countServiceFitAssessments(),
         outreachReady: countOutreachReadyCompanies(),
         workQueue: workQueueCounts(),
         activeRuns: recentRuns.filter((run) => ["queued", "running", "mock"].includes(run.status)).length,

@@ -870,7 +870,7 @@ const defaultSchedulerSettings = {
     scan_target_list: 1,
     enrich_company: 1,
     enrich_industry_segment: 1,
-    monitor_and_score: 1,
+    score_company_service_fit: 20,
     draft_outreach: 1,
   },
   cooldowns: {
@@ -951,8 +951,14 @@ function mapSchedulerSettings(row: Record<string, unknown>): SchedulerSettings {
     targetPoolSize: Number(row.target_pool_size),
     enrichedFloor: Number(row.enriched_floor),
     topTargetCount: Number(row.top_target_count),
-    perRoleConcurrency: jsonParse<Record<string, number>>(row.per_role_concurrency_json, defaultSchedulerSettings.perRoleConcurrency ?? {}),
-    cooldowns: jsonParse<Record<string, number>>(row.cooldowns_json, defaultSchedulerSettings.cooldowns ?? {}),
+    perRoleConcurrency: {
+      ...defaultSchedulerSettings.perRoleConcurrency,
+      ...jsonParse<Record<string, number>>(row.per_role_concurrency_json, {}),
+    },
+    cooldowns: {
+      ...defaultSchedulerSettings.cooldowns,
+      ...jsonParse<Record<string, number>>(row.cooldowns_json, {}),
+    },
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
   };

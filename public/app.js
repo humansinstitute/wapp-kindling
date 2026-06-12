@@ -491,7 +491,7 @@ function renderKindling() {
     ["service", "Service Offerings", data.profile?.version ? `v${escapeHtml(data.profile.version.versionNumber || "active")}` : "Draft"],
     ["companies", "Companies", companyListShownLabel(data)],
     ["enriched", "Enriched Companies", `${Number(data.counts?.enriched || data.counts?.outreachReady || 0)} enriched`],
-    ["targets", "Targets", `${Number(data.topTargets?.length || 0)} ranked`],
+    ["targets", "Scored", `${Number(data.counts?.scored || 0)} companies`],
     ["match", "Match", state.selectedTargetId ? "Selected" : "Review"],
   ];
   if (state.activeKindlingView === "research") views.push(["research", "Research Desk", data.scheduler?.enabled ? "Enabled" : "Paused"]);
@@ -526,6 +526,7 @@ function renderKindling() {
           <section class="kindlingStats">
             <div><span>Companies</span><strong>${Number(data.counts?.companies || 0)}</strong></div>
             <div><span>Enriched</span><strong>${Number(data.counts?.enriched || data.counts?.outreachReady || 0)}</strong></div>
+            <div><span>Scored</span><strong>${Number(data.counts?.scored || 0)}</strong></div>
             <div><span>Active runs</span><strong>${Number(data.counts?.activeRuns || 0)}</strong></div>
             <div><span>Queue backlog</span><strong>${Number(data.counts?.workQueue?.active || 0)}</strong></div>
             <div><span>Status</span><strong id="kindlingStatus">${escapeHtml(state.kindlingStatus)}</strong></div>
@@ -590,8 +591,8 @@ function renderKindlingView(data, company, canEdit) {
       <div class="kindlingPanel">
         <div class="panelHeader">
           <div>
-            <h2>Targets</h2>
-            <span>${data.topTargetRun ? `Top ${Number(data.topTargets?.length || 0)} from run ${escapeHtml(data.topTargetRun.id.slice(0, 8))}` : "No top-target run"}</span>
+            <h2>Scored</h2>
+            <span>${Number(data.counts?.serviceFitAssessments || 0)} service-fit assessments${data.topTargetRun ? `; top ${Number(data.topTargets?.length || 0)} from ${escapeHtml(data.topTargetRun.id.slice(0, 8))}` : ""}</span>
           </div>
           <button type="button" data-action="rebuild-top-targets" ${canEdit ? "" : "disabled"}>Rebuild</button>
         </div>
@@ -651,7 +652,7 @@ function renderResearchDeskView(data, canEdit) {
           ${renderResearchMetric("Scheduler", settings.enabled ? "On" : "Paused", masterOff ? "No automated loop will start" : "Runs every 21 minutes")}
           ${renderResearchMetric("Next action", schedulerActionLabel(preview.action), preview.reason || "No preview loaded")}
           ${renderResearchMetric("Target pool", Number(settings.targetPoolSize || 0).toLocaleString(), `${Number(data.counts?.companies || 0).toLocaleString()} companies in database`)}
-          ${renderResearchMetric("Top targets", Number(settings.topTargetCount || 0).toLocaleString(), `${Number(data.topTargets?.length || 0)} currently loaded`)}
+          ${renderResearchMetric("Scored", Number(data.counts?.scored || 0).toLocaleString(), `${Number(data.counts?.serviceFitAssessments || 0).toLocaleString()} service-fit assessments`)}
         </div>
         ${renderSchedulerLock(data.schedulerActiveLock)}
       </div>
@@ -704,7 +705,7 @@ function renderResearchDeskView(data, canEdit) {
         <form class="schedulerSettingsForm" data-form="scheduler-settings">
         <p class="schedulerHelp">${masterOff
           ? "Automated runs are paused. These controls define what will be eligible after the scheduler is turned on."
-          : "Automated runs are enabled. Acquisition is selected first when the target pool is below coverage goals; scoring fills targets when acquisition has no due work."}</p>
+          : "Automated runs are enabled. Acquisition walks coverage areas while scoring can drain enriched companies up to the scoring concurrency limit."}</p>
         <div class="toggleGrid">
           ${renderSchedulerToggle("enabled", "Run scheduler", settings.enabled, "Master on/off switch")}
           ${renderSchedulerToggle("acquisitionEnabled", "Allow acquisition", settings.acquisitionEnabled, "Eligible when scheduler is on")}

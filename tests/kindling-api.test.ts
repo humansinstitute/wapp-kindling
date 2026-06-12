@@ -1764,6 +1764,7 @@ describe("Kindling API contracts", () => {
       enrichedFloor: 50,
       topTargetCount: 100,
     });
+    expect(initial.payload.settings.perRoleConcurrency.score_company_service_fit).toBe(20);
 
     const patched = await api("/api/kindling/scheduler-settings", {
       method: "PATCH",
@@ -1819,6 +1820,49 @@ describe("Kindling API contracts", () => {
       target_pool_size: 12000,
       enriched_floor: 75,
       top_target_count: 80,
+    });
+  });
+
+  test("summary reports enriched companies and scored companies separately", async () => {
+    const now = Date.now();
+    db.query("INSERT INTO market_profiles(id, name, current_version_id, created_at, updated_at) VALUES ('summary-profile', 'Adapt profile', 'summary-profile-version', ?1, ?1)")
+      .run(now);
+    db.query(`
+      INSERT INTO market_profile_versions(
+        id, profile_id, version_number, structured_json, summary, rationale, source_references_json, created_at
+      )
+      VALUES ('summary-profile-version', 'summary-profile', 1, '{}', 'Adapt services', 'Scoring test profile', '[]', ?1)
+    `).run(now);
+    db.query(`
+      INSERT INTO service_offerings(id, market_profile_version_id, key, name, variant_key, structured_json, status, created_at, updated_at)
+      VALUES ('summary-offering', 'summary-profile-version', 'advisory', 'Advisory', 'base', '{}', 'active', ?1, ?1)
+    `).run(now);
+    db.query(`
+      INSERT INTO companies(id, name, location, industry, website, data_ring, duplicate_status, enrichment_status, confidence, profile_json, created_at, updated_at)
+      VALUES
+        ('summary-enriched', 'Summary Enriched', 'Perth', 'Accounting', 'https://enriched.example', 'enhanced', 'unique', 'complete', 0.8, '{}', ?1, ?1),
+        ('summary-scored', 'Summary Scored', 'Perth', 'Advisory', 'https://scored.example', 'scored', 'unique', 'complete', 0.9, '{}', ?1, ?1)
+    `).run(now);
+    db.query(`
+      INSERT INTO kindling_pipeline_runs(id, role_key, local_request_id, status, webhook_token, trigger_payload_json, result_payload_json, created_at, updated_at)
+      VALUES ('summary-score-run', 'score_company_service_fit', 'summary-score-request', 'complete', 'token', '{}', '{}', ?1, ?1)
+    `).run(now);
+    db.query(`
+      INSERT INTO service_fit_assessments(
+        id, company_id, service_offering_id, market_profile_version_id, score, band, confidence,
+        drivers_json, fit_explanation, evidence_json, caveats_json, recommended_action, source_run_id,
+        assessment_json, created_at, updated_at
+      )
+      VALUES ('summary-assessment', 'summary-scored', 'summary-offering', 'summary-profile-version', 82, 'high', 0.8, '[]', 'Good fit', '[]', '[]', 'Review', 'summary-score-run', '{}', ?1, ?1)
+    `).run(now);
+
+    const summary = await api("/api/kindling/summary?compact=1");
+    expect(summary.payload.counts).toMatchObject({
+      companies: 2,
+      enriched: 2,
+      scored: 1,
+      serviceFitAssessments: 1,
+      outreachReady: 0,
     });
   });
 
@@ -2736,6 +2780,77 @@ describe("Kindling API contracts", () => {
         autopilot_run_id: "remote-scheduler-score-run",
         finished_at: null,
       });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  test("automated loop dispatches scoring up to score role concurrency while acquisition is disabled", async () => {
+    await api("/api/settings", {
+      method: "PUT",
+      body: {
+        autopilotUrl: "http://127.0.0.1:9",
+      },
+    });
+    await api("/api/kindling/scheduler-settings", {
+      method: "PATCH",
+      body: {
+        enabled: true,
+        acquisitionEnabled: false,
+        enrichmentEnabled: false,
+        scoringEnabled: true,
+        outreachEnabled: false,
+        perRoleConcurrency: {
+          score_company_service_fit: 3,
+        },
+      },
+    });
+    const now = Date.now();
+    db.query("INSERT INTO market_profiles(id, name, current_version_id, created_at, updated_at) VALUES ('batch-score-profile', 'Adapt profile', 'batch-score-profile-version', ?1, ?1)")
+      .run(now);
+    db.query(`
+      INSERT INTO market_profile_versions(
+        id, profile_id, version_number, structured_json, summary, rationale, source_references_json, created_at
+      )
+      VALUES ('batch-score-profile-version', 'batch-score-profile', 1, '{}', 'Adapt services', 'Batch scoring profile', '[]', ?1)
+    `).run(now);
+    db.query(`
+      INSERT INTO service_offerings(id, market_profile_version_id, key, name, variant_key, structured_json, status, created_at, updated_at)
+      VALUES
+        ('batch-score-offering-a', 'batch-score-profile-version', 'advisory', 'Advisory', 'base', '{}', 'active', ?1, ?1),
+        ('batch-score-offering-b', 'batch-score-profile-version', 'automation', 'Automation', 'base', '{}', 'active', ?1, ?1)
+    `).run(now);
+    const insertCompany = db.query(`
+      INSERT INTO companies(id, name, location, industry, website, data_ring, duplicate_status, enrichment_status, confidence, profile_json, created_at, updated_at)
+      VALUES (?1, ?2, 'Perth', 'Accounting', ?3, 'enhanced', 'unique', 'complete', ?4, '{}', ?5, ?5)
+    `);
+    for (let index = 1; index <= 4; index += 1) {
+      insertCompany.run(`batch-score-company-${index}`, `Batch Score ${index}`, `https://batch-score-${index}.example`, 0.9 - index * 0.01, now + index);
+    }
+
+    const fetchCalls: Array<{ url: string; init: RequestInit | undefined; body: Record<string, unknown> }> = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
+      const body = typeof init?.body === "string" ? JSON.parse(init.body) as Record<string, unknown> : {};
+      fetchCalls.push({ url: String(url), init, body });
+      return Response.json({ run: { id: `remote-batch-score-run-${fetchCalls.length}`, status: "running" } });
+    }) as typeof fetch;
+    try {
+      const started = await runAutomatedProspectingLoop();
+      expect(started).toMatchObject({
+        action: "scoring",
+        count: 3,
+      });
+      expect(fetchCalls).toHaveLength(3);
+      expect(fetchCalls.map((call) => (call.body.input as Record<string, unknown>).companyId)).toEqual([
+        "batch-score-company-1",
+        "batch-score-company-2",
+        "batch-score-company-3",
+      ]);
+      expect(db.query("SELECT COUNT(*) AS count FROM kindling_pipeline_runs WHERE role_key = 'score_company_service_fit' AND status = 'running'").get())
+        .toEqual({ count: 3 });
+      expect(db.query("SELECT COUNT(*) AS count FROM work_queue WHERE kind = 'service_fit_assessment' AND status = 'running'").get())
+        .toEqual({ count: 3 });
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -3859,7 +3974,8 @@ describe("Kindling API contracts", () => {
     const summary = await api("/api/kindling/summary");
     expect(summary.payload.companies).toHaveLength(500);
     expect(summary.payload.counts.companies).toBe(505);
-    expect(summary.payload.counts.outreachReady).toBe(2);
+    expect(summary.payload.counts.enriched).toBe(2);
+    expect(summary.payload.counts.outreachReady).toBe(0);
     expect(summary.payload.companyList).toMatchObject({
       returned: 500,
       total: 505,
