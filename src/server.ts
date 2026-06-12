@@ -1276,6 +1276,112 @@ function computeSchedulerDryRunDecision(now = Date.now()): SchedulerDryRunDecisi
   };
 }
 
+function computeProspectingLoopDecision(now = Date.now()): SchedulerDryRunDecision {
+  const settings = getSchedulerSettings();
+  const lock = activeSchedulerLock(now);
+  const evaluatedRoles: SchedulerRoleEvaluation[] = [];
+  if (!settings.enabled) {
+    return {
+      dryRun: true,
+      workAvailable: false,
+      action: "no_work",
+      roleKey: null,
+      item: null,
+      reason: "scheduler is disabled",
+      evaluatedRoles,
+      activeLock: lock,
+    };
+  }
+  if (lock) {
+    return {
+      dryRun: true,
+      workAvailable: false,
+      action: "no_work",
+      roleKey: null,
+      item: null,
+      reason: `scheduler lock prospecting is held by ${lock.ownerId} until ${lock.leaseExpiresAt}`,
+      evaluatedRoles,
+      activeLock: lock,
+    };
+  }
+
+  const candidates: Array<{
+    action: SchedulerActionKey;
+    roleKey: string;
+    enabled: boolean;
+    select: () => { item: Record<string, unknown> | null; reason: string };
+  }> = [
+    { action: "acquisition", roleKey: "scan_target_list", enabled: settings.acquisitionEnabled, select: () => selectAcquisitionDryRun(settings, now) },
+    { action: "scoring", roleKey: "score_company_service_fit", enabled: settings.scoringEnabled, select: () => selectScoringDryRun(settings) },
+  ];
+
+  for (const candidate of candidates) {
+    const concurrency = roleConcurrencyState(candidate.roleKey, settings);
+    if (!candidate.enabled) {
+      evaluatedRoles.push({
+        action: candidate.action,
+        roleKey: candidate.roleKey,
+        status: "skipped",
+        reason: `${candidate.action} is disabled in scheduler settings`,
+        activeCount: concurrency.activeCount,
+        concurrencyLimit: concurrency.concurrencyLimit,
+      });
+      continue;
+    }
+    if (concurrency.blockedReason) {
+      evaluatedRoles.push({
+        action: candidate.action,
+        roleKey: candidate.roleKey,
+        status: "skipped",
+        reason: concurrency.blockedReason,
+        activeCount: concurrency.activeCount,
+        concurrencyLimit: concurrency.concurrencyLimit,
+      });
+      continue;
+    }
+    const selected = candidate.select();
+    if (selected.item) {
+      evaluatedRoles.push({
+        action: candidate.action,
+        roleKey: candidate.roleKey,
+        status: "selected",
+        reason: selected.reason,
+        activeCount: concurrency.activeCount,
+        concurrencyLimit: concurrency.concurrencyLimit,
+      });
+      return {
+        dryRun: true,
+        workAvailable: true,
+        action: candidate.action,
+        roleKey: candidate.roleKey,
+        item: selected.item,
+        reason: selected.reason,
+        evaluatedRoles,
+        activeLock: null,
+      };
+    }
+    evaluatedRoles.push({
+      action: candidate.action,
+      roleKey: candidate.roleKey,
+      status: "skipped",
+      reason: selected.reason,
+      activeCount: concurrency.activeCount,
+      concurrencyLimit: concurrency.concurrencyLimit,
+    });
+  }
+
+  return {
+    dryRun: true,
+    workAvailable: false,
+    action: "no_work",
+    roleKey: null,
+    item: null,
+    reason: "no executable automated prospecting work is available",
+    evaluatedRoles,
+    activeLock: null,
+  };
+}
+
 function schedulerAcquisitionTargetCount(item: SchedulerAcquisitionWork) {
   const currentCounts = objectRecord(item.currentCounts);
   const deficit = objectRecord(item.deficit);
@@ -5767,7 +5873,7 @@ async function runAutomatedAcquisitionLoop() {
   const settings = getSchedulerSettings();
   if (!settings.enabled || !settings.acquisitionEnabled) return null;
   if (activeSchedulerLock(now)) return null;
-  const decision = computeSchedulerDryRunDecision(now);
+  const decision = computeProspectingLoopDecision(now);
   if (!decision.workAvailable || decision.action !== "acquisition" || decision.roleKey !== "scan_target_list" || !decision.item) {
     return null;
   }
@@ -5845,7 +5951,7 @@ async function runAutomatedScoringLoop() {
   const rankedCount = Number(topTargets.run?.rankedCount ?? topTargets.items?.length ?? 0);
   if (rankedCount >= settings.topTargetCount) return null;
 
-  const decision = computeSchedulerDryRunDecision(now);
+  const decision = computeProspectingLoopDecision(now);
   if (!decision.workAvailable || decision.action !== "scoring" || decision.roleKey !== "score_company_service_fit" || !decision.item) {
     return null;
   }
@@ -6267,7 +6373,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     const session = requireSession(req);
     if (!session) return json({ error: "unauthorized" }, 401);
     return json({
-      decision: computeSchedulerDryRunDecision(Date.now()),
+      decision: computeProspectingLoopDecision(Date.now()),
       settings: getSchedulerSettings(),
       activeLock: getSchedulerLock("prospecting"),
     });
@@ -6291,7 +6397,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     if (!session) return json({ error: "edit access required" }, 403);
     const dryRun = url.searchParams.get("dryRun") === "true";
     const now = Date.now();
-    const decision = computeSchedulerDryRunDecision(now);
+    const decision = dryRun ? computeSchedulerDryRunDecision(now) : computeProspectingLoopDecision(now);
     if (!dryRun) {
       const body = await readJson(req);
       if (decision.workAvailable && decision.action === "scoring" && decision.roleKey === "score_company_service_fit" && decision.item) {

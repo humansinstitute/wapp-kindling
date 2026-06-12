@@ -2007,6 +2007,35 @@ describe("Kindling API contracts", () => {
     expect(db.query("SELECT COUNT(*) AS count FROM scheduler_runs").get()).toEqual({ count: 0 });
   });
 
+  test("scheduler preview only advertises executable prospecting actions", async () => {
+    await api("/api/kindling/scheduler-settings", {
+      method: "PATCH",
+      body: {
+        enabled: true,
+        acquisitionEnabled: false,
+        enrichmentEnabled: true,
+        scoringEnabled: false,
+        outreachEnabled: true,
+      },
+    });
+    db.query(`
+      INSERT INTO companies(id, name, location, industry, website, data_ring, duplicate_status, enrichment_status, confidence, profile_json, created_at, updated_at)
+      VALUES ('preview-enrich-company', 'Preview Enrich Co', 'Perth', 'Accounting', 'https://preview-enrich.example', 'found', 'unique', 'not_started', 0.7, '{}', 10, 10)
+    `).run();
+
+    const preview = await api("/api/kindling/scheduler/preview");
+    expect(preview.payload.decision).toMatchObject({
+      workAvailable: false,
+      action: "no_work",
+      roleKey: null,
+      reason: "no executable automated prospecting work is available",
+    });
+    expect(preview.payload.decision.evaluatedRoles.map((role: { action: string }) => role.action)).toEqual([
+      "acquisition",
+      "scoring",
+    ]);
+  });
+
   test("dry-run acquisition selector uses source-backed deficits and skips parked or cooling slices", async () => {
     const now = Date.now();
     await api("/api/kindling/scheduler-settings", {

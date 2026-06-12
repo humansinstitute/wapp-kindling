@@ -784,9 +784,10 @@ function renderSchedulerLock(lock) {
 }
 
 function renderSchedulerRuns(runs) {
-  if (!runs.length) return "<p>No scheduler runs yet. Use Dry run to record the first decision without launching a pipeline.</p>";
+  const visibleRuns = runs.filter((run) => !String(run.skipReason || "").includes("only acquisition execution is implemented"));
+  if (!visibleRuns.length) return "<p>No executable scheduler runs yet. Use Run next now when Next Run is ready.</p>";
   return `<div class="compactList schedulerRunList">
-    ${runs.slice(0, 10).map((run) => `
+    ${visibleRuns.slice(0, 10).map((run) => `
       <div>
         <strong>${escapeHtml(schedulerActionLabel(run.selectedAction || run.roleKey))} - ${escapeHtml(run.status)}</strong>
         <span>${escapeHtml(schedulerRunSubject(run))}</span>
