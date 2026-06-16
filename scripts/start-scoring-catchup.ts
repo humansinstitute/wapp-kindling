@@ -14,7 +14,7 @@ const autopilotUrl = trimTrailingSlash(argValue("--autopilot-url", process.env.K
 const kindlingOrigin = trimTrailingSlash(argValue("--origin", process.env.KINDLING_PUBLIC_ORIGIN || "http://localhost:43000"));
 const workingDirectory = argValue("--working-directory", process.env.KINDLING_PIPELINE_WORKING_DIRECTORY || "/workspace/athena-kindling");
 const dryRun = Bun.argv.includes("--dry-run");
-const model = argValue("--model", process.env.KINDLING_SCHEDULED_PIPELINE_MODEL || "claude-sonnet-4-6");
+const model = argValue("--model", process.env.KINDLING_SCHEDULED_PIPELINE_MODEL || "");
 const agent = argValue("--agent", process.env.KINDLING_SCHEDULED_PIPELINE_AGENT || "claude");
 
 function argValue(name: string, fallback = "") {
