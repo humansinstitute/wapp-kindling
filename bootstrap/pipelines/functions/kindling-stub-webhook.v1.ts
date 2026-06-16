@@ -109,28 +109,6 @@ function roleResult(input: JsonObject): JsonObject {
     };
   }
 
-  if (role === "score_company_service_fit") {
-    return {
-      ...base,
-      response: "Stub service-fit pipeline accepted the request and returned a placeholder assessment.",
-      result: {
-        outputKind: "service_fit_assessment",
-        companyId: text(input.companyId, text(localContext.companyId)),
-        serviceOfferingId: text(input.serviceOfferingId, text(localContext.serviceOfferingId)),
-        marketProfileVersionId: text(input.marketProfileVersionId, text(localContext.marketProfileVersionId)),
-        variantKey: text(objectValue(localContext.serviceOffering).variantKey),
-        score: 50,
-        band: "medium",
-        confidence: 0.1,
-        drivers: [{ dimension: "service_fit", score: 50, reason: "Stub output only." }],
-        fitExplanation: "Stub service-fit assessment. Replace with evidence-backed company x offering scoring.",
-        evidence: [],
-        caveats: ["Real service-fit scoring steps are not configured yet."],
-        recommendedAction: "Run the real scoring pipeline before using this assessment.",
-      },
-    };
-  }
-
   if (role === "draft_outreach") {
     const companyName = text(input.companyName, "this company");
     return {

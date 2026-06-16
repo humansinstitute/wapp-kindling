@@ -26,3 +26,6 @@ logs/
 tmp/
 temp/
 coverage/
+
+# Local MCP config (contains session secrets)
+.mcp.json

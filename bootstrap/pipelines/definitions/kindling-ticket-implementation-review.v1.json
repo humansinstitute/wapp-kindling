@@ -1,0 +1,247 @@
+{
+  "name": "kindling-ticket-implementation-review",
+  "description": "No-task software implementation review loop for one Kindling automated prospecting implementation ticket.",
+  "version": 1,
+  "tags": [
+    "software",
+    "implementation",
+    "review",
+    "kindling",
+    "automated-prospecting",
+    "no-task"
+  ],
+  "input": {
+    "ticketId": "",
+    "ticketTitle": "",
+    "designDocumentUrl": "/Users/mini/code/wapp-kindling/docs/AutomatedProspectingImplementationTickets.md",
+    "implementationPrompt": "Implement the named ticket only.",
+    "relevantContext": "",
+    "workingDirectory": "/Users/mini/code/wapp-kindling",
+    "workerAgent": "opencode",
+    "managerAgent": "opencode",
+    "reporterAgent": "opencode",
+    "maxReviewIterations": 3,
+    "reviewLoop": {
+      "iteration": 1,
+      "index": 0,
+      "completed": 0,
+      "total": 3,
+      "done": false
+    },
+    "implementationReviewHistory": {
+      "items": []
+    },
+    "workerTimeoutMs": 3600000,
+    "managerTimeoutMs": 1800000,
+    "reporterTimeoutMs": 900000
+  },
+  "steps": [
+    {
+      "id": "implementation-worker",
+      "name": "implementation-worker",
+      "description": "Implement exactly one Kindling automated prospecting ticket.",
+      "type": "agent",
+      "agent": "$.workerAgent",
+      "directory": "$.workingDirectory",
+      "input": {
+        "pick": {
+          "ticketId": "$.ticketId",
+          "ticketTitle": "$.ticketTitle",
+          "designDocumentUrl": "$.designDocumentUrl",
+          "implementationPrompt": "$.implementationPrompt",
+          "relevantContext": "$.relevantContext",
+          "workingDirectory": "$.workingDirectory",
+          "reviewLoop": "$.reviewLoop",
+          "managerSummary": "$.managerReview.managerSummary",
+          "managerPickups": "$.managerReview.pickups",
+          "nextWorkerPrompt": "$.managerReview.nextWorkerPrompt",
+          "previousWorkerSummary": "$.implementation.workerSummary",
+          "previousOpenQuestions": "$.implementation.openQuestions",
+          "previousHandoffNotes": "$.implementation.handoffNotes"
+        }
+      },
+      "prompt": "You are the implementation worker in a no-task Wingmen software implementation review pipeline.\n\nRead designDocumentUrl directly. Implement only the named Kindling automated prospecting ticket from implementationPrompt. relevantContext points to supporting design/dispatch documents.\n\nWork rules:\n- Inspect git status before editing.\n- Preserve existing dirty work and unrelated files. Do not revert changes you did not make.\n- Keep the write scope in workingDirectory unless the ticket explicitly requires another path.\n- Prefer existing Kindling WApp patterns in src/db.ts, src/server.ts, public/, tests/, and docs.\n- Keep the ticket scoped. Do not implement later tickets early unless a tiny compatibility shim is required and clearly reported.\n- Add or update focused tests for changed backend behavior.\n- Run targeted validation and broader validation when practical.\n- Do not commit unless explicitly instructed.\n- Do not update Flight Deck tasks, comments, or chat. The parent orchestrator handles monitoring.\n\nOn later iterations, nextWorkerPrompt and managerPickups are authoritative.\n\nReturn compact JSON only:\n{\n  \"workerSummary\": \"short summary of work performed\",\n  \"ticketId\": \"same ticket id\",\n  \"ticketTitle\": \"same ticket title\",\n  \"designDocumentUrl\": \"same path\",\n  \"workingDirectory\": \"/Users/mini/code/wapp-kindling\",\n  \"iteration\": 1,\n  \"changedFiles\": [\"relative/or/absolute/path\"],\n  \"commandsRun\": [{\"command\":\"...\", \"status\":\"passed|failed|not_run\", \"notes\":\"...\"}],\n  \"git\": {\"branch\":\"\", \"status\":\"\", \"commits\":[], \"prUrl\":\"\"},\n  \"resolvedPickups\": [{\"title\":\"\", \"notes\":\"\"}],\n  \"openQuestions\": [],\n  \"handoffNotes\": \"specific points for manager review\"\n}",
+      "assign": "$.implementation",
+      "timeoutMs": "$.workerTimeoutMs",
+      "display": {
+        "in": [
+          {
+            "label": "Ticket",
+            "path": "$.ticketTitle",
+            "format": "text"
+          },
+          {
+            "label": "Prompt",
+            "path": "$.implementationPrompt",
+            "format": "text"
+          }
+        ],
+        "out": [
+          {
+            "label": "Summary",
+            "path": "$.implementation.workerSummary",
+            "format": "text"
+          },
+          {
+            "label": "Changed Files",
+            "path": "$.implementation.changedFiles",
+            "format": "list",
+            "limit": 12
+          },
+          {
+            "label": "Validation",
+            "path": "$.implementation.commandsRun",
+            "format": "records",
+            "limit": 8
+          }
+        ]
+      },
+      "model": "$.model"
+    },
+    {
+      "id": "managerial-review",
+      "name": "managerial-review",
+      "description": "Review the worker implementation against the ticket and repository state.",
+      "type": "agent",
+      "agent": "$.managerAgent",
+      "directory": "$.workingDirectory",
+      "input": {
+        "pick": {
+          "ticketId": "$.ticketId",
+          "ticketTitle": "$.ticketTitle",
+          "designDocumentUrl": "$.designDocumentUrl",
+          "implementationPrompt": "$.implementationPrompt",
+          "relevantContext": "$.relevantContext",
+          "workingDirectory": "$.workingDirectory",
+          "implementation": "$.implementation",
+          "reviewLoop": "$.reviewLoop",
+          "previousManagerSummary": "$.managerReview.managerSummary",
+          "previousPickups": "$.managerReview.pickups"
+        }
+      },
+      "prompt": "You are the managerial reviewer in a no-task Wingmen software implementation review pipeline.\n\nReview scope:\n- Read designDocumentUrl and implementationPrompt.\n- Inspect current repository state, git status, relevant diff, tests, and worker handoff.\n- Judge whether the named ticket is implemented well enough to close out.\n- Be strict about incomplete behavior, missing tests, unsafe schema/API changes, accidental implementation of later tickets, and unclear handoff.\n\nReturn compact JSON only:\n{\n  \"done\": false,\n  \"managerSummary\": \"short review summary\",\n  \"completed\": [\"what is complete\"],\n  \"pickups\": [{\"title\":\"\", \"priority\":\"high|medium|low\", \"reason\":\"\", \"action\":\"\", \"files\":[\"\"]}],\n  \"risks\": [],\n  \"validationFindings\": [{\"command\":\"...\", \"status\":\"passed|failed|not_run\", \"notes\":\"...\"}],\n  \"gitReview\": {\"branch\":\"\", \"status\":\"\", \"commits\":[], \"prUrl\":\"\"},\n  \"nextWorkerPrompt\": \"Only the specific next actions for the next worker. Leave empty when done is true.\"\n}",
+      "assign": "$.managerReview",
+      "timeoutMs": "$.managerTimeoutMs",
+      "display": {
+        "in": [
+          {
+            "label": "Ticket",
+            "path": "$.ticketTitle",
+            "format": "text"
+          },
+          {
+            "label": "Worker Summary",
+            "path": "$.implementation.workerSummary",
+            "format": "text"
+          }
+        ],
+        "out": [
+          {
+            "label": "Done",
+            "path": "$.managerReview.done"
+          },
+          {
+            "label": "Summary",
+            "path": "$.managerReview.managerSummary",
+            "format": "text"
+          },
+          {
+            "label": "Pickups",
+            "path": "$.managerReview.pickups",
+            "format": "records",
+            "limit": 8
+          }
+        ]
+      },
+      "model": "$.model"
+    },
+    {
+      "id": "normalise-manager-review",
+      "name": "normalise-manager-review",
+      "description": "Normalise manager review JSON before loop evaluation.",
+      "type": "code",
+      "function": "shared.normaliseManagerReview",
+      "input": {
+        "pick": {
+          "raw": "$.managerReview"
+        }
+      },
+      "assign": "$.managerReview"
+    },
+    {
+      "id": "loop-to-implementation-worker",
+      "name": "loop-to-implementation-worker",
+      "description": "If manager review is not done, loop back to a fresh worker session with compact pickups.",
+      "type": "loop",
+      "target": "implementation-worker",
+      "iterations": "$.maxReviewIterations",
+      "counter": "$.reviewLoop",
+      "history": "$.implementationReviewHistory",
+      "capture": {
+        "implementation": "$.implementation",
+        "managerReview": "$.managerReview",
+        "done": "$.managerReview.done"
+      },
+      "when": {
+        "path": "$.managerReview.done",
+        "equals": false
+      }
+    },
+    {
+      "id": "final-implementation-report",
+      "name": "final-implementation-report",
+      "description": "Summarise the final implementation result.",
+      "type": "agent",
+      "agent": "$.reporterAgent",
+      "directory": "$.workingDirectory",
+      "input": {
+        "pick": {
+          "ticketId": "$.ticketId",
+          "ticketTitle": "$.ticketTitle",
+          "designDocumentUrl": "$.designDocumentUrl",
+          "implementationPrompt": "$.implementationPrompt",
+          "workingDirectory": "$.workingDirectory",
+          "implementation": "$.implementation",
+          "managerReview": "$.managerReview",
+          "implementationReviewHistory": "$.implementationReviewHistory",
+          "reviewLoop": "$.reviewLoop"
+        }
+      },
+      "prompt": "You are closing out a no-task Wingmen software implementation review pipeline.\n\nCreate a concise final report from the worker outputs, manager reviews, git status, and current repository state. Do not update Flight Deck tasks, comments, or chat.\n\nReturn compact JSON only:\n{\n  \"done\": true,\n  \"status\": \"complete|incomplete|max_iterations_reached\",\n  \"summary\": \"what was implemented and reviewed\",\n  \"ticketId\": \"\",\n  \"ticketTitle\": \"\",\n  \"designDocumentUrl\": \"\",\n  \"workingDirectory\": \"\",\n  \"git\": {\"branch\":\"\", \"status\":\"\", \"commits\":[], \"prUrl\":\"\"},\n  \"validation\": [{\"command\":\"...\", \"status\":\"passed|failed|not_run\", \"notes\":\"...\"}],\n  \"remainingPickups\": [],\n  \"reviewIterations\": 1,\n  \"nextActions\": []\n}\n\nSet status to complete only if managerReview.done is true. If maxReviewIterations was reached and managerReview.done is not true, set status to max_iterations_reached and include remaining pickups.",
+      "assign": "$.finalReport",
+      "timeoutMs": "$.reporterTimeoutMs",
+      "display": {
+        "in": [
+          {
+            "label": "Ticket",
+            "path": "$.ticketTitle",
+            "format": "text"
+          },
+          {
+            "label": "Manager Done",
+            "path": "$.managerReview.done"
+          }
+        ],
+        "out": [
+          {
+            "label": "Status",
+            "path": "$.finalReport.status",
+            "format": "text"
+          },
+          {
+            "label": "Summary",
+            "path": "$.finalReport.summary",
+            "format": "text"
+          },
+          {
+            "label": "Remaining Pickups",
+            "path": "$.finalReport.remainingPickups",
+            "format": "records",
+            "limit": 8
+          }
+        ]
+      },
+      "model": "$.model"
+    }
+  ]
+}

@@ -665,9 +665,10 @@ const ROLE_STALE_ACTIVE_PIPELINE_RUN_MS: Record<string, number> = {
 const ACQUISITION_PARTIAL_STALE_PIPELINE_RUN_MS = 90 * 60 * 1000;
 const SCHEDULED_ACQUISITION_TARGET_COUNT = 50;
 const SCHEDULED_SCORING_BATCH_LIMIT = 1;
-const SCHEDULED_PIPELINE_AGENT = "codex";
-const SCHEDULED_PIPELINE_MODEL = "gpt-5.4-mini";
-const SCHEDULED_PIPELINE_WORKING_DIRECTORY = "/Users/mini/wingmen/wingman21";
+const SCHEDULED_PIPELINE_AGENT = process.env.KINDLING_SCHEDULED_PIPELINE_AGENT || "claude";
+const SCHEDULED_PIPELINE_MODEL = process.env.KINDLING_SCHEDULED_PIPELINE_MODEL || "claude-sonnet-4-6";
+const SCHEDULED_OUTREACH_PIPELINE_MODEL = process.env.KINDLING_OUTREACH_PIPELINE_MODEL || "claude-opus-4-8";
+const SCHEDULED_PIPELINE_WORKING_DIRECTORY = process.env.KINDLING_PIPELINE_WORKING_DIRECTORY || "/workspace/athena-kindling";
 
 type SchedulerRoleEvaluation = {
   action: SchedulerActionKey;
@@ -677,6 +678,11 @@ type SchedulerRoleEvaluation = {
   activeCount: number;
   concurrencyLimit: number;
 };
+
+function scheduledPipelineModelForRole(roleKey: string) {
+  if (roleKey === "draft_outreach") return SCHEDULED_OUTREACH_PIPELINE_MODEL;
+  return SCHEDULED_PIPELINE_MODEL;
+}
 
 type SchedulerDryRunDecision = {
   dryRun: boolean;
@@ -908,9 +914,6 @@ function reconcileSchedulerState(now = Date.now()) {
 }
 
 function schedulerCompanyCounts() {
-  const activeScoring = listActiveScoringOfferings();
-  const marketProfileVersionId = activeScoring.profile?.currentVersionId ?? "";
-  const offeringCount = activeScoring.offerings.length;
   const row = db.query(`
     SELECT
       COUNT(*) AS total_count,
@@ -920,24 +923,14 @@ function schedulerCompanyCounts() {
           OR data_ring IN ('enhanced', 'ranked', 'scored', 'outreach_ready', 'outreach', 'contacted')
         THEN 1 ELSE 0 END) AS enriched_count,
       SUM(CASE
-        WHEN data_ring IN ('scored', 'outreach_ready', 'outreach', 'contacted')
-          OR (
-            ?1 != ''
-            AND ?2 > 0
-            AND (
-              SELECT COUNT(DISTINCT sfa.service_offering_id)
-              FROM service_fit_assessments sfa
-              WHERE sfa.company_id = companies.id
-                AND sfa.market_profile_version_id = ?1
-            ) >= ?2
-          )
+        WHEN EXISTS (SELECT 1 FROM service_fit_assessments sfa WHERE sfa.company_id = companies.id)
         THEN 1 ELSE 0 END) AS scored_count,
       SUM(CASE
         WHEN data_ring IN ('outreach_ready', 'outreach', 'contacted')
           OR EXISTS (SELECT 1 FROM outreach_drafts od WHERE od.company_id = companies.id)
         THEN 1 ELSE 0 END) AS outreach_ready_count
     FROM companies
-  `).get(marketProfileVersionId, offeringCount) as Record<string, unknown> | null;
+  `).get() as Record<string, unknown> | null;
   return {
     total: Number(row?.total_count ?? 0),
     activePool: Number(row?.active_pool_count ?? 0),
@@ -1031,7 +1024,10 @@ function countAcquisitionCoverageCompanies(filters: { segmentId?: string | null;
           OR c.data_ring IN ('enhanced', 'agent', 'enriched', 'ranked', 'scored', 'outreach_ready', 'outreach', 'contacted')
         THEN 1 ELSE 0
       END) AS enriched_count,
-      SUM(CASE WHEN c.data_ring IN ('scored', 'outreach_ready', 'outreach', 'contacted') THEN 1 ELSE 0 END) AS scored_count,
+      SUM(CASE
+        WHEN EXISTS (SELECT 1 FROM service_fit_assessments sfa WHERE sfa.company_id = c.id)
+        THEN 1 ELSE 0
+      END) AS scored_count,
       SUM(CASE
         WHEN c.data_ring IN ('outreach_ready', 'outreach', 'contacted')
           OR EXISTS (SELECT 1 FROM outreach_drafts od WHERE od.company_id = c.id)
@@ -1428,6 +1424,7 @@ function selectOutreachDryRun(settings = getSchedulerSettings()) {
       JOIN companies c ON c.id = tli.company_id
       WHERE tli.target_list_run_id = ?1
         AND c.data_ring NOT IN ('contacted', 'parked')
+        AND EXISTS (SELECT 1 FROM service_fit_assessments sfa WHERE sfa.company_id = tli.company_id)
         AND NOT EXISTS (SELECT 1 FROM outreach_drafts od WHERE od.company_id = tli.company_id)
         AND NOT EXISTS (
           SELECT 1
@@ -1474,10 +1471,7 @@ function selectOutreachDryRun(settings = getSchedulerSettings()) {
     SELECT c.*, tr.id AS ranking_id, tr.rank AS ranking_rank, tr.reason AS ranking_reason
     FROM companies c
     LEFT JOIN target_rankings tr ON tr.company_id = c.id
-    WHERE (
-        c.data_ring IN ('scored', 'outreach_ready')
-        OR EXISTS (SELECT 1 FROM service_fit_assessments sfa WHERE sfa.company_id = c.id)
-      )
+    WHERE EXISTS (SELECT 1 FROM service_fit_assessments sfa WHERE sfa.company_id = c.id)
       AND c.data_ring NOT IN ('contacted', 'parked')
       AND NOT EXISTS (SELECT 1 FROM outreach_drafts od WHERE od.company_id = c.id)
     ORDER BY CASE WHEN tr.rank IS NULL THEN 1 ELSE 0 END ASC,
@@ -2932,6 +2926,11 @@ const defaultScoringOfferingTemplates = [
   { key: "reducing_owner_dependence", name: "Reducing owner dependence", variantKey: "reducing_owner_dependence", kind: "positioning_variant" },
 ] as const;
 
+function primaryOfferingKeyFromTitle(title: string) {
+  if (/^adapt\s+lumia\b/i.test(title)) return "adapt_lumia";
+  return slugKey(title);
+}
+
 function slugKey(value: unknown) {
   const slug = String(value ?? "")
     .trim()
@@ -2949,6 +2948,31 @@ function readableName(value: unknown, fallback: string) {
 
 function valuesArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
+}
+
+function primaryServiceOfferingFromProfile(structured: Record<string, unknown>): ExtractedServiceOffering | null {
+  const title = readableName(
+    structured.serviceOfferingName
+      ?? structured.offeringName
+      ?? structured.title
+      ?? structured.name,
+    "",
+  );
+  const services = valuesArray(structured.services);
+  if (!title || services.length === 0) return null;
+  return {
+    key: slugKey(structured.serviceOfferingKey ?? structured.offeringKey ?? primaryOfferingKeyFromTitle(title)),
+    name: title,
+    variantKey: "",
+    structured: {
+      ...structured,
+      kind: "primary_service_offering",
+      source: "market_profile_structured",
+      scoringUnit: "company_to_primary_offer",
+      services,
+    },
+    status: "active",
+  };
 }
 
 type ExtractedServiceOffering = {
@@ -3029,6 +3053,9 @@ function addOfferingValue(
 }
 
 function extractServiceOfferingsFromProfile(structured: Record<string, unknown>): ExtractedServiceOffering[] {
+  const primaryOffering = primaryServiceOfferingFromProfile(structured);
+  if (primaryOffering) return [primaryOffering];
+
   const offerings = new Map<string, ExtractedServiceOffering>();
   for (const key of ["services", "serviceLines", "serviceOfferings", "offerings"]) {
     for (const value of valuesArray(structured[key])) addOfferingValue(offerings, value, "service_line");
@@ -3036,13 +3063,15 @@ function extractServiceOfferingsFromProfile(structured: Record<string, unknown>)
   for (const key of ["variants", "serviceVariants", "positioningVariants", "scoringVariants"]) {
     for (const value of valuesArray(structured[key])) addOfferingValue(offerings, value, "positioning_variant");
   }
-  for (const template of defaultScoringOfferingTemplates) {
-    addExtractedOffering(offerings, {
-      key: template.key,
-      name: template.name,
-      variantKey: template.variantKey,
-      structured: { kind: template.kind, source: "default_scoring_catalog" },
-    });
+  if (offerings.size === 0) {
+    for (const template of defaultScoringOfferingTemplates) {
+      addExtractedOffering(offerings, {
+        key: template.key,
+        name: template.name,
+        variantKey: template.variantKey,
+        structured: { kind: template.kind, source: "default_scoring_catalog" },
+      });
+    }
   }
   return [...offerings.values()];
 }
@@ -3570,7 +3599,10 @@ function countCoverageCompanies(filters: { segmentId?: string | null; geographyT
           OR c.data_ring IN ('enhanced', 'agent', 'enriched', 'ranked', 'scored', 'outreach_ready', 'outreach', 'contacted')
         THEN 1 ELSE 0
       END) AS enriched_count,
-      SUM(CASE WHEN c.data_ring IN ('scored', 'outreach_ready', 'outreach', 'contacted') THEN 1 ELSE 0 END) AS scored_count,
+      SUM(CASE
+        WHEN EXISTS (SELECT 1 FROM service_fit_assessments sfa WHERE sfa.company_id = c.id)
+        THEN 1 ELSE 0
+      END) AS scored_count,
       SUM(CASE
         WHEN c.data_ring IN ('outreach_ready', 'outreach', 'contacted')
           OR EXISTS (SELECT 1 FROM outreach_drafts od WHERE od.company_id = c.id)
@@ -3993,7 +4025,7 @@ function buildKindlingTriggerRequest(input: {
         userNpub: input.userNpub,
         message: input.message,
         agent: SCHEDULED_PIPELINE_AGENT,
-        model: SCHEDULED_PIPELINE_MODEL,
+        model: scheduledPipelineModelForRole(input.roleKey),
         workingDirectory: SCHEDULED_PIPELINE_WORKING_DIRECTORY,
         localContext: input.context,
         ...buildKindlingRoleFields(input.roleKey, input.context),
@@ -4079,10 +4111,8 @@ function countServiceFitAssessments() {
 
 function countScoredCompanies() {
   const row = db.query(`
-    SELECT COUNT(*) AS count
-    FROM companies c
-    WHERE c.data_ring IN ('scored', 'outreach_ready', 'outreach', 'contacted')
-      OR EXISTS (SELECT 1 FROM service_fit_assessments sfa WHERE sfa.company_id = c.id)
+    SELECT COUNT(DISTINCT company_id) AS count
+    FROM service_fit_assessments
   `).get() as { count: number } | null;
   return Number(row?.count ?? 0);
 }
