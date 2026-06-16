@@ -252,6 +252,7 @@ CREATE TABLE IF NOT EXISTS scheduler_settings (
   target_pool_size INTEGER NOT NULL DEFAULT 10000,
   enriched_floor INTEGER NOT NULL DEFAULT 50,
   top_target_count INTEGER NOT NULL DEFAULT 100,
+  outreach_target_count INTEGER NOT NULL DEFAULT 100,
   per_role_concurrency_json TEXT NOT NULL DEFAULT '{}',
   cooldowns_json TEXT NOT NULL DEFAULT '{}',
   created_at INTEGER NOT NULL,
@@ -543,6 +544,7 @@ for (const migration of [
   "ALTER TABLE coverage_slices ADD COLUMN geography_text TEXT NOT NULL DEFAULT ''",
   "ALTER TABLE coverage_slices ADD COLUMN source_family TEXT NOT NULL DEFAULT 'web'",
   "ALTER TABLE coverage_slices ADD COLUMN strategy_type TEXT NOT NULL DEFAULT 'search'",
+  "ALTER TABLE scheduler_settings ADD COLUMN outreach_target_count INTEGER NOT NULL DEFAULT 100",
   "ALTER TABLE work_queue ADD COLUMN segment_id TEXT",
   "ALTER TABLE work_queue ADD COLUMN segment TEXT NOT NULL DEFAULT ''",
   "ALTER TABLE work_queue ADD COLUMN next_run_after_at INTEGER",
@@ -748,6 +750,7 @@ export type SchedulerSettings = {
   targetPoolSize: number;
   enrichedFloor: number;
   topTargetCount: number;
+  outreachTargetCount: number;
   perRoleConcurrency: Record<string, number>;
   cooldowns: Record<string, number>;
   createdAt: number;
@@ -866,18 +869,19 @@ const defaultSchedulerSettings = {
   targetPoolSize: 10000,
   enrichedFloor: 50,
   topTargetCount: 100,
+  outreachTargetCount: 100,
   perRoleConcurrency: {
-    scan_target_list: 1,
-    enrich_company: 1,
+    scan_target_list: 3,
+    enrich_company: 5,
     enrich_industry_segment: 1,
-    score_company_service_fit: 20,
+    score_company_service_fit: 3,
     draft_outreach: 1,
   },
   cooldowns: {
-    acquisitionMs: 60 * 60 * 1000,
-    enrichmentMs: 30 * 60 * 1000,
-    scoringMs: 30 * 60 * 1000,
-    outreachMs: 30 * 60 * 1000,
+    acquisitionMs: 5 * 60 * 1000,
+    enrichmentMs: 60 * 1000,
+    scoringMs: 5 * 60 * 1000,
+    outreachMs: 10 * 60 * 1000,
     stalledSliceMs: 7 * 24 * 60 * 60 * 1000,
   },
 } satisfies SchedulerSettingsPatch;
@@ -921,10 +925,10 @@ export function ensureDefaultSchedulerSettings(updatedAt = Date.now()) {
   db.query(`
     INSERT INTO scheduler_settings(
       id, enabled, acquisition_enabled, enrichment_enabled, scoring_enabled, outreach_enabled,
-      target_pool_size, enriched_floor, top_target_count, per_role_concurrency_json, cooldowns_json,
+      target_pool_size, enriched_floor, top_target_count, outreach_target_count, per_role_concurrency_json, cooldowns_json,
       created_at, updated_at
     )
-    VALUES ('default', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?11)
+    VALUES ('default', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)
     ON CONFLICT(id) DO NOTHING
   `).run(
     defaultSchedulerSettings.enabled ? 1 : 0,
@@ -935,6 +939,7 @@ export function ensureDefaultSchedulerSettings(updatedAt = Date.now()) {
     defaultSchedulerSettings.targetPoolSize,
     defaultSchedulerSettings.enrichedFloor,
     defaultSchedulerSettings.topTargetCount,
+    defaultSchedulerSettings.outreachTargetCount,
     JSON.stringify(defaultSchedulerSettings.perRoleConcurrency),
     JSON.stringify(defaultSchedulerSettings.cooldowns),
     updatedAt,
@@ -951,6 +956,7 @@ function mapSchedulerSettings(row: Record<string, unknown>): SchedulerSettings {
     targetPoolSize: Number(row.target_pool_size),
     enrichedFloor: Number(row.enriched_floor),
     topTargetCount: Number(row.top_target_count),
+    outreachTargetCount: Number(row.outreach_target_count ?? row.top_target_count),
     perRoleConcurrency: {
       ...defaultSchedulerSettings.perRoleConcurrency,
       ...jsonParse<Record<string, number>>(row.per_role_concurrency_json, {}),
@@ -983,6 +989,7 @@ export function updateSchedulerSettings(patch: SchedulerSettingsPatch, updatedAt
     targetPoolSize: normalizePositiveIntegerSetting(patch.targetPoolSize, current.targetPoolSize),
     enrichedFloor: normalizePositiveIntegerSetting(patch.enrichedFloor, current.enrichedFloor),
     topTargetCount: normalizePositiveIntegerSetting(patch.topTargetCount, current.topTargetCount),
+    outreachTargetCount: normalizePositiveIntegerSetting(patch.outreachTargetCount, current.outreachTargetCount),
     perRoleConcurrency: normalizeNumberRecord(patch.perRoleConcurrency, current.perRoleConcurrency),
     cooldowns: normalizeNumberRecord(patch.cooldowns, current.cooldowns, true),
     updatedAt,
@@ -997,9 +1004,10 @@ export function updateSchedulerSettings(patch: SchedulerSettingsPatch, updatedAt
         target_pool_size = ?6,
         enriched_floor = ?7,
         top_target_count = ?8,
-        per_role_concurrency_json = ?9,
-        cooldowns_json = ?10,
-        updated_at = ?11
+        outreach_target_count = ?9,
+        per_role_concurrency_json = ?10,
+        cooldowns_json = ?11,
+        updated_at = ?12
     WHERE id = 'default'
   `).run(
     next.enabled ? 1 : 0,
@@ -1010,6 +1018,7 @@ export function updateSchedulerSettings(patch: SchedulerSettingsPatch, updatedAt
     next.targetPoolSize,
     next.enrichedFloor,
     next.topTargetCount,
+    next.outreachTargetCount,
     JSON.stringify(next.perRoleConcurrency),
     JSON.stringify(next.cooldowns),
     updatedAt,

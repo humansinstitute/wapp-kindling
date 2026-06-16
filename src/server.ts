@@ -641,6 +641,9 @@ function schedulerSettingsPatchFromBody(body: Record<string, unknown>): Schedule
   if (body.topTargetCount !== undefined || body.top_target_count !== undefined) {
     patch.topTargetCount = Number(body.topTargetCount ?? body.top_target_count);
   }
+  if (body.outreachTargetCount !== undefined || body.outreach_target_count !== undefined) {
+    patch.outreachTargetCount = Number(body.outreachTargetCount ?? body.outreach_target_count);
+  }
   if (body.perRoleConcurrency !== undefined || body.per_role_concurrency_json !== undefined) {
     patch.perRoleConcurrency = parseJsonObjectField(body.perRoleConcurrency ?? body.per_role_concurrency_json, {}) as Record<string, number>;
   }
@@ -651,9 +654,20 @@ function schedulerSettingsPatchFromBody(body: Record<string, unknown>): Schedule
 }
 
 type SchedulerActionKey = "acquisition" | "enrichment" | "scoring" | "outreach";
-const PROSPECTING_LOOP_INTERVAL_MS = 21 * 60 * 1000;
+const PROSPECTING_LOOP_INTERVAL_MS = 60 * 1000;
 const STALE_ACTIVE_PIPELINE_RUN_MS = 6 * 60 * 60 * 1000;
-const SCHEDULED_ACQUISITION_TARGET_COUNT = 1000;
+const ROLE_STALE_ACTIVE_PIPELINE_RUN_MS: Record<string, number> = {
+  draft_outreach: 20 * 60 * 1000,
+  enrich_company: 35 * 60 * 1000,
+  score_company_service_fit: 35 * 60 * 1000,
+  scan_target_list: 30 * 60 * 1000,
+};
+const ACQUISITION_PARTIAL_STALE_PIPELINE_RUN_MS = 90 * 60 * 1000;
+const SCHEDULED_ACQUISITION_TARGET_COUNT = 50;
+const SCHEDULED_SCORING_BATCH_LIMIT = 1;
+const SCHEDULED_PIPELINE_AGENT = "codex";
+const SCHEDULED_PIPELINE_MODEL = "gpt-5.4-mini";
+const SCHEDULED_PIPELINE_WORKING_DIRECTORY = "/Users/mini/wingmen/wingman21";
 
 type SchedulerRoleEvaluation = {
   action: SchedulerActionKey;
@@ -665,7 +679,7 @@ type SchedulerRoleEvaluation = {
 };
 
 type SchedulerDryRunDecision = {
-  dryRun: true;
+  dryRun: boolean;
   workAvailable: boolean;
   action: SchedulerActionKey | "no_work";
   roleKey: string | null;
@@ -699,8 +713,8 @@ function numericField(record: Record<string, unknown>, key: string, fallback = 0
   return Number.isFinite(value) ? value : fallback;
 }
 
-function activeSchedulerLock(now: number) {
-  const lock = getSchedulerLock("prospecting");
+function activeSchedulerLock(now: number, lockKey = "prospecting") {
+  const lock = getSchedulerLock(lockKey);
   return lock && lock.leaseExpiresAt > now ? lock : null;
 }
 
@@ -737,23 +751,160 @@ function roleConcurrencyState(roleKey: string, settings = getSchedulerSettings()
   };
 }
 
+function recentSchedulerLaunch(action: SchedulerActionKey, roleKey: string, cooldownMs: number, now = Date.now()) {
+  if (cooldownMs <= 0) return null;
+  const row = db.query(`
+    SELECT id, started_at
+    FROM scheduler_runs
+    WHERE selected_action = ?1
+      AND role_key = ?2
+      AND run_type != 'dry_run'
+      AND status IN ('running', 'complete')
+      AND started_at > ?3
+    ORDER BY started_at DESC
+    LIMIT 1
+  `).get(action, roleKey, now - cooldownMs) as Record<string, unknown> | null;
+  if (!row) return null;
+  const startedAt = Number(row.started_at ?? 0);
+  return {
+    id: String(row.id),
+    startedAt,
+    remainingMs: Math.max(0, cooldownMs - (now - startedAt)),
+  };
+}
+
+function scheduledKindlingOrigin() {
+  if (PUBLIC_ORIGIN) return PUBLIC_ORIGIN;
+  const testDbPath = process.env.CHAT_WAPP_DB_PATH || "";
+  const runningContractTests = /kindling-api-|test\.sqlite$/.test(testDbPath);
+  if (PORT === 3256 && !runningContractTests) {
+    throw new Error("CHAT_WAPP_PUBLIC_ORIGIN must point at the Kindling WApp origin before scheduled automation can start");
+  }
+  return `http://localhost:${PORT}`;
+}
+
+function roleStaleTimeoutMs(roleKey: string, run: Record<string, unknown> | null = null) {
+  if (roleKey === "scan_target_list" && run) {
+    const requestId = String(run.local_request_id ?? "");
+    return matchingCompanyCountForJob(requestId) > 0
+      ? ACQUISITION_PARTIAL_STALE_PIPELINE_RUN_MS
+      : ROLE_STALE_ACTIVE_PIPELINE_RUN_MS.scan_target_list;
+  }
+  return ROLE_STALE_ACTIVE_PIPELINE_RUN_MS[roleKey] ?? STALE_ACTIVE_PIPELINE_RUN_MS;
+}
+
+function roleTimeoutReason(roleKey: string, timeoutMs: number, run: Record<string, unknown> | null = null) {
+  const minutes = Math.max(1, Math.round(timeoutMs / 60_000));
+  if (roleKey === "scan_target_list" && run && matchingCompanyCountForJob(String(run.local_request_id ?? "")) <= 0) {
+    return `Timed out after ${minutes} minutes without discovery results`;
+  }
+  return `Timed out after ${minutes} minutes without completion callback`;
+}
+
 function reconcileStaleActiveKindlingRuns(now = Date.now()) {
-  const staleBefore = now - STALE_ACTIVE_PIPELINE_RUN_MS;
   const rows = db.query(`
     SELECT *
     FROM kindling_pipeline_runs
     WHERE status IN ('queued', 'running', 'mock')
-      AND updated_at < ?1
     ORDER BY updated_at ASC
     LIMIT 50
-  `).all(staleBefore) as Record<string, unknown>[];
+  `).all() as Record<string, unknown>[];
+  let reconciled = 0;
   for (const row of rows) {
+    const roleKey = String(row.role_key ?? "");
+    const timeoutMs = roleStaleTimeoutMs(roleKey, row);
+    if (Number(row.updated_at ?? row.created_at ?? now) >= now - timeoutMs) continue;
     markKindlingRunFailedFromAutopilot(
       row,
-      `Timed out after ${Math.round(STALE_ACTIVE_PIPELINE_RUN_MS / 3_600_000)} hours without completion callback`,
+      roleTimeoutReason(roleKey, timeoutMs, row),
     );
+    reconciled += 1;
   }
-  return rows.length;
+  return reconciled;
+}
+
+function reconcileStaleSchedulerState(now = Date.now()) {
+  const schedulerRows = db.query(`
+    SELECT *
+    FROM scheduler_runs
+    WHERE status = 'running'
+    ORDER BY updated_at ASC
+    LIMIT 100
+  `).all() as Record<string, unknown>[];
+  let schedulerCount = 0;
+  for (const row of schedulerRows) {
+    const roleKey = String(row.role_key ?? "");
+    const timeoutMs = roleStaleTimeoutMs(roleKey);
+    if (Number(row.updated_at ?? row.started_at ?? now) >= now - timeoutMs) continue;
+    const reason = roleTimeoutReason(roleKey, timeoutMs);
+    db.query(`
+      UPDATE scheduler_runs
+      SET status = 'failed',
+          error = CASE WHEN error = '' THEN ?1 ELSE error END,
+          finished_at = COALESCE(finished_at, ?2),
+          updated_at = ?2
+      WHERE id = ?3
+        AND status = 'running'
+    `).run(reason, now, String(row.id));
+    releaseSchedulerLock(String(row.lock_key ?? "prospecting"), String(row.id));
+    schedulerCount += 1;
+  }
+
+  const queueRows = db.query(`
+    SELECT *
+    FROM work_queue
+    WHERE status = 'running'
+    ORDER BY updated_at ASC
+    LIMIT 100
+  `).all() as Record<string, unknown>[];
+  let queueCount = 0;
+  for (const row of queueRows) {
+    const kind = String(row.kind ?? "");
+    const timeoutMs = kind === "company_enrichment"
+      ? ROLE_STALE_ACTIVE_PIPELINE_RUN_MS.enrich_company
+      : kind === "service_fit_assessment"
+        ? ROLE_STALE_ACTIVE_PIPELINE_RUN_MS.score_company_service_fit
+        : STALE_ACTIVE_PIPELINE_RUN_MS;
+    if (Number(row.updated_at ?? row.created_at ?? now) >= now - timeoutMs) continue;
+    const reason = roleTimeoutReason(kind, timeoutMs);
+    db.query(`
+      UPDATE work_queue
+      SET status = 'failed',
+          error = CASE WHEN error = '' THEN ?1 ELSE error END,
+          locked_by_run_id = NULL,
+          next_run_after_at = NULL,
+          updated_at = ?2
+      WHERE id = ?3
+        AND status = 'running'
+    `).run(reason, now, String(row.id));
+    if (String(row.kind ?? "") === "company_enrichment") {
+      db.query(`
+        UPDATE enrichment_requests
+        SET status = 'failed',
+            summary = CASE WHEN summary = '' THEN ?1 ELSE summary END,
+            updated_at = ?2
+        WHERE COALESCE(NULLIF(work_queue_id, ''), id) = ?3
+          AND status = 'running'
+      `).run(reason, now, String(row.id));
+      db.query(`
+        UPDATE companies
+        SET enrichment_status = 'failed',
+            updated_at = ?1
+        WHERE id = ?2
+          AND enrichment_status = 'running'
+      `).run(now, String(row.target_id ?? ""));
+    }
+    queueCount += 1;
+  }
+
+  return { scheduler: schedulerCount, queue: queueCount };
+}
+
+function reconcileSchedulerState(now = Date.now()) {
+  return {
+    kindling: reconcileStaleActiveKindlingRuns(now),
+    ...reconcileStaleSchedulerState(now),
+  };
 }
 
 function schedulerCompanyCounts() {
@@ -770,7 +921,6 @@ function schedulerCompanyCounts() {
         THEN 1 ELSE 0 END) AS enriched_count,
       SUM(CASE
         WHEN data_ring IN ('scored', 'outreach_ready', 'outreach', 'contacted')
-          OR EXISTS (SELECT 1 FROM target_rankings tr WHERE tr.company_id = companies.id)
           OR (
             ?1 != ''
             AND ?2 > 0
@@ -1039,7 +1189,15 @@ function evaluateAcquisitionCandidate(candidate: AcquisitionCandidate, settings:
   };
 }
 
-function selectAcquisitionDryRun(settings = getSchedulerSettings(), now = Date.now()) {
+function acquisitionExplorationRank(candidate: AcquisitionCandidate) {
+  const executedAttempts = numericField(candidate.yieldMetrics, "executedAttempts", 0);
+  if (candidate.source === "segment_default") return 0;
+  if (executedAttempts <= 0) return 1;
+  if (!candidate.lastRunAt) return 2;
+  return 3;
+}
+
+function selectAcquisitionDryRun(settings = getSchedulerSettings(), now = Date.now(), options: { preferExploration?: boolean } = {}) {
   const counts = schedulerCompanyCounts();
   if (counts.activePool >= settings.targetPoolSize) {
     return { item: null, reason: `target pool has ${counts.activePool}/${settings.targetPoolSize} active companies` };
@@ -1049,7 +1207,8 @@ function selectAcquisitionDryRun(settings = getSchedulerSettings(), now = Date.n
     .map((candidate) => evaluateAcquisitionCandidate(candidate, settings, now))
     .filter((candidate): candidate is NonNullable<typeof candidate> => Boolean(candidate))
     .sort((a, b) =>
-      a.score - b.score
+      (options.preferExploration ? acquisitionExplorationRank(a.candidate) - acquisitionExplorationRank(b.candidate) : 0)
+      || a.score - b.score
       || b.sourceBackedUniqueDeficit - a.sourceBackedUniqueDeficit
       || a.candidate.segmentPriority - b.candidate.segmentPriority
       || (a.candidate.lastRunAt ?? 0) - (b.candidate.lastRunAt ?? 0)
@@ -1092,6 +1251,8 @@ function selectAcquisitionDryRun(settings = getSchedulerSettings(), now = Date.n
           source: candidate.source,
           score: selected.score,
           preferredTier1Perth: selected.isTier1Perth,
+          explorationRank: acquisitionExplorationRank(candidate),
+          preferExploration: Boolean(options.preferExploration),
         },
       },
       reason: `target pool has ${counts.activePool}/${settings.targetPoolSize} active companies; ${candidate.segmentLabel || "coverage slice"} in ${candidate.geographyText || "unspecified geography"} needs ${selected.sourceBackedUniqueDeficit} more source-backed unique prospects to reach ${selected.targetFound}`,
@@ -1244,14 +1405,79 @@ function selectScoringCandidateRows(marketProfileVersionId: string, offeringCoun
 
 function selectOutreachDryRun(settings = getSchedulerSettings()) {
   const counts = schedulerCompanyCounts();
-  if (counts.outreachReady >= settings.topTargetCount) {
-    return { item: null, reason: `outreach-ready target is met at ${counts.outreachReady}/${settings.topTargetCount}` };
+  if (counts.outreachReady >= settings.outreachTargetCount) {
+    return { item: null, reason: `outreach-ready target is met at ${counts.outreachReady}/${settings.outreachTargetCount}` };
+  }
+  const latestTopTargetRun = latestTopTargetRunId();
+  if (latestTopTargetRun) {
+    const topTarget = db.query(`
+      SELECT
+        tli.*,
+        c.name,
+        c.location,
+        c.industry,
+        c.website,
+        c.data_ring,
+        c.duplicate_status,
+        c.enrichment_status,
+        c.confidence AS company_confidence,
+        c.profile_json,
+        c.created_at AS company_created_at,
+        c.updated_at AS company_updated_at
+      FROM target_list_items tli
+      JOIN companies c ON c.id = tli.company_id
+      WHERE tli.target_list_run_id = ?1
+        AND c.data_ring NOT IN ('contacted', 'parked')
+        AND NOT EXISTS (SELECT 1 FROM outreach_drafts od WHERE od.company_id = tli.company_id)
+        AND NOT EXISTS (
+          SELECT 1
+          FROM kindling_pipeline_runs kpr
+          WHERE kpr.role_key = 'draft_outreach'
+            AND kpr.status IN ('queued', 'running', 'mock')
+            AND kpr.local_request_id = tli.company_id
+        )
+      ORDER BY tli.rank ASC
+      LIMIT 1
+    `).get(latestTopTargetRun) as Record<string, unknown> | null;
+    if (topTarget) {
+      const companyRow = {
+        id: topTarget.company_id,
+        name: topTarget.name,
+        location: topTarget.location,
+        industry: topTarget.industry,
+        website: topTarget.website,
+        data_ring: topTarget.data_ring,
+        duplicate_status: topTarget.duplicate_status,
+        enrichment_status: topTarget.enrichment_status,
+        confidence: topTarget.company_confidence,
+        profile_json: topTarget.profile_json,
+        created_at: topTarget.company_created_at,
+        updated_at: topTarget.company_updated_at,
+      };
+      return {
+        item: {
+          kind: "company",
+          company: mapCompany(companyRow),
+          topTarget: mapTopTargetItem(topTarget),
+          ranking: {
+            id: String(topTarget.id),
+            rank: Number(topTarget.rank ?? 0),
+            reason: String(topTarget.reason ?? ""),
+            source: "top_targets",
+          },
+        },
+        reason: `outreach-ready target is ${counts.outreachReady}/${settings.outreachTargetCount}; top target #${Number(topTarget.rank ?? 0)} ${String(topTarget.name)} is the first undrafted ranked company`,
+      };
+    }
   }
   const row = db.query(`
     SELECT c.*, tr.id AS ranking_id, tr.rank AS ranking_rank, tr.reason AS ranking_reason
     FROM companies c
     LEFT JOIN target_rankings tr ON tr.company_id = c.id
-    WHERE (c.data_ring IN ('scored', 'outreach_ready') OR tr.id IS NOT NULL)
+    WHERE (
+        c.data_ring IN ('scored', 'outreach_ready')
+        OR EXISTS (SELECT 1 FROM service_fit_assessments sfa WHERE sfa.company_id = c.id)
+      )
       AND c.data_ring NOT IN ('contacted', 'parked')
       AND NOT EXISTS (SELECT 1 FROM outreach_drafts od WHERE od.company_id = c.id)
     ORDER BY CASE WHEN tr.rank IS NULL THEN 1 ELSE 0 END ASC,
@@ -1261,7 +1487,7 @@ function selectOutreachDryRun(settings = getSchedulerSettings()) {
       lower(c.name) ASC
     LIMIT 1
   `).get() as Record<string, unknown> | null;
-  if (!row) return { item: null, reason: `outreach-ready target is ${counts.outreachReady}/${settings.topTargetCount}, but no scored undrafted company exists` };
+  if (!row) return { item: null, reason: `outreach-ready target is ${counts.outreachReady}/${settings.outreachTargetCount}, but no scored undrafted company exists` };
   return {
     item: {
       kind: "company",
@@ -1272,12 +1498,12 @@ function selectOutreachDryRun(settings = getSchedulerSettings()) {
         reason: String(row.ranking_reason ?? ""),
       } : null,
     },
-    reason: `outreach-ready target is ${counts.outreachReady}/${settings.topTargetCount}; company ${String(row.name)} is ready for outreach drafting`,
+    reason: `outreach-ready target is ${counts.outreachReady}/${settings.outreachTargetCount}; company ${String(row.name)} is ready for outreach drafting`,
   };
 }
 
 function computeSchedulerDryRunDecision(now = Date.now()): SchedulerDryRunDecision {
-  reconcileStaleActiveKindlingRuns(now);
+  reconcileSchedulerState(now);
   const settings = getSchedulerSettings();
   const lock = activeSchedulerLock(now);
   const evaluatedRoles: SchedulerRoleEvaluation[] = [];
@@ -1386,7 +1612,7 @@ function computeSchedulerDryRunDecision(now = Date.now()): SchedulerDryRunDecisi
 }
 
 function computeProspectingLoopDecision(now = Date.now()): SchedulerDryRunDecision {
-  reconcileStaleActiveKindlingRuns(now);
+  reconcileSchedulerState(now);
   const settings = getSchedulerSettings();
   const lock = activeSchedulerLock(now);
   const evaluatedRoles: SchedulerRoleEvaluation[] = [];
@@ -1499,7 +1725,8 @@ function schedulerAcquisitionTargetCount(item: SchedulerAcquisitionWork) {
   const targetFound = numericField(deficit, "targetFound", numericField(targetCounts, "found", 25));
   const sourceBackedDeficit = numericField(deficit, "sourceBackedUnique", targetFound);
   const currentFound = numericField(currentCounts, "found", 0);
-  return clampTargetCount(Math.max(SCHEDULED_ACQUISITION_TARGET_COUNT, currentFound + sourceBackedDeficit));
+  const remaining = Math.max(1, currentFound + sourceBackedDeficit - currentFound);
+  return clampTargetCount(Math.min(SCHEDULED_ACQUISITION_TARGET_COUNT, remaining));
 }
 
 function listPriorAcquisitionStrategies(input: {
@@ -3688,10 +3915,16 @@ function buildKindlingRoleFields(roleKey: string, context: Record<string, unknow
     };
   }
   if (roleKey === "enrich_industry_segment") {
+    const batchSize = Number(context.batchSize ?? 0);
     return {
       industry: String(context.industry ?? ""),
       batchId: String(context.batchId ?? ""),
-      batchSize: Number(context.batchSize ?? 0),
+      batchSize,
+      batchLoop: {
+        iteration: 1,
+        index: 0,
+        total: batchSize,
+      },
     };
   }
   if (roleKey === "develop_service_offering") {
@@ -3759,6 +3992,9 @@ function buildKindlingTriggerRequest(input: {
         userPubkey: input.userPubkey,
         userNpub: input.userNpub,
         message: input.message,
+        agent: SCHEDULED_PIPELINE_AGENT,
+        model: SCHEDULED_PIPELINE_MODEL,
+        workingDirectory: SCHEDULED_PIPELINE_WORKING_DIRECTORY,
         localContext: input.context,
         ...buildKindlingRoleFields(input.roleKey, input.context),
         webhook: {
@@ -4123,7 +4359,10 @@ async function fetchAutopilotPipelineRun(autopilotRunId: string) {
   const runUrl = new URL(`/api/pipelines/runs/${encodeURIComponent(autopilotRunId)}`, autopilotUrl);
   runUrl.searchParams.set("includePayload", "1");
   try {
-    const res = await fetch(runUrl);
+    const authorization = buildServerNip98Authorization(runUrl.toString(), "GET", "");
+    const res = await fetch(runUrl, {
+      headers: authorization ? { authorization } : undefined,
+    });
     if (!res.ok) return null;
     const payload = await res.json().catch(() => null) as Record<string, unknown> | null;
     return objectRecord(payload?.run);
@@ -4282,6 +4521,21 @@ function markKindlingRunFailedFromAutopilot(run: Record<string, unknown>, error:
       WHERE id = ?3
         AND kind = 'service_fit_assessment'
     `).run(error, now, requestId);
+  }
+  if (roleKey === "score_company_service_fit" || roleKey === "enrich_company" || roleKey === "draft_outreach") {
+    updateSchedulerRunForRequest({
+      requestId,
+      roleKey,
+      status: "failed",
+      result: {
+        terminalStatus: localStatus,
+        retryable: true,
+        source: "autopilot_reconcile",
+      },
+      error,
+      finish: true,
+      releaseLock: false,
+    });
   }
 }
 
@@ -5070,6 +5324,7 @@ function mapTopTargetRun(row: Record<string, unknown>) {
 }
 
 function mapTopTargetItem(row: Record<string, unknown>) {
+  const outreachDraftCount = Number(row.outreach_draft_count ?? 0);
   return {
     id: String(row.id),
     targetListRunId: String(row.target_list_run_id),
@@ -5094,6 +5349,8 @@ function mapTopTargetItem(row: Record<string, unknown>) {
     nextAction: String(row.next_action ?? ""),
     flags: jsonParse<string[]>(row.flags_json, []),
     scoreJson: jsonParse<Record<string, unknown>>(row.score_json, {}),
+    hasOutreachDraft: outreachDraftCount > 0,
+    outreachDraftCount,
     createdAt: Number(row.created_at ?? 0),
     company: row.name ? {
       id: String(row.company_id),
@@ -5107,21 +5364,39 @@ function mapTopTargetItem(row: Record<string, unknown>) {
   };
 }
 
-function getTopTargetRunDetail(runId: string, limit = 100, offset = 0) {
+function getTopTargetRunDetail(runId: string, limit = 100, offset = 0, options: { hasOutreachDraft?: boolean } = {}) {
   const run = db.query("SELECT * FROM target_list_runs WHERE id = ?1").get(runId) as Record<string, unknown> | null;
   if (!run) return null;
   const safeLimit = Math.max(1, Math.min(500, Math.floor(limit)));
   const safeOffset = Math.max(0, Math.floor(offset));
+  const filters = options.hasOutreachDraft
+    ? "AND EXISTS (SELECT 1 FROM outreach_drafts od WHERE od.company_id = tli.company_id)"
+    : "";
+  const total = db.query(`
+    SELECT COUNT(*) AS count
+    FROM target_list_items tli
+    WHERE tli.target_list_run_id = ?1
+      ${filters}
+  `).get(runId) as { count: number } | null;
   const items = db.query(`
-    SELECT tli.*, c.name, c.location, c.industry, c.website, c.data_ring, c.enrichment_status
+    SELECT
+      tli.*,
+      c.name,
+      c.location,
+      c.industry,
+      c.website,
+      c.data_ring,
+      c.enrichment_status,
+      (SELECT COUNT(*) FROM outreach_drafts od WHERE od.company_id = tli.company_id) AS outreach_draft_count
     FROM target_list_items tli
     JOIN companies c ON c.id = tli.company_id
     WHERE tli.target_list_run_id = ?1
+      ${filters}
     ORDER BY tli.rank ASC
     LIMIT ?2
     OFFSET ?3
   `).all(runId, safeLimit, safeOffset) as Record<string, unknown>[];
-  return { run: mapTopTargetRun(run), items: items.map(mapTopTargetItem), limit: safeLimit, offset: safeOffset };
+  return { run: mapTopTargetRun(run), items: items.map(mapTopTargetItem), total: Number(total?.count ?? 0), limit: safeLimit, offset: safeOffset };
 }
 
 function latestTopTargetRunId() {
@@ -5269,6 +5544,21 @@ function markKindlingStartFailed(run: Record<string, unknown>, error: string) {
       releaseLock: true,
     });
   }
+  if (roleKey === "draft_outreach") {
+    updateSchedulerRunForRequest({
+      requestId,
+      roleKey: "draft_outreach",
+      status: "failed",
+      result: {
+        terminalStatus: "failed",
+        retryable: true,
+        source: "autopilot_start",
+      },
+      error,
+      finish: true,
+      releaseLock: false,
+    });
+  }
 }
 
 async function startKindlingRun(runId: string, authorization?: string) {
@@ -5309,6 +5599,17 @@ async function startKindlingRun(runId: string, authorization?: string) {
       updateSchedulerRunForRequest({
         requestId: String(run.local_request_id ?? ""),
         roleKey: "score_company_service_fit",
+        status: "running",
+        autopilotRunId: String(remoteRun.id ?? payload.runId ?? "") || null,
+        result: {
+          autopilotRunId: String(remoteRun.id ?? payload.runId ?? "") || null,
+        },
+      });
+    }
+    if (String(run.role_key ?? "") === "enrich_company" || String(run.role_key ?? "") === "draft_outreach") {
+      updateSchedulerRunForRequest({
+        requestId: String(run.local_request_id ?? ""),
+        roleKey: String(run.role_key ?? ""),
         status: "running",
         autopilotRunId: String(remoteRun.id ?? payload.runId ?? "") || null,
         result: {
@@ -5974,6 +6275,14 @@ function applyKindlingCallback(body: Record<string, unknown>, token: string) {
       storedStatus = "failed";
       storedError = String(body.error ?? body.response ?? "Company enrichment failed");
       failEnrichmentQueueForRequest(requestId, storedError, now);
+      updateSchedulerRunForRequest({
+        requestId,
+        roleKey: "enrich_company",
+        status: "failed",
+        error: storedError,
+        finish: true,
+        releaseLock: false,
+      });
     } else {
       const company = records.company as Record<string, unknown> | undefined;
       persistCompanyEnrichment({
@@ -5982,6 +6291,18 @@ function applyKindlingCallback(body: Record<string, unknown>, token: string) {
         requestId,
         runId: String(run.id),
         now,
+      });
+      updateSchedulerRunForRequest({
+        requestId,
+        roleKey: "enrich_company",
+        status: "complete",
+        autopilotRunId: String(body.runId ?? "") || null,
+        result: {
+          terminalStatus: storedStatus,
+          source: "final_webhook",
+        },
+        finish: true,
+        releaseLock: false,
       });
     }
   }
@@ -6076,13 +6397,39 @@ function applyKindlingCallback(body: Record<string, unknown>, token: string) {
   }
 
   if (!alreadyApplied && roleKey === "draft_outreach") {
-    const draft = records.outreachDraft as Record<string, unknown> | undefined;
-    const companyId = String(draft?.companyId ?? requestId);
-    db.query(`
-      INSERT INTO outreach_drafts(id, company_id, pitch_text, status, source_run_id, created_at, updated_at)
-      VALUES (?1, ?2, ?3, 'draft', ?4, ?5, ?5)
-    `).run(crypto.randomUUID(), companyId, String(draft?.pitchText ?? body.response ?? ""), String(run.id), now);
-    recordActivity("company", companyId, "pipeline", "outreach_drafted", String(body.response ?? "Outreach drafted"), { requestId });
+    if (callbackFailed) {
+      storedStatus = "failed";
+      storedError = String(body.error ?? body.response ?? "Outreach drafting failed");
+      updateSchedulerRunForRequest({
+        requestId,
+        roleKey: "draft_outreach",
+        status: "failed",
+        error: storedError,
+        finish: true,
+        releaseLock: false,
+      });
+    } else {
+      const draft = records.outreachDraft as Record<string, unknown> | undefined;
+      const companyId = String(draft?.companyId ?? requestId);
+      db.query(`
+        INSERT INTO outreach_drafts(id, company_id, pitch_text, status, source_run_id, created_at, updated_at)
+        VALUES (?1, ?2, ?3, 'draft', ?4, ?5, ?5)
+      `).run(crypto.randomUUID(), companyId, String(draft?.pitchText ?? body.response ?? ""), String(run.id), now);
+      recordActivity("company", companyId, "pipeline", "outreach_drafted", String(body.response ?? "Outreach drafted"), { requestId });
+      updateSchedulerRunForRequest({
+        requestId,
+        roleKey: "draft_outreach",
+        status: "complete",
+        autopilotRunId: String(body.runId ?? "") || null,
+        result: {
+          terminalStatus: storedStatus,
+          companyId,
+          source: "final_webhook",
+        },
+        finish: true,
+        releaseLock: false,
+      });
+    }
   }
 
   db.query(`
@@ -6150,17 +6497,40 @@ async function runAutomatedAcquisitionLoop() {
   const now = Date.now();
   const settings = getSchedulerSettings();
   if (!settings.enabled || !settings.acquisitionEnabled) return null;
-  if (activeSchedulerLock(now)) return null;
-  const decision = computeProspectingLoopDecision(now);
-  if (!decision.workAvailable || decision.action !== "acquisition" || decision.roleKey !== "scan_target_list" || !decision.item) {
+  if (activeSchedulerLock(now, "acquisition")) return null;
+  if (recentSchedulerLaunch("acquisition", "scan_target_list", Math.max(0, Number(settings.cooldowns.acquisitionMs ?? 0)), now)) {
     return null;
   }
+  const concurrency = roleConcurrencyState("scan_target_list", settings);
+  if (concurrency.blockedReason) return null;
+  const acquisitionSelection = selectAcquisitionDryRun(settings, now, { preferExploration: true });
+  if (!acquisitionSelection.item) {
+    return null;
+  }
+  const decision = {
+    dryRun: false,
+    workAvailable: true,
+    action: "acquisition" as const,
+    roleKey: "scan_target_list",
+    item: acquisitionSelection.item,
+    reason: acquisitionSelection.reason,
+    evaluatedRoles: [{
+      action: "acquisition" as const,
+      roleKey: "scan_target_list",
+      status: "selected" as const,
+      reason: acquisitionSelection.reason,
+      activeCount: concurrency.activeCount,
+      concurrencyLimit: concurrency.concurrencyLimit,
+    }],
+    activeLock: null,
+  };
 
   const schedulerRun = createSchedulerRun({
     runType: "scheduled",
     status: "running",
     selectedAction: "acquisition",
     roleKey: "scan_target_list",
+    lockKey: "acquisition",
     context: {
       dryRun: false,
       automated: true,
@@ -6178,14 +6548,15 @@ async function runAutomatedAcquisitionLoop() {
   const lock = acquireSchedulerLock({
     runId: schedulerRun.id,
     ownerId: "scheduler:auto-acquisition",
-    leaseMs: Math.max(10 * 60 * 1000, Number(settings.cooldowns.acquisitionMs ?? 0)),
+    lockKey: "acquisition",
+    leaseMs: 60 * 1000,
     now,
   });
   if (!lock) {
     db.query(`
       UPDATE scheduler_runs
       SET status = 'skipped',
-          skip_reason = 'scheduler lock prospecting could not be acquired',
+          skip_reason = 'scheduler lock acquisition could not be acquired',
           finished_at = ?1,
           updated_at = ?1
       WHERE id = ?2
@@ -6197,12 +6568,13 @@ async function runAutomatedAcquisitionLoop() {
     item: decision.item,
     decision,
     schedulerRunId: schedulerRun.id,
-    origin: PUBLIC_ORIGIN || `http://localhost:${PORT}`,
+    origin: scheduledKindlingOrigin(),
     automated: true,
     session: { pubkey: "scheduler", npub: "scheduler" },
   });
   try {
     const start = await startKindlingRun(acquisitionJob.kindlingRunId);
+    releaseSchedulerLock("acquisition", schedulerRun.id);
     return {
       schedulerRunId: schedulerRun.id,
       runId: acquisitionJob.kindlingRunId,
@@ -6216,6 +6588,7 @@ async function runAutomatedAcquisitionLoop() {
       start,
     };
   } catch {
+    releaseSchedulerLock("acquisition", schedulerRun.id);
     return null;
   }
 }
@@ -6224,6 +6597,9 @@ async function runAutomatedScoringLoop() {
   const now = Date.now();
   const settings = getSchedulerSettings();
   if (!settings.enabled || !settings.scoringEnabled) return null;
+  if (recentSchedulerLaunch("scoring", "score_company_service_fit", Math.max(0, Number(settings.cooldowns.scoringMs ?? 0)), now)) {
+    return null;
+  }
   const topTargets = getOrBuildTopTargetDetail(settings.topTargetCount || 100);
   const rankedCount = Number(topTargets.run?.rankedCount ?? topTargets.items?.length ?? 0);
   if (rankedCount >= settings.topTargetCount) return null;
@@ -6234,7 +6610,7 @@ async function runAutomatedScoringLoop() {
   const marketProfileVersionId = activeScoring.profile?.currentVersionId ?? "";
   const offeringCount = activeScoring.offerings.length;
   if (!marketProfileVersionId || !offeringCount) return null;
-  const availableSlots = Math.max(0, concurrency.concurrencyLimit - concurrency.activeCount);
+  const availableSlots = Math.min(SCHEDULED_SCORING_BATCH_LIMIT, Math.max(0, concurrency.concurrencyLimit - concurrency.activeCount));
   const companies = selectScoringCandidateRows(marketProfileVersionId, offeringCount, availableSlots);
   if (!companies.length) {
     return null;
@@ -6283,7 +6659,7 @@ async function runAutomatedScoringLoop() {
     });
     const scoringRun = createServiceFitScoringRun({
       company,
-      origin: PUBLIC_ORIGIN || `http://localhost:${PORT}`,
+      origin: scheduledKindlingOrigin(),
       userPubkey: "scheduler",
       userNpub: "scheduler",
       reason: `Scheduled scoring: ${String(company.name ?? company.id)} against active Adapt service offerings`,
@@ -6326,12 +6702,245 @@ async function runAutomatedScoringLoop() {
   return startedRuns.length ? { count: startedRuns.length, runs: startedRuns } : null;
 }
 
+function ensureQueuedEnrichmentRequest(input: {
+  queueId: string;
+  companyId: string;
+  requestKind: string;
+  reason: string;
+  now: number;
+}) {
+  const existing = db.query(`
+    SELECT *
+    FROM enrichment_requests
+    WHERE COALESCE(NULLIF(work_queue_id, ''), id) = ?1
+    ORDER BY created_at DESC
+    LIMIT 1
+  `).get(input.queueId) as Record<string, unknown> | null;
+  if (existing) {
+    db.query(`
+      UPDATE enrichment_requests
+      SET status = 'queued',
+          summary = ?1,
+          updated_at = ?2
+      WHERE id = ?3
+    `).run(input.reason, input.now, String(existing.id));
+    return String(existing.id);
+  }
+  db.query(`
+    INSERT INTO enrichment_requests(id, company_id, work_queue_id, status, request_kind, summary, created_at, updated_at)
+    VALUES (?1, ?2, ?1, 'queued', ?3, ?4, ?5, ?5)
+  `).run(input.queueId, input.companyId, input.requestKind, input.reason, input.now);
+  return input.queueId;
+}
+
+async function runAutomatedEnrichmentLoop() {
+  const now = Date.now();
+  const settings = getSchedulerSettings();
+  if (!settings.enabled || !settings.enrichmentEnabled) return null;
+  if (recentSchedulerLaunch("enrichment", "enrich_company", Math.max(0, Number(settings.cooldowns.enrichmentMs ?? 0)), now)) {
+    return null;
+  }
+  const concurrency = roleConcurrencyState("enrich_company", settings);
+  if (concurrency.blockedReason) return null;
+  const selection = selectEnrichmentDryRun(settings);
+  if (!selection.item) return null;
+  const item = selection.item;
+  const decision = {
+    dryRun: false,
+    workAvailable: true,
+    action: "enrichment",
+    roleKey: "enrich_company",
+    item,
+    reason: selection.reason,
+  };
+  const company = objectRecord(item.company);
+  const companyId = String(company.id ?? "");
+  if (!companyId) return null;
+  const queueItem = objectRecord(item.queueItem);
+  const queueId = queueItem.id
+    ? String(queueItem.id)
+    : createCompanyEnrichmentQueueItem({
+      companyId,
+      requestKind: "scheduled",
+      reason: `Scheduled enrichment requested for ${String(company.name ?? companyId)}`,
+      priority: 20,
+      context: { source: "automated_enrichment_loop" },
+      now,
+    });
+  const requestId = ensureQueuedEnrichmentRequest({
+    queueId,
+    companyId,
+    requestKind: "scheduled",
+    reason: `Scheduled enrichment requested for ${String(company.name ?? companyId)}`,
+    now,
+  });
+  db.query(`
+    UPDATE work_queue
+    SET status = 'queued',
+        error = '',
+        next_run_after_at = NULL,
+        locked_by_run_id = NULL,
+        updated_at = ?1
+    WHERE id = ?2
+      AND kind = 'company_enrichment'
+  `).run(now, queueId);
+  db.query("UPDATE companies SET enrichment_status = 'queued', updated_at = ?1 WHERE id = ?2 AND enrichment_status IN ('not_started', 'failed')")
+    .run(now, companyId);
+
+  const webhookToken = crypto.randomUUID().replaceAll("-", "");
+  const origin = scheduledKindlingOrigin();
+  const triggerRequest = buildKindlingTriggerRequest({
+    roleKey: "enrich_company",
+    localRequestId: requestId,
+    message: `Enrich ${String(company.name ?? companyId)}`,
+    context: {
+      companyId,
+      companyName: String(company.name ?? ""),
+      website: String(company.website ?? ""),
+      industry: String(company.industry ?? ""),
+      location: String(company.location ?? ""),
+      scheduler: { action: "enrichment", roleKey: "enrich_company" },
+    },
+    webhookUrl: `${origin}/api/kindling/pipeline-webhook`,
+    webhookToken,
+    userPubkey: "scheduler",
+    userNpub: "scheduler",
+  });
+  const runId = createKindlingRun({ roleKey: "enrich_company", localRequestId: requestId, triggerRequest, status: "queued" });
+  attachEnrichmentQueueToRun([queueId], runId, now);
+  const schedulerRun = createSchedulerRun({
+    runType: "scheduled",
+    status: "running",
+    selectedAction: "enrichment",
+    roleKey: "enrich_company",
+    localRequestId: requestId,
+    lockKey: "enrichment",
+    context: {
+      dryRun: false,
+      automated: true,
+      selectedEnrichmentWork: item,
+    },
+    result: {
+      dryRun: false,
+      automated: true,
+      decision,
+      enrichmentRun: { requestId, queueId },
+    },
+    startedAt: now,
+    now,
+  });
+
+  try {
+    const start = await startKindlingRun(runId);
+    return { schedulerRunId: schedulerRun.id, runId, requestId, queueId, companyId, start };
+  } catch (error) {
+    updateSchedulerRunForRequest({
+      requestId,
+      roleKey: "enrich_company",
+      status: "failed",
+      error: error instanceof Error ? error.message : String(error),
+      finish: true,
+      releaseLock: false,
+    });
+    return null;
+  }
+}
+
+async function runAutomatedOutreachLoop() {
+  const now = Date.now();
+  const settings = getSchedulerSettings();
+  if (!settings.enabled || !settings.outreachEnabled) return null;
+  if (recentSchedulerLaunch("outreach", "draft_outreach", Math.max(0, Number(settings.cooldowns.outreachMs ?? 0)), now)) {
+    return null;
+  }
+  const concurrency = roleConcurrencyState("draft_outreach", settings);
+  if (concurrency.blockedReason) return null;
+  const selection = selectOutreachDryRun(settings);
+  if (!selection.item) return null;
+  const company = objectRecord(objectRecord(selection.item).company);
+  const companyId = String(company.id ?? "");
+  if (!companyId) return null;
+
+  const requestId = crypto.randomUUID();
+  const webhookToken = crypto.randomUUID().replaceAll("-", "");
+  const origin = scheduledKindlingOrigin();
+  const triggerRequest = buildKindlingTriggerRequest({
+    roleKey: "draft_outreach",
+    localRequestId: requestId,
+    message: `Draft outreach for ${String(company.name ?? companyId)}`,
+    context: {
+      companyId,
+      companyName: String(company.name ?? ""),
+      company,
+      activeProfileVersion: getCurrentMarketProfile()?.version ?? null,
+      profile: getCurrentMarketProfile(),
+      scheduler: { action: "outreach", roleKey: "draft_outreach" },
+    },
+    webhookUrl: `${origin}/api/kindling/pipeline-webhook`,
+    webhookToken,
+    userPubkey: "scheduler",
+    userNpub: "scheduler",
+  });
+  const runId = createKindlingRun({ roleKey: "draft_outreach", localRequestId: requestId, triggerRequest, status: "queued" });
+  const schedulerRun = createSchedulerRun({
+    runType: "scheduled",
+    status: "running",
+    selectedAction: "outreach",
+    roleKey: "draft_outreach",
+    localRequestId: requestId,
+    lockKey: "outreach",
+    context: {
+      dryRun: false,
+      automated: true,
+      selectedOutreachWork: selection.item,
+    },
+    result: {
+      dryRun: false,
+      automated: true,
+      decision: {
+        dryRun: false,
+        workAvailable: true,
+        action: "outreach",
+        roleKey: "draft_outreach",
+        item: selection.item,
+        reason: selection.reason,
+      },
+    },
+    startedAt: now,
+    now,
+  });
+
+  try {
+    const start = await startKindlingRun(runId);
+    return { schedulerRunId: schedulerRun.id, runId, requestId, companyId, start };
+  } catch (error) {
+    updateSchedulerRunForRequest({
+      requestId,
+      roleKey: "draft_outreach",
+      status: "failed",
+      error: error instanceof Error ? error.message : String(error),
+      finish: true,
+      releaseLock: false,
+    });
+    return null;
+  }
+}
+
 export async function runAutomatedProspectingLoop() {
+  await reconcileActiveKindlingRuns();
+  reconcileSchedulerState();
+  const results: Array<Record<string, unknown>> = [];
   const acquisition = await runAutomatedAcquisitionLoop();
-  if (acquisition) return { action: "acquisition", ...acquisition };
+  if (acquisition) results.push({ action: "acquisition", ...acquisition });
+  const enrichment = await runAutomatedEnrichmentLoop();
+  if (enrichment) results.push({ action: "enrichment", ...enrichment });
   const scoring = await runAutomatedScoringLoop();
-  if (scoring) return { action: "scoring", ...scoring };
-  return null;
+  if (scoring) results.push({ action: "scoring", ...scoring });
+  const outreach = await runAutomatedOutreachLoop();
+  if (outreach) results.push({ action: "outreach", ...outreach });
+  if (!results.length) return null;
+  if (results.length === 1) return results[0];
+  return { action: "multi", count: results.length, results };
 }
 
 export async function handleApi(req: Request, url: URL): Promise<Response | null> {
@@ -7663,14 +8272,21 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     const session = requireSession(req);
     if (!session) return json({ error: "unauthorized" }, 401);
     const { limit, offset } = pagingFromParams(url.searchParams);
-    const detail = getOrBuildTopTargetDetail(limit, offset);
+    const hasOutreachDraft = ["1", "true", "yes"].includes(String(url.searchParams.get("hasOutreachDraft") || "").toLowerCase());
+    const baseDetail = getOrBuildTopTargetDetail(limit, 0);
+    const rebuilt = Boolean(baseDetail.rebuilt);
+    const detail = hasOutreachDraft
+      ? getTopTargetRunDetail(baseDetail.run.id, limit, offset, { hasOutreachDraft })!
+      : offset === 0
+        ? baseDetail
+        : getTopTargetRunDetail(baseDetail.run.id, limit, offset)!;
     return json({
       targetListRunId: detail.run.id,
       source: "top_targets",
-      rebuilt: detail.rebuilt,
+      rebuilt,
       run: detail.run,
       targets: detail.items,
-      total: detail.run.rankedCount,
+      total: detail.total ?? detail.run.rankedCount,
       returned: detail.items.length,
       limit: detail.limit ?? limit,
       offset: detail.offset ?? offset,

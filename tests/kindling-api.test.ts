@@ -1091,6 +1091,10 @@ describe("Kindling API contracts", () => {
           ?1
         )
     `).run(now);
+    db.query(`
+      INSERT INTO outreach_drafts(id, company_id, pitch_text, status, source_run_id, created_at, updated_at)
+      VALUES ('draft-top-high', 'top-high', 'Drafted outreach for Top High Co', 'drafted', 'run-high', ?1, ?1)
+    `).run(now);
 
     const rebuilt = await api("/api/kindling/top-targets/rebuild", {
       method: "POST",
@@ -1127,6 +1131,21 @@ describe("Kindling API contracts", () => {
       targetListRunId: rebuilt.payload.targetListRunId,
     });
     expect(latest.payload.targets).toHaveLength(2);
+    expect(latest.payload.targets[0]).toMatchObject({
+      companyId: "top-high",
+      hasOutreachDraft: true,
+      outreachDraftCount: 1,
+    });
+
+    const draftedOnly = await api("/api/kindling/top-targets?hasOutreachDraft=true");
+    expect(draftedOnly.payload).toMatchObject({
+      total: 1,
+      returned: 1,
+    });
+    expect(draftedOnly.payload.targets[0]).toMatchObject({
+      companyId: "top-high",
+      hasOutreachDraft: true,
+    });
 
     const today = await api("/api/kindling/todays-targets");
     expect(today.payload).toMatchObject({
@@ -1763,8 +1782,9 @@ describe("Kindling API contracts", () => {
       targetPoolSize: 10000,
       enrichedFloor: 50,
       topTargetCount: 100,
+      outreachTargetCount: 100,
     });
-    expect(initial.payload.settings.perRoleConcurrency.score_company_service_fit).toBe(20);
+    expect(initial.payload.settings.perRoleConcurrency.score_company_service_fit).toBe(3);
 
     const patched = await api("/api/kindling/scheduler-settings", {
       method: "PATCH",
@@ -1777,6 +1797,7 @@ describe("Kindling API contracts", () => {
         targetPoolSize: 12000,
         enrichedFloor: 75,
         topTargetCount: 80,
+        outreachTargetCount: 55,
         perRoleConcurrency: {
           scan_target_list: 2,
           enrich_company: 3,
@@ -1797,6 +1818,7 @@ describe("Kindling API contracts", () => {
       targetPoolSize: 12000,
       enrichedFloor: 75,
       topTargetCount: 80,
+      outreachTargetCount: 55,
       perRoleConcurrency: {
         scan_target_list: 2,
         enrich_company: 3,
@@ -1813,13 +1835,15 @@ describe("Kindling API contracts", () => {
       targetPoolSize: 12000,
       enrichedFloor: 75,
       topTargetCount: 80,
+      outreachTargetCount: 55,
     });
-    const row = db.query("SELECT target_pool_size, enriched_floor, top_target_count FROM scheduler_settings WHERE id = 'default'")
+    const row = db.query("SELECT target_pool_size, enriched_floor, top_target_count, outreach_target_count FROM scheduler_settings WHERE id = 'default'")
       .get() as Record<string, unknown>;
     expect(row).toMatchObject({
       target_pool_size: 12000,
       enriched_floor: 75,
       top_target_count: 80,
+      outreach_target_count: 55,
     });
   });
 
@@ -1864,6 +1888,50 @@ describe("Kindling API contracts", () => {
       serviceFitAssessments: 1,
       outreachReady: 0,
     });
+  });
+
+  test("scheduler scoring target ignores initial target rankings", async () => {
+    const now = Date.now();
+    db.query("INSERT INTO market_profiles(id, name, current_version_id, created_at, updated_at) VALUES ('ranked-profile', 'Adapt profile', 'ranked-profile-version', ?1, ?1)")
+      .run(now);
+    db.query(`
+      INSERT INTO market_profile_versions(
+        id, profile_id, version_number, structured_json, summary, rationale, source_references_json, created_at
+      )
+      VALUES ('ranked-profile-version', 'ranked-profile', 1, '{}', 'Adapt services', 'Scoring test profile', '[]', ?1)
+    `).run(now);
+    db.query(`
+      INSERT INTO service_offerings(id, market_profile_version_id, key, name, variant_key, structured_json, status, created_at, updated_at)
+      VALUES ('ranked-offering', 'ranked-profile-version', 'advisory', 'Advisory', 'base', '{}', 'active', ?1, ?1)
+    `).run(now);
+    db.query(`
+      INSERT INTO companies(id, name, location, industry, website, data_ring, duplicate_status, enrichment_status, confidence, profile_json, created_at, updated_at)
+      VALUES ('ranked-only-company', 'Ranked Only Co', 'Perth', 'Advisory', 'https://ranked.example', 'ranked', 'unique', 'complete', 0.9, '{}', ?1, ?1)
+    `).run(now);
+    db.query(`
+      INSERT INTO target_rankings(id, company_id, rank, reason, score_json, created_at)
+      VALUES ('ranked-only-ranking', 'ranked-only-company', 1, 'Initial target ranking only', '{}', ?1)
+    `).run(now);
+    await api("/api/kindling/scheduler-settings", {
+      method: "PATCH",
+      body: {
+        enabled: true,
+        acquisitionEnabled: false,
+        enrichmentEnabled: false,
+        scoringEnabled: true,
+        outreachEnabled: false,
+        topTargetCount: 1,
+      },
+    });
+
+    const preview = await api("/api/kindling/scheduler/preview");
+    expect(preview.payload.decision).toMatchObject({
+      workAvailable: true,
+      action: "scoring",
+      roleKey: "score_company_service_fit",
+    });
+    expect(preview.payload.decision.reason).toContain("0/1");
+    expect(preview.payload.decision.item.company.id).toBe("ranked-only-company");
   });
 
   test("records scheduler run decisions and prevents concurrent active leases", async () => {
@@ -2312,7 +2380,7 @@ describe("Kindling API contracts", () => {
     });
     expect(started.payload.acquisition).toMatchObject({
       coverageSliceId: "scheduler-acquisition-slice",
-      targetCount: 1000,
+      targetCount: 15,
       correlation: {
         schedulerRunId: started.payload.run.id,
         acquisitionJobId: started.payload.jobId,
@@ -2326,7 +2394,7 @@ describe("Kindling API contracts", () => {
       requestId: started.payload.jobId,
       industry: "Accounting, tax, bookkeeping, and business advisory",
       location: "Perth",
-      targetCount: 1000,
+      targetCount: 15,
       localContext: {
         scheduler: {
           action: "acquisition",
@@ -2360,7 +2428,7 @@ describe("Kindling API contracts", () => {
     });
     const coverage = db.query("SELECT target_counts_json FROM coverage_slices WHERE id = 'scheduler-acquisition-slice'")
       .get() as Record<string, string>;
-    expect(JSON.parse(coverage.target_counts_json).found).toBe(1000);
+    expect(JSON.parse(coverage.target_counts_json).found).toBe(140);
 
     const counts = db.query(`
       SELECT
@@ -2377,7 +2445,7 @@ describe("Kindling API contracts", () => {
     });
   });
 
-  test("scheduled segment-default acquisition requests one thousand prospects and clears stale active scan blockers", async () => {
+  test("scheduled segment-default acquisition requests a small steady batch and clears stale active scan blockers", async () => {
     const now = Date.now();
     await api("/api/kindling/scheduler-settings", {
       method: "PATCH",
@@ -2429,15 +2497,15 @@ describe("Kindling API contracts", () => {
         selection: { source: "segment_default" },
       },
     });
-    expect(started.payload.acquisition.targetCount).toBe(1000);
-    expect(started.payload.triggerRequest.body.input.targetCount).toBe(1000);
+    expect(started.payload.acquisition.targetCount).toBe(50);
+    expect(started.payload.triggerRequest.body.input.targetCount).toBe(50);
     const coverage = db.query("SELECT target_counts_json FROM coverage_slices WHERE id = ?1")
       .get(String(started.payload.acquisition.coverageSliceId)) as Record<string, string>;
-    expect(JSON.parse(coverage.target_counts_json).found).toBe(1000);
+    expect(JSON.parse(coverage.target_counts_json).found).toBe(140);
     const staleRun = db.query("SELECT status, error FROM kindling_pipeline_runs WHERE id = 'stale-scan-run'")
       .get() as Record<string, string>;
     expect(staleRun.status).toBe("failed");
-    expect(staleRun.error).toContain("Timed out after 6 hours");
+    expect(staleRun.error).toContain("Timed out after 30 minutes without discovery results");
   });
 
   test("run-once directly triggers one scheduled acquisition Autopilot run", async () => {
@@ -2479,7 +2547,7 @@ describe("Kindling API contracts", () => {
         requestId: started.payload.jobId,
         industry: "Accounting, tax, bookkeeping, and business advisory",
         location: "Perth",
-        targetCount: 1000,
+        targetCount: 15,
         localContext: {
           scheduler: {
             action: "acquisition",
@@ -2525,7 +2593,7 @@ describe("Kindling API contracts", () => {
       expect(started.payload.run.autopilotRunId).toBe("remote-scheduler-direct-run");
       expect(started.payload.acquisition).toMatchObject({
         coverageSliceId: "scheduler-direct-acquisition-slice",
-        targetCount: 1000,
+        targetCount: 15,
         correlation: {
           schedulerRunId: started.payload.run.id,
           acquisitionJobId: started.payload.jobId,
@@ -2614,10 +2682,10 @@ describe("Kindling API contracts", () => {
       expect(started).toMatchObject({
         action: "acquisition",
         acquisition: {
-          coverageSliceId: "scheduler-auto-acquisition-slice",
-          targetCount: 1000,
+          targetCount: 50,
         },
       });
+      expect(String((started as Record<string, any>).acquisition.coverageSliceId ?? "")).not.toBe("scheduler-auto-acquisition-slice");
       expect(fetchCalls).toHaveLength(1);
       expect(fetchCalls[0]?.url).toBe("http://127.0.0.1:9/api/pipelines/triggers/http/kindling-scan-target-list");
       const triggerInput = fetchCalls[0]?.body.input as Record<string, unknown>;
@@ -2625,35 +2693,38 @@ describe("Kindling API contracts", () => {
         source: "kindling-wapp",
         pipelineRole: "scan_target_list",
         roleKey: "scan_target_list",
-        industry: "Accounting, tax, bookkeeping, and business advisory",
-        location: "Perth",
-        targetCount: 1000,
+        industry: "Financial planning and wealth advisory",
+        location: "Perth, WA",
+        targetCount: 50,
         userNpub: "scheduler",
         localContext: {
           scheduler: {
             action: "acquisition",
-            correlation: {
-              coverageSliceId: "scheduler-auto-acquisition-slice",
-              roleKey: "scan_target_list",
+            selectedWork: {
+              segmentId: "adapt-tier-1-financial-planning-wealth",
+              selection: {
+                source: "segment_default",
+                preferExploration: true,
+                explorationRank: 0,
+              },
             },
           },
           acquisition: {
-            coverageSlice: {
-              id: "scheduler-auto-acquisition-slice",
-              sourceFamily: "directory",
-              strategyType: "directory",
+            segment: {
+              id: "adapt-tier-1-financial-planning-wealth",
             },
           },
           writeApi: {
-            url: expect.stringContaining("/api/kindling/pipeline-write/target-scan"),
             authHeader: "x-kindling-pipeline-token",
           },
         },
         webhook: {
-          url: expect.stringContaining("/api/kindling/pipeline-webhook"),
           authHeader: "x-kindling-pipeline-token",
         },
       });
+      const localContext = triggerInput.localContext as Record<string, unknown>;
+      expect(String((localContext.writeApi as Record<string, unknown>).url)).toContain("/api/kindling/pipeline-write/target-scan");
+      expect(String((triggerInput.webhook as Record<string, unknown>).url)).toContain("/api/kindling/pipeline-webhook");
       const schedulerRun = db.query(`
         SELECT status, selected_action, role_key, autopilot_run_id, context_json
         FROM scheduler_runs
@@ -2668,8 +2739,15 @@ describe("Kindling API contracts", () => {
       expect(JSON.parse(String(schedulerRun.context_json))).toMatchObject({
         automated: true,
       });
-      expect(await runAutomatedProspectingLoop()).toBeNull();
-      expect(fetchCalls).toHaveLength(1);
+      const secondStarted = await runAutomatedProspectingLoop();
+      expect(secondStarted).toMatchObject({
+        action: "acquisition",
+        acquisition: {
+          targetCount: 50,
+        },
+      });
+      expect(fetchCalls).toHaveLength(3);
+      expect(fetchCalls[1]?.url).toContain("/api/pipelines/runs/remote-scheduler-auto-acquisition-run");
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -2785,7 +2863,7 @@ describe("Kindling API contracts", () => {
     }
   });
 
-  test("automated loop dispatches scoring up to score role concurrency while acquisition is disabled", async () => {
+  test("automated loop dispatches one scoring run per pass while acquisition is disabled", async () => {
     await api("/api/settings", {
       method: "PUT",
       body: {
@@ -2839,18 +2917,16 @@ describe("Kindling API contracts", () => {
       const started = await runAutomatedProspectingLoop();
       expect(started).toMatchObject({
         action: "scoring",
-        count: 3,
+        count: 1,
       });
-      expect(fetchCalls).toHaveLength(3);
+      expect(fetchCalls).toHaveLength(1);
       expect(fetchCalls.map((call) => (call.body.input as Record<string, unknown>).companyId)).toEqual([
         "batch-score-company-1",
-        "batch-score-company-2",
-        "batch-score-company-3",
       ]);
       expect(db.query("SELECT COUNT(*) AS count FROM kindling_pipeline_runs WHERE role_key = 'score_company_service_fit' AND status = 'running'").get())
-        .toEqual({ count: 3 });
+        .toEqual({ count: 1 });
       expect(db.query("SELECT COUNT(*) AS count FROM work_queue WHERE kind = 'service_fit_assessment' AND status = 'running'").get())
-        .toEqual({ count: 3 });
+        .toEqual({ count: 1 });
     } finally {
       globalThis.fetch = originalFetch;
     }
@@ -3148,7 +3224,43 @@ describe("Kindling API contracts", () => {
     });
     db.query(`
       INSERT INTO companies(id, name, location, industry, website, data_ring, duplicate_status, enrichment_status, confidence, profile_json, created_at, updated_at)
-      VALUES ('scheduler-outreach-company', 'Scheduler Outreach Co', 'Perth', 'Accounting', 'https://outreach.example', 'scored', 'unique', 'complete', 0.95, '{}', 30, 30)
+      VALUES
+        ('scheduler-outreach-drafted-company', 'Scheduler Outreach Drafted Co', 'Perth', 'Accounting', 'https://outreach-drafted.example', 'scored', 'unique', 'complete', 0.99, '{}', 30, 30),
+        ('scheduler-outreach-company', 'Scheduler Outreach Co', 'Perth', 'Accounting', 'https://outreach.example', 'scored', 'unique', 'complete', 0.95, '{}', 31, 31)
+    `).run();
+    db.query(`
+      INSERT INTO kindling_pipeline_runs(id, role_key, local_request_id, status, webhook_token, trigger_payload_json, result_payload_json, created_at, updated_at)
+      VALUES
+        ('scheduler-outreach-score-run-1', 'score_company_service_fit', 'scheduler-outreach-score-request-1', 'complete', 'scheduler-outreach-score-token-1', '{}', '{}', 30, 30),
+        ('scheduler-outreach-score-run-2', 'score_company_service_fit', 'scheduler-outreach-score-request-2', 'complete', 'scheduler-outreach-score-token-2', '{}', '{}', 31, 31)
+    `).run();
+    db.query(`
+      INSERT INTO service_fit_assessments(
+        id, company_id, service_offering_id, market_profile_version_id, score, band, confidence,
+        drivers_json, fit_explanation, evidence_json, caveats_json, recommended_action,
+        source_run_id, assessment_json, created_at, updated_at
+      )
+      VALUES
+        ('scheduler-outreach-assessment-1', 'scheduler-outreach-drafted-company', 'scheduler-offering', 'scheduler-profile-version', 90, 'high', 0.9, '[]', 'Drafted top fit.', '[]', '[]', 'Review outreach', 'scheduler-outreach-score-run-1', '{}', 30, 30),
+        ('scheduler-outreach-assessment-2', 'scheduler-outreach-company', 'scheduler-offering', 'scheduler-profile-version', 88, 'high', 0.88, '[]', 'Undrafted next fit.', '[]', '[]', 'Review outreach', 'scheduler-outreach-score-run-2', '{}', 31, 31)
+    `).run();
+    db.query(`
+      INSERT INTO target_list_runs(id, status, reason, candidate_count, ranked_count, score_version, parameters_json, created_by, started_at, completed_at, created_at, updated_at)
+      VALUES ('scheduler-top-target-run', 'complete', 'Scheduler top target test', 2, 2, 'top-target-v1', '{}', 'test', 40, 40, 40, 40)
+    `).run();
+    db.query(`
+      INSERT INTO target_list_items(
+        id, target_list_run_id, company_id, service_fit_assessment_id, market_profile_version_id,
+        rank, score, reason, best_offering_id, best_offering_key, best_offering_name, best_variant_key,
+        why_now, evidence_quality, confidence, caveats_json, next_action, flags_json, score_json, created_at
+      )
+      VALUES
+        ('scheduler-target-drafted', 'scheduler-top-target-run', 'scheduler-outreach-drafted-company', 'scheduler-outreach-assessment-1', 'scheduler-profile-version', 1, 92, 'Already drafted top target', 'scheduler-offering', 'advisory', 'Advisory', 'base', 'Strong evidence', 0.9, 0.9, '[]', 'Review outreach', '[]', '{}', 40),
+        ('scheduler-target-undrafted', 'scheduler-top-target-run', 'scheduler-outreach-company', 'scheduler-outreach-assessment-2', 'scheduler-profile-version', 2, 88, 'First undrafted top target', 'scheduler-offering', 'advisory', 'Advisory', 'base', 'Strong evidence', 0.86, 0.88, '[]', 'Review outreach', '[]', '{}', 40)
+    `).run();
+    db.query(`
+      INSERT INTO outreach_drafts(id, company_id, pitch_text, status, source_run_id, created_at, updated_at)
+      VALUES ('scheduler-existing-draft', 'scheduler-outreach-drafted-company', 'Existing draft', 'drafted', 'scheduler-outreach-score-run-1', 41, 41)
     `).run();
     const outreach = await api("/api/kindling/scheduler/run-once?dryRun=true", { method: "POST" });
     expect(outreach.payload.decision).toMatchObject({
@@ -3158,6 +3270,10 @@ describe("Kindling API contracts", () => {
       item: {
         kind: "company",
         company: { id: "scheduler-outreach-company" },
+        ranking: {
+          rank: 2,
+          source: "top_targets",
+        },
       },
     });
     const workRows = db.query(`
@@ -3168,10 +3284,10 @@ describe("Kindling API contracts", () => {
         (SELECT COUNT(*) FROM outreach_drafts) AS outreach_drafts
     `).get() as Record<string, number>;
     expect(workRows).toEqual({
-      pipeline_runs: 0,
+      pipeline_runs: 2,
       enrichment_requests: 0,
       target_rankings: 0,
-      outreach_drafts: 0,
+      outreach_drafts: 1,
     });
   });
 
@@ -3368,7 +3484,8 @@ describe("Kindling API contracts", () => {
       expect(String(url)).toContain("/api/pipelines/triggers/http/kindling-enrich-industry-segment");
       const body = JSON.parse(String(init?.body ?? "{}"));
       expect(body.input.pipelineRole).toBe("enrich_industry_segment");
-      expect(body.input.localContext.companies).toHaveLength(2);
+      expect(body.input.batchLoop).toEqual({ iteration: 1, index: 0, total: 1 });
+      expect(body.input.localContext.companies).toHaveLength(1);
       return Response.json({ run: { id: "remote-auto-enrich-run" } });
     }) as typeof fetch;
     try {
@@ -3381,7 +3498,7 @@ describe("Kindling API contracts", () => {
         status: "started",
         industry: "Bookkeeping",
         autopilotRunId: "remote-auto-enrich-run",
-        batchSize: 2,
+        batchSize: 1,
         dmSent: false,
       });
       const rows = db.query(`
@@ -3392,7 +3509,7 @@ describe("Kindling API contracts", () => {
         WHERE wq.target_id LIKE 'auto-enrich-%'
         ORDER BY wq.target_id
       `).all() as Array<Record<string, unknown>>;
-      expect(rows).toHaveLength(2);
+      expect(rows).toHaveLength(1);
       for (const row of rows) {
         expect(row).toMatchObject({
           status: "running",
@@ -3408,7 +3525,7 @@ describe("Kindling API contracts", () => {
       const companies = db.query("SELECT id, enrichment_status FROM companies WHERE id LIKE 'auto-enrich-%' ORDER BY id").all();
       expect(companies).toEqual([
         { id: "auto-enrich-1", enrichment_status: "running" },
-        { id: "auto-enrich-2", enrichment_status: "running" },
+        { id: "auto-enrich-2", enrichment_status: "failed" },
       ]);
     } finally {
       globalThis.fetch = originalFetch;
@@ -3452,6 +3569,7 @@ describe("Kindling API contracts", () => {
   });
 
   test("reconciles errored Autopilot scan runs as partial failures when data was written", async () => {
+    process.env.KINDLING_AUTOPILOT_NSEC = Buffer.from(secretKey).toString("hex");
     db.query(`
       INSERT INTO discovery_jobs(id, industry, location, target_count, status, company_count, created_at, updated_at)
       VALUES ('scan-error', 'HVAC', 'Perth', 100, 'running', 3, 1, 1)
@@ -3467,8 +3585,9 @@ describe("Kindling API contracts", () => {
     db.query("UPDATE kindling_pipeline_runs SET autopilot_run_id = 'remote-error-run' WHERE id = 'run-scan-error'").run();
 
     const originalFetch = globalThis.fetch;
-    globalThis.fetch = (async (url: string | URL | Request) => {
+    globalThis.fetch = (async (url: string | URL | Request, init?: RequestInit) => {
       expect(String(url)).toContain("/api/pipelines/runs/remote-error-run");
+      expect(String((init?.headers as Record<string, string> | undefined)?.authorization ?? "")).toStartWith("Nostr ");
       return Response.json({ run: { id: "remote-error-run", status: "error", error: "Request Entity Too Large" } });
     }) as typeof fetch;
     try {
@@ -3482,6 +3601,7 @@ describe("Kindling API contracts", () => {
       expect(job.summary).toContain("Request Entity Too Large");
     } finally {
       globalThis.fetch = originalFetch;
+      delete process.env.KINDLING_AUTOPILOT_NSEC;
     }
   });
 

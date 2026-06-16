@@ -1,5 +1,10 @@
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+
+const APP_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
+
 export const PORT = Number(process.env.PORT || 3000);
-export const DB_PATH = process.env.CHAT_WAPP_DB_PATH || "data/chat-wapp.sqlite";
+export const DB_PATH = process.env.CHAT_WAPP_DB_PATH || join(APP_ROOT, "data/chat-wapp.sqlite");
 export const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const CHALLENGE_TTL_MS = 5 * 60 * 1000;
 export const PIPELINE_NAME = process.env.CHAT_WAPP_PIPELINE_NAME || "chat-wapp-agent-response";

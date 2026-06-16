@@ -330,9 +330,14 @@ async function loadKindlingScreen() {
   const targetOffset = Number(state.kindlingPaging.targets || 0);
   const industryOffset = Number(state.kindlingPaging.industries || 0);
   const workQueueOffset = Number(state.kindlingPaging.workQueue || 0);
+  const targetQuery = new URLSearchParams({
+    limit: String(targetLimit),
+    offset: String(targetOffset),
+  });
+  if (state.kindlingFilters.hasOutreachDraft === "yes") targetQuery.set("hasOutreachDraft", "true");
   const [summary, targets] = await Promise.all([
     api("/api/kindling/summary?compact=1"),
-    state.activeKindlingView === "targets" || state.activeKindlingView === "match" ? api(`/api/kindling/top-targets?limit=${targetLimit}&offset=${targetOffset}`) : Promise.resolve({ targets: [], total: 0, returned: 0, limit: targetLimit, offset: targetOffset }),
+    state.activeKindlingView === "targets" || state.activeKindlingView === "match" ? api(`/api/kindling/top-targets?${targetQuery}`) : Promise.resolve({ targets: [], total: 0, returned: 0, limit: targetLimit, offset: targetOffset }),
   ]);
   const needsResearch = state.activeKindlingView === "research";
   const needsScoring = state.activeKindlingView === "targets" || state.activeKindlingView === "match";
@@ -596,6 +601,7 @@ function renderKindlingView(data, company, canEdit) {
           </div>
           <button type="button" data-action="rebuild-top-targets" ${canEdit ? "" : "disabled"}>Rebuild</button>
         </div>
+        ${renderScoredFilters()}
         ${renderTopTargets(data.topTargets || data.targets || [])}
         ${renderPager(data.topTargetList, "targets")}
       </div>
@@ -718,6 +724,7 @@ function renderResearchDeskView(data, canEdit) {
           <label><span>Target pool size</span><input id="schedulerTargetPoolSize" type="number" min="1" step="1" value="${Number(settings.targetPoolSize || 0)}" /></label>
           <label><span>Enriched floor</span><input id="schedulerEnrichedFloor" type="number" min="1" step="1" value="${Number(settings.enrichedFloor || 0)}" /></label>
           <label><span>Top target count</span><input id="schedulerTopTargetCount" type="number" min="1" step="1" value="${Number(settings.topTargetCount || 0)}" /></label>
+          <label><span>Outreach target</span><input id="schedulerOutreachTargetCount" type="number" min="1" step="1" value="${Number(settings.outreachTargetCount || settings.topTargetCount || 0)}" /></label>
         </div>
         <label><span>Per-role concurrency JSON</span><textarea id="schedulerConcurrency" rows="5">${escapeHtml(JSON.stringify(settings.perRoleConcurrency || {}, null, 2))}</textarea></label>
         <label><span>Cooldowns JSON</span><textarea id="schedulerCooldowns" rows="5">${escapeHtml(JSON.stringify(settings.cooldowns || {}, null, 2))}</textarea></label>
@@ -937,6 +944,7 @@ function renderTopTargets(targets) {
           <span class="targetRank">#${Number(target.rank || 0)} - ${Math.round(score)}</span>
           <strong>${escapeHtml(name)}</strong>
           <span>${escapeHtml(offering)} - confidence ${Math.round(confidence * 100)}%</span>
+          ${target.hasOutreachDraft ? `<small>${Number(target.outreachDraftCount || 1)} outreach draft${Number(target.outreachDraftCount || 1) === 1 ? "" : "s"} ready</small>` : ""}
           <small>${escapeHtml(target.reason || target.whyNow || "No reasoning captured yet.")}</small>
           ${target.nextAction ? `<small>Next: ${escapeHtml(target.nextAction)}</small>` : ""}
           ${caveats.length ? `<small>Caveats: ${escapeHtml(caveats.slice(0, 2).join("; "))}</small>` : ""}
@@ -944,6 +952,22 @@ function renderTopTargets(targets) {
       `;
     }).join("")}
   </div>`;
+}
+
+function renderScoredFilters() {
+  const current = state.kindlingFilters.hasOutreachDraft || "";
+  const option = (value, label) => `<option value="${value}" ${current === value ? "selected" : ""}>${label}</option>`;
+  return `
+    <form class="companyFilters scoredFilters" data-form="scored-filters">
+      <select id="filterHasOutreachDraft">
+        ${option("", "All scored companies")}
+        ${option("yes", "Drafted outreach only")}
+      </select>
+      <div class="filterActions">
+        <button type="submit">Apply</button>
+      </div>
+    </form>
+  `;
 }
 
 function selectedTarget(data = state.kindling || {}) {
@@ -1664,6 +1688,16 @@ async function handleKindlingSubmit(event) {
       await loadKindlingScreen();
       setKindlingStatus("Company filters applied");
     }
+    if (form.dataset.form === "scored-filters") {
+      state.kindlingFilters = {
+        ...state.kindlingFilters,
+        hasOutreachDraft: $("filterHasOutreachDraft").value,
+      };
+      state.kindlingPaging.targets = 0;
+      saveKindlingFilters();
+      await loadKindlingScreen();
+      setKindlingStatus(state.kindlingFilters.hasOutreachDraft === "yes" ? "Showing drafted outreach" : "Showing all scored companies");
+    }
     if (form.dataset.form === "scheduler-settings") {
       setKindlingStatus("Saving scheduler settings");
       await api("/api/kindling/scheduler-settings", {
@@ -1677,6 +1711,7 @@ async function handleKindlingSubmit(event) {
           targetPoolSize: Number($("schedulerTargetPoolSize").value || 0),
           enrichedFloor: Number($("schedulerEnrichedFloor").value || 0),
           topTargetCount: Number($("schedulerTopTargetCount").value || 0),
+          outreachTargetCount: Number($("schedulerOutreachTargetCount").value || 0),
           perRoleConcurrency: JSON.parse($("schedulerConcurrency").value || "{}"),
           cooldowns: JSON.parse($("schedulerCooldowns").value || "{}"),
         }),
