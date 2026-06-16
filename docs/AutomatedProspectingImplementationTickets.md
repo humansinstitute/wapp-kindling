@@ -312,6 +312,8 @@ Scope:
 - Include service lines and variants: AI consulting, Wingman implementations, custom WApps, training, scale, exit, succession, handover, maximizing value, reducing owner dependence.
 - Add API to list active scoring offerings.
 
+Implementation note: scoring uses extracted `service_offerings` rows tied to `market_profile_version_id`; `market_profile_versions.structured_json` remains the editable source profile. The active listing API is `GET /api/kindling/scoring/offerings`.
+
 Acceptance:
 
 - Each offering has a stable id/key for scoring.
@@ -336,6 +338,8 @@ Scope:
 - Add trigger builder for one company x one offering.
 - Add `POST /api/kindling/pipeline-write/service-assessment`.
 - Store score, band, confidence, drivers, fit explanation, evidence, caveats, recommended action, and source run.
+
+Implementation note: service-fit assessment writes use `service_fit_assessments` with stable `company_id`, `service_offering_id`, `market_profile_version_id`, and `source_run_id`. `POST /api/kindling/service-assessments` triggers exactly one company x offering scoring run, and `POST /api/kindling/pipeline-write/service-assessment` persists the token-scoped pipeline result.
 
 Acceptance:
 

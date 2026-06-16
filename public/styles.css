@@ -57,6 +57,29 @@ button:disabled {
   opacity: 0.55;
 }
 
+button[aria-busy="true"] {
+  cursor: progress;
+}
+
+button[aria-busy="true"]::after {
+  content: "";
+  width: 12px;
+  height: 12px;
+  margin-left: 8px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 999px;
+  display: inline-block;
+  vertical-align: -2px;
+  animation: spin 800ms linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .hidden {
   display: none !important;
 }
@@ -153,7 +176,7 @@ button:disabled {
 
 .homeActions {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 10px;
 }
 
@@ -313,7 +336,7 @@ button:disabled {
 
 .kindlingStats {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 10px;
 }
 
@@ -365,6 +388,133 @@ button:disabled {
 .kindlingGrid.companiesLayout {
   grid-template-columns: minmax(0, 1fr);
   align-items: start;
+}
+
+.schedulerLayout,
+.targetReviewLayout {
+  align-items: start;
+}
+
+.researchDesk {
+  display: grid;
+  gap: 14px;
+}
+
+.researchHero {
+  display: grid;
+  gap: 14px;
+}
+
+.researchOpsGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.researchSummaryGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.researchMetric {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.researchMetric span,
+.researchMetric small {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.researchMetric strong {
+  display: block;
+  margin: 4px 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 22px;
+  letter-spacing: 0;
+}
+
+.inlineActions {
+  margin: 0;
+  flex-wrap: wrap;
+}
+
+.nextRunStatus {
+  display: grid;
+  gap: 4px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.nextRunStatus.ready {
+  border-color: rgba(17, 107, 93, 0.35);
+  background: #eef6f3;
+}
+
+.nextRunStatus strong {
+  font-size: 20px;
+}
+
+.compactFacts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 12px 0 0;
+}
+
+.compactFacts div {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.compactFacts dt {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.compactFacts dd {
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.roleDecisionList {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.roleDecisionList div {
+  display: grid;
+  gap: 2px;
+  padding: 8px 0;
+  border-top: 1px solid var(--line);
+}
+
+.roleDecisionList span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.researchAdvanced summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.researchAdvanced form {
+  margin-top: 14px;
 }
 
 .kindlingPanel {
@@ -589,6 +739,7 @@ button:disabled {
   display: flex;
   justify-content: flex-end;
   gap: 10px;
+  flex-wrap: wrap;
 }
 
 .kindlingPanel button[type="submit"],
@@ -636,9 +787,77 @@ button:disabled {
   gap: 8px;
 }
 
+.toggleGrid,
+.settingsNumberGrid,
+.buttonGrid {
+  display: grid;
+  gap: 10px;
+}
+
+.toggleGrid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-bottom: 12px;
+}
+
+.schedulerHelp {
+  margin: 0 0 14px;
+  padding: 10px;
+  border: 1px solid rgba(17, 107, 93, 0.22);
+  border-radius: 8px;
+  background: #eef6f3;
+  color: var(--ink) !important;
+}
+
+.settingsNumberGrid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-bottom: 10px;
+}
+
+.toggleControl {
+  display: flex !important;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-soft);
+}
+
+.toggleControl input {
+  width: auto;
+}
+
+.toggleControl span {
+  display: grid;
+  gap: 2px;
+}
+
+.toggleControl small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.buttonGrid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-bottom: 14px;
+}
+
+.buttonGrid button:first-child,
+.buttonGrid button:last-child {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
+}
+
+.sectionSubhead {
+  margin-top: 18px !important;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
 .companyFilters {
   display: grid;
-  grid-template-columns: repeat(6, minmax(0, 1fr));
+  grid-template-columns: repeat(7, minmax(0, 1fr));
   gap: 8px;
   margin-bottom: 12px;
 }
@@ -674,6 +893,28 @@ button:disabled {
   color: white;
 }
 
+.pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.pager div {
+  display: flex;
+  gap: 8px;
+}
+
+.pager button {
+  padding: 8px 12px;
+  background: var(--panel-soft);
+}
+
 .compactList div,
 .roleRow {
   border: 1px solid var(--line);
@@ -681,6 +922,15 @@ button:disabled {
   background: var(--panel-soft);
   padding: 10px;
   min-width: 0;
+}
+
+.workQueueList div {
+  align-items: start;
+}
+
+.workQueueList button {
+  justify-self: start;
+  margin-top: 6px;
 }
 
 .scanJobButton {
@@ -730,6 +980,36 @@ button:disabled {
 .targetList span {
   color: var(--muted);
   font-size: 13px;
+}
+
+.topTargetList button {
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px 10px;
+}
+
+.topTargetList strong,
+.topTargetList span,
+.topTargetList small {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.topTargetList strong {
+  grid-column: 2;
+}
+
+.topTargetList span:not(.targetRank),
+.topTargetList small {
+  grid-column: 2;
+}
+
+.targetRank {
+  grid-row: span 4;
+  align-self: start;
+  min-width: 58px;
+  color: var(--accent-dark) !important;
+  font-weight: 800;
+  font-size: 12px;
 }
 
 .companyRowMain {
@@ -1364,11 +1644,32 @@ textarea {
 
   .kindlingStats,
   .serviceWorkspace,
+  .researchOpsGrid,
+  .researchSummaryGrid,
+  .compactFacts,
   .kindlingGrid.two,
   .kindlingGrid.companiesLayout,
   .profileColumns,
-  .companyProfileGrid {
+  .companyProfileGrid,
+  .toggleGrid,
+  .settingsNumberGrid,
+  .buttonGrid {
     grid-template-columns: 1fr;
+  }
+
+  .topTargetList button {
+    grid-template-columns: 1fr;
+  }
+
+  .topTargetList strong,
+  .topTargetList span:not(.targetRank),
+  .topTargetList small {
+    grid-column: 1;
+  }
+
+  .targetRank {
+    grid-row: auto;
+    min-width: 0;
   }
 
   .profileChatPanel {

@@ -1,0 +1,43 @@
+{
+  "name": "kindling-score-company-service-fit-stub",
+  "description": "Kindling WApp stub for service-fit scoring. Accepts one company and one service offering, then posts a low-confidence placeholder assessment to the WApp webhook.",
+  "version": 1,
+  "tags": [
+    "kindling",
+    "wapp",
+    "stub",
+    "http-trigger",
+    "webhook",
+    "service-fit-scoring"
+  ],
+  "input": {
+    "source": "kindling-wapp",
+    "pipelineRole": "score_company_service_fit",
+    "requestId": "",
+    "userNpub": "",
+    "companyId": "",
+    "companyName": "",
+    "serviceOfferingId": "",
+    "marketProfileVersionId": "",
+    "localContext": {
+      "company": {},
+      "serviceOffering": {},
+      "marketProfileVersion": {}
+    },
+    "webhook": {
+      "url": "",
+      "authHeader": "x-kindling-pipeline-token",
+      "token": ""
+    }
+  },
+  "steps": [
+    {
+      "id": "deliver-service-fit-stub",
+      "name": "deliver-service-fit-stub",
+      "description": "Build a stub service-fit assessment and deliver it to the Kindling WApp webhook.",
+      "type": "code",
+      "function": "kindling.stubWebhook",
+      "assign": "$.stubResult"
+    }
+  ]
+}

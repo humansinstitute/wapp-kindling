@@ -6,6 +6,7 @@
   "scripts": {
     "start": "bun src/server.ts",
     "dev": "bun --watch src/server.ts",
+    "export:pipelines": "bun scripts/export-kindling-pipelines.ts",
     "check": "tsc --noEmit",
     "test": "bun test"
   },

@@ -50,7 +50,8 @@
         }
       },
       "prompt": "You are the Kindling outreach positioning strategist.\n\nGoal:\nReview the selected company's offerings, the research/evidence the WApp has about the company, and Kindling's active service profile. Craft the unique selling points, positioning angles, and claim boundaries that three separate drafting agents should use.\n\nRules:\n- Use localContext.company, localContext.companyResearch, localContext.enrichment, localContext.sources, localContext.recentSignals, and localContext.activeProfileVersion when present.\n- Identify what the company appears to offer, what Kindling appears to offer, and where the fit may be.\n- Be explicit about evidence gaps and claims to avoid.\n- Do not draft the email yet. Prepare a positioning brief for the drafting agents.\n- Do not send email or call the WApp webhook.\n\nReturn compact JSON only with this exact shape:\n{\n  \"response\": \"short user-facing positioning summary\",\n  \"companyId\": \"same company id\",\n  \"companyName\": \"company name\",\n  \"companyOfferingsReview\": \"what the company appears to sell/do\",\n  \"companyResearchSummary\": \"evidence-backed research summary and caveats\",\n  \"uniqueSellingPoints\": [\"Kindling selling points that fit this company\"],\n  \"positioningAngles\": [\"different outreach angles worth testing\"],\n  \"personalisationInputs\": [\"specific facts the drafts can safely use\"],\n  \"claimsToAvoid\": [\"claims not supported by evidence\"],\n  \"evidenceGaps\": [\"facts that would improve personalisation\"],\n  \"warnings\": [\"caveats\"],\n  \"confidence\": 0.0\n}",
-      "assign": "$.positioning"
+      "assign": "$.positioning",
+      "model": "$.model"
     },
     {
       "id": "draft-example-one",
@@ -69,7 +70,8 @@
         }
       },
       "prompt": "You are Kindling outreach drafting agent 1.\n\nUse the positioning brief to produce a concise, practical, direct outreach example. Do not send email. Do not add claims outside the evidence. Return JSON only:\n{\n  \"id\": \"direct_practical\",\n  \"label\": \"Direct practical\",\n  \"strategy\": \"concise direct pitch focused on operational benefit\",\n  \"subject\": \"\",\n  \"openingLine\": \"\",\n  \"body\": \"copyable email body\",\n  \"callToAction\": \"\",\n  \"rationale\": \"\",\n  \"warnings\": [],\n  \"confidence\": 0.0\n}",
-      "assign": "$.draftOne"
+      "assign": "$.draftOne",
+      "model": "$.model"
     },
     {
       "id": "draft-example-two",
@@ -88,7 +90,8 @@
         }
       },
       "prompt": "You are Kindling outreach drafting agent 2.\n\nUse the positioning brief to produce a consultative, problem-led outreach example. Do not send email. Do not add claims outside the evidence. Return JSON only:\n{\n  \"id\": \"consultative_problem_led\",\n  \"label\": \"Consultative\",\n  \"strategy\": \"problem-led pitch that invites a light conversation\",\n  \"subject\": \"\",\n  \"openingLine\": \"\",\n  \"body\": \"copyable email body\",\n  \"callToAction\": \"\",\n  \"rationale\": \"\",\n  \"warnings\": [],\n  \"confidence\": 0.0\n}",
-      "assign": "$.draftTwo"
+      "assign": "$.draftTwo",
+      "model": "$.model"
     },
     {
       "id": "draft-example-three",
@@ -107,7 +110,8 @@
         }
       },
       "prompt": "You are Kindling outreach drafting agent 3.\n\nUse the positioning brief to produce a local, plain-spoken outreach example. Do not send email. Do not add claims outside the evidence. Return JSON only:\n{\n  \"id\": \"local_plainspoken\",\n  \"label\": \"Local plain-spoken\",\n  \"strategy\": \"plain local pitch with minimal jargon\",\n  \"subject\": \"\",\n  \"openingLine\": \"\",\n  \"body\": \"copyable email body\",\n  \"callToAction\": \"\",\n  \"rationale\": \"\",\n  \"warnings\": [],\n  \"confidence\": 0.0\n}",
-      "assign": "$.draftThree"
+      "assign": "$.draftThree",
+      "model": "$.model"
     },
     {
       "id": "deliver-outreach-draft",

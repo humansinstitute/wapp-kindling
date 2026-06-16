@@ -11,6 +11,9 @@ const PETE_NPUB = "npub1jss47s4fvv6usl7tn6yp5zamv2u60923ncgfea0e6thkza5p7c3q0afm
 const DEFAULT_DM_CHANNEL_ID = "97ae5c0d-f88c-41e7-9f7a-d64d27a4fd18";
 const DEFAULT_PIPELINE_RUN_BASE_URL = "https://rick.runwingman.com/pipelines/runs";
 const WM21_ROOT = "/Users/mini/wingmen/wingman21";
+const SCHEDULED_PIPELINE_AGENT = "codex";
+const SCHEDULED_PIPELINE_MODEL = "gpt-5.4-mini";
+const SCHEDULED_PIPELINE_WORKING_DIRECTORY = "/Users/mini/wingmen/wingman21";
 
 const INDUSTRY_ENRICHMENT_STRATEGIES = [
   {
@@ -45,7 +48,7 @@ type JsonObject = Record<string, unknown>;
 export type AutoEnrichmentResult =
   | {
       status: "skipped";
-      reason: "no_unprocessed_companies";
+      reason: "no_unprocessed_companies" | "industry_enrichment_already_running";
       checkedAt: string;
     }
   | {
@@ -140,16 +143,38 @@ function parseJsonArray(value: unknown): unknown[] {
 
 function selectNextIndustry() {
   return db.query(`
+    WITH industry_counts AS (
+      SELECT
+        COALESCE(NULLIF(TRIM(industry), ''), '(blank)') AS industry,
+        SUM(CASE WHEN enrichment_status = 'not_started' THEN 1 ELSE 0 END) AS unprocessed_count,
+        SUM(CASE WHEN enrichment_status = 'queued' THEN 1 ELSE 0 END) AS queued_count,
+        SUM(CASE WHEN enrichment_status = 'running' THEN 1 ELSE 0 END) AS running_count
+      FROM companies
+      GROUP BY COALESCE(NULLIF(TRIM(industry), ''), '(blank)')
+    ),
+    industry_activity AS (
+      SELECT
+        target_id AS industry,
+        MAX(created_at) AS last_started_at
+      FROM activities
+      WHERE target_type = 'industry'
+        AND action_type = 'industry_enrichment_batch_started'
+      GROUP BY target_id
+    )
     SELECT
-      COALESCE(NULLIF(TRIM(industry), ''), '(blank)') AS industry,
-      SUM(CASE WHEN enrichment_status IN ('not_started', 'failed') THEN 1 ELSE 0 END) AS unprocessed_count,
-      SUM(CASE WHEN enrichment_status = 'queued' THEN 1 ELSE 0 END) AS queued_count
-    FROM companies
-    GROUP BY COALESCE(NULLIF(TRIM(industry), ''), '(blank)')
-    HAVING unprocessed_count > 0 AND queued_count = 0
-    ORDER BY unprocessed_count DESC, industry ASC
+      ic.industry,
+      ic.unprocessed_count,
+      ic.queued_count,
+      ic.running_count,
+      ia.last_started_at
+    FROM industry_counts ic
+    LEFT JOIN industry_activity ia ON ia.industry = ic.industry
+    WHERE ic.unprocessed_count > 0
+      AND ic.queued_count = 0
+      AND ic.running_count = 0
+    ORDER BY ia.last_started_at IS NOT NULL ASC, ia.last_started_at ASC, ic.unprocessed_count DESC, ic.industry ASC
     LIMIT 1
-  `).get() as { industry: string; unprocessed_count: number } | null;
+  `).get() as { industry: string; unprocessed_count: number; queued_count: number; running_count: number; last_started_at?: number | null } | null;
 }
 
 function listCompaniesForIndustry(industry: string, limit: number) {
@@ -157,7 +182,7 @@ function listCompaniesForIndustry(industry: string, limit: number) {
     SELECT *
     FROM companies
     WHERE COALESCE(NULLIF(TRIM(industry), ''), '(blank)') = ?1
-      AND enrichment_status IN ('not_started', 'failed')
+      AND enrichment_status = 'not_started'
     ORDER BY updated_at ASC, name ASC
     LIMIT ?2
   `).all(industry, limit) as Record<string, unknown>[]).map((row) => ({
@@ -191,6 +216,145 @@ function knownSourcesForCompany(companyId: string) {
     confidence: Number(source.confidence ?? 0),
     createdAt: Number(source.created_at ?? 0),
   }));
+}
+
+function activeIndustryEnrichmentRun() {
+  return db.query(`
+    SELECT id, autopilot_run_id, status
+    FROM kindling_pipeline_runs
+    WHERE role_key = 'enrich_industry_segment'
+      AND status IN ('queued', 'running', 'mock')
+    ORDER BY updated_at DESC
+    LIMIT 1
+  `).get() as { id: string; autopilot_run_id?: string | null; status: string } | null;
+}
+
+function primarySegmentForCompany(companyId: string) {
+  return db.query(`
+    SELECT cs.segment_id, ts.label, ts.priority
+    FROM company_segments cs
+    JOIN target_segments ts ON ts.id = cs.segment_id
+    WHERE cs.company_id = ?1
+    ORDER BY ts.priority ASC, cs.confidence DESC, ts.label ASC
+    LIMIT 1
+  `).get(companyId) as Record<string, unknown> | null;
+}
+
+function createAutoIndustryQueueItem(input: {
+  requestId: string;
+  company: ReturnType<typeof listCompaniesForIndustry>[number];
+  batchId: string;
+  industry: string;
+  localRunId: string;
+  now: number;
+}) {
+  const segment = primarySegmentForCompany(input.company.id);
+  const reason = `Queued by automatic industry batch ${input.batchId}`;
+  const context = {
+    requestKind: "industry_batch",
+    source: "auto_enrichment_job",
+    batchId: input.batchId,
+    industry: input.industry,
+    companyName: input.company.name,
+    location: input.company.location,
+    website: input.company.website,
+  };
+  db.query(`
+    INSERT INTO work_queue(
+      id, kind, target_type, target_id, segment_id, segment, priority, status, reason, attempts,
+      next_run_after_at, locked_by_run_id, error, context_json, created_at, updated_at
+    )
+    VALUES (
+      ?1, 'company_enrichment', 'company', ?2, ?3, ?4, 50, 'queued', ?5, 0,
+      NULL, ?6, '', ?7, ?8, ?8
+    )
+  `).run(
+    input.requestId,
+    input.company.id,
+    segment?.segment_id ? String(segment.segment_id) : null,
+    segment?.label ? String(segment.label) : input.industry,
+    reason,
+    input.localRunId,
+    JSON.stringify(context),
+    input.now,
+  );
+  db.query(`
+    INSERT INTO enrichment_requests(id, company_id, work_queue_id, status, request_kind, summary, created_at, updated_at)
+    VALUES (?1, ?2, ?1, 'queued', 'industry_batch', ?3, ?4, ?4)
+  `).run(input.requestId, input.company.id, reason, input.now);
+}
+
+function markAutoIndustryQueueRunning(localRunId: string, autopilotRunId: string, now = Date.now()) {
+  db.query(`
+    UPDATE work_queue
+    SET status = 'running',
+        attempts = attempts + 1,
+        locked_by_run_id = ?1,
+        error = '',
+        updated_at = ?2
+    WHERE kind = 'company_enrichment'
+      AND locked_by_run_id = ?3
+      AND status = 'queued'
+  `).run(autopilotRunId || localRunId, now, localRunId);
+  db.query(`
+    UPDATE enrichment_requests
+    SET status = 'running', updated_at = ?1
+    WHERE COALESCE(NULLIF(work_queue_id, ''), id) IN (
+      SELECT id
+      FROM work_queue
+      WHERE kind = 'company_enrichment'
+        AND locked_by_run_id = ?2
+        AND status = 'running'
+    )
+      AND status = 'queued'
+  `).run(now, autopilotRunId || localRunId);
+  db.query(`
+    UPDATE companies
+    SET enrichment_status = 'running', updated_at = ?1
+    WHERE id IN (
+      SELECT target_id
+      FROM work_queue
+      WHERE kind = 'company_enrichment'
+        AND target_type = 'company'
+        AND locked_by_run_id = ?2
+        AND status = 'running'
+    )
+      AND enrichment_status = 'queued'
+  `).run(now, autopilotRunId || localRunId);
+}
+
+function failAutoIndustryQueue(localRunId: string, batchId: string, companies: Array<{ id: string }>, previousStatuses: Map<string, string>, reason: string, now = Date.now()) {
+  db.query(`
+    UPDATE work_queue
+    SET status = 'failed',
+        attempts = attempts + CASE WHEN attempts = 0 THEN 1 ELSE 0 END,
+        next_run_after_at = ?1,
+        locked_by_run_id = NULL,
+        error = ?2,
+        updated_at = ?1
+    WHERE kind = 'company_enrichment'
+      AND (
+        locked_by_run_id = ?3
+        OR id IN (
+          SELECT COALESCE(NULLIF(work_queue_id, ''), id)
+          FROM enrichment_requests
+          WHERE request_kind = 'industry_batch'
+            AND summary = ?4
+        )
+      )
+      AND status IN ('queued', 'running')
+  `).run(now, reason, localRunId, `Queued by automatic industry batch ${batchId}`);
+  db.query(`
+    UPDATE enrichment_requests
+    SET status = 'failed', summary = ?1, updated_at = ?2
+    WHERE request_kind = 'industry_batch'
+      AND summary = ?3
+      AND status IN ('queued', 'running')
+  `).run(reason, now, `Queued by automatic industry batch ${batchId}`);
+  for (const company of companies) {
+    db.query("UPDATE companies SET enrichment_status = ?1, updated_at = ?2 WHERE id = ?3")
+      .run(previousStatuses.get(company.id) ?? "not_started", now, company.id);
+  }
 }
 
 function secretKeyFromEnv(): Uint8Array | null {
@@ -261,6 +425,15 @@ function sendFlightDeckDm(channelId: string, body: string) {
 
 export async function runAutoEnrichNextIndustry(options: AutoEnrichmentOptions = {}): Promise<AutoEnrichmentResult> {
   const checkedAt = new Date().toISOString();
+  const activeRun = activeIndustryEnrichmentRun();
+  if (activeRun) {
+    return {
+      status: "skipped",
+      reason: "industry_enrichment_already_running",
+      checkedAt,
+    };
+  }
+
   const next = selectNextIndustry();
   if (!next) return { status: "skipped", reason: "no_unprocessed_companies", checkedAt };
 
@@ -285,7 +458,7 @@ export async function runAutoEnrichNextIndustry(options: AutoEnrichmentOptions =
     batchId,
     industry,
     batchSize: companies.length,
-    batchLimit: DEFAULT_BATCH_LIMIT,
+    batchLimit,
     companies,
     enrichmentStrategies: INDUSTRY_ENRICHMENT_STRATEGIES,
     activeProfileVersion: getCurrentMarketProfileVersion(),
@@ -306,10 +479,18 @@ export async function runAutoEnrichNextIndustry(options: AutoEnrichmentOptions =
       userPubkey: identity.userPubkey,
       userNpub: identity.userNpub,
       message: `Enrich up to ${companies.length} ${industry} companies`,
+      agent: SCHEDULED_PIPELINE_AGENT,
+      model: SCHEDULED_PIPELINE_MODEL,
+      workingDirectory: SCHEDULED_PIPELINE_WORKING_DIRECTORY,
       localContext: context,
       industry,
       batchId,
       batchSize: companies.length,
+      batchLoop: {
+        iteration: 1,
+        index: 0,
+        total: companies.length,
+      },
       webhook: {
         url: `${publicOrigin}/api/kindling/pipeline-webhook`,
         token: webhookToken,
@@ -320,8 +501,7 @@ export async function runAutoEnrichNextIndustry(options: AutoEnrichmentOptions =
 
   const placeholders = companyIds.map((_, index) => `?${index + 2}`).join(", ");
   for (const company of companies) {
-    db.query("INSERT INTO enrichment_requests(id, company_id, status, request_kind, summary, created_at, updated_at) VALUES (?1, ?2, 'queued', 'industry_batch', ?3, ?4, ?4)")
-      .run(crypto.randomUUID(), company.id, `Queued by automatic industry batch ${batchId}`, now);
+    createAutoIndustryQueueItem({ requestId: crypto.randomUUID(), company, batchId, industry, localRunId, now });
   }
   db.query(`UPDATE companies SET enrichment_status = 'queued', updated_at = ?1 WHERE id IN (${placeholders})`)
     .run(now, ...companyIds);
@@ -339,6 +519,7 @@ export async function runAutoEnrichNextIndustry(options: AutoEnrichmentOptions =
     }
     db.query("UPDATE kindling_pipeline_runs SET status = 'running', autopilot_run_id = ?1, updated_at = ?2 WHERE id = ?3")
       .run(autopilotRunId, Date.now(), localRunId);
+    markAutoIndustryQueueRunning(localRunId, autopilotRunId);
     db.query(`
       INSERT INTO activities(id, target_type, target_id, actor, action_type, summary, payload_json, created_at)
       VALUES (?1, 'industry', ?2, 'automation', 'industry_enrichment_batch_started', ?3, ?4, ?5)
@@ -358,12 +539,7 @@ export async function runAutoEnrichNextIndustry(options: AutoEnrichmentOptions =
     }
     return { status: "started", industry, batchId, localRunId, autopilotRunId, pipelineUrl, batchSize: companies.length, dmSent, checkedAt };
   } catch (error) {
-    for (const company of companies) {
-      db.query("UPDATE companies SET enrichment_status = ?1, updated_at = ?2 WHERE id = ?3")
-        .run(previousStatuses.get(company.id) ?? "not_started", Date.now(), company.id);
-    }
-    db.query("UPDATE enrichment_requests SET status = 'failed', summary = ?1, updated_at = ?2 WHERE request_kind = 'industry_batch' AND summary = ?3")
-      .run(error instanceof Error ? error.message : String(error), Date.now(), `Queued by automatic industry batch ${batchId}`);
+    failAutoIndustryQueue(localRunId, batchId, companies, previousStatuses, error instanceof Error ? error.message : String(error));
     db.query("UPDATE kindling_pipeline_runs SET status = 'failed', error = ?1, updated_at = ?2 WHERE id = ?3")
       .run(error instanceof Error ? error.message : String(error), Date.now(), localRunId);
     throw error;
