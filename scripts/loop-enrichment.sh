@@ -13,5 +13,5 @@ while true; do
   bun scripts/run-auto-enrichment.ts \
     --autopilot-url http://localhost:3600 \
     --origin "${origin}" || true
-  sleep 600
+  sleep 1800
 done
