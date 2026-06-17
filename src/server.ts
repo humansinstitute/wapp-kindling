@@ -5353,6 +5353,19 @@ function mapTopTargetRun(row: Record<string, unknown>) {
   };
 }
 
+function scoreBand(score: number): "high" | "medium" | "low" {
+  if (score >= 75) return "high";
+  if (score >= 50) return "medium";
+  return "low";
+}
+
+function bandScoreClause(band: string | undefined, scoreExpr = "tli.score"): string {
+  if (band === "high") return `AND ${scoreExpr} >= 75`;
+  if (band === "medium") return `AND ${scoreExpr} >= 50 AND ${scoreExpr} < 75`;
+  if (band === "low") return `AND ${scoreExpr} < 50`;
+  return "";
+}
+
 function mapTopTargetItem(row: Record<string, unknown>) {
   const outreachDraftCount = Number(row.outreach_draft_count ?? 0);
   return {
@@ -5363,6 +5376,8 @@ function mapTopTargetItem(row: Record<string, unknown>) {
     marketProfileVersionId: String(row.market_profile_version_id),
     rank: Number(row.rank ?? 0),
     score: Number(row.score ?? 0),
+    assessmentScore: Number(row.assessment_score ?? 0),
+    band: String(row.assessment_band ?? "") || scoreBand(Number(row.assessment_score ?? 0)),
     reason: String(row.reason ?? ""),
     bestOffering: {
       id: String(row.best_offering_id),
@@ -5394,23 +5409,40 @@ function mapTopTargetItem(row: Record<string, unknown>) {
   };
 }
 
-function getTopTargetRunDetail(runId: string, limit = 100, offset = 0, options: { hasOutreachDraft?: boolean } = {}) {
+function getTopTargetRunDetail(runId: string, limit = 100, offset = 0, options: { hasOutreachDraft?: boolean; band?: string } = {}) {
   const run = db.query("SELECT * FROM target_list_runs WHERE id = ?1").get(runId) as Record<string, unknown> | null;
   if (!run) return null;
   const safeLimit = Math.max(1, Math.min(500, Math.floor(limit)));
   const safeOffset = Math.max(0, Math.floor(offset));
-  const filters = options.hasOutreachDraft
+  const draftFilter = options.hasOutreachDraft
     ? "AND EXISTS (SELECT 1 FROM outreach_drafts od WHERE od.company_id = tli.company_id)"
     : "";
+  // Band is derived from the service-fit assessment score (0-100), not the
+  // composite ranking score on target_list_items.
+  const filters = `${draftFilter} ${bandScoreClause(options.band, "sfa.score")}`;
+  // Per-band counts over the whole run (ignore the draft sub-filter so tab
+  // labels stay stable as the draft toggle changes).
+  const bandRow = db.query(`
+    SELECT
+      SUM(CASE WHEN sfa.score >= 75 THEN 1 ELSE 0 END) AS high,
+      SUM(CASE WHEN sfa.score >= 50 AND sfa.score < 75 THEN 1 ELSE 0 END) AS medium,
+      SUM(CASE WHEN sfa.score < 50 THEN 1 ELSE 0 END) AS low
+    FROM target_list_items tli
+    JOIN service_fit_assessments sfa ON sfa.id = tli.service_fit_assessment_id
+    WHERE tli.target_list_run_id = ?1
+  `).get(runId) as { high: number; medium: number; low: number } | null;
   const total = db.query(`
     SELECT COUNT(*) AS count
     FROM target_list_items tli
+    JOIN service_fit_assessments sfa ON sfa.id = tli.service_fit_assessment_id
     WHERE tli.target_list_run_id = ?1
       ${filters}
   `).get(runId) as { count: number } | null;
   const items = db.query(`
     SELECT
       tli.*,
+      sfa.score AS assessment_score,
+      sfa.band AS assessment_band,
       c.name,
       c.location,
       c.industry,
@@ -5419,14 +5451,26 @@ function getTopTargetRunDetail(runId: string, limit = 100, offset = 0, options: 
       c.enrichment_status,
       (SELECT COUNT(*) FROM outreach_drafts od WHERE od.company_id = tli.company_id) AS outreach_draft_count
     FROM target_list_items tli
+    JOIN service_fit_assessments sfa ON sfa.id = tli.service_fit_assessment_id
     JOIN companies c ON c.id = tli.company_id
     WHERE tli.target_list_run_id = ?1
       ${filters}
-    ORDER BY tli.rank ASC
+    ORDER BY sfa.score DESC, tli.rank ASC
     LIMIT ?2
     OFFSET ?3
   `).all(runId, safeLimit, safeOffset) as Record<string, unknown>[];
-  return { run: mapTopTargetRun(run), items: items.map(mapTopTargetItem), total: Number(total?.count ?? 0), limit: safeLimit, offset: safeOffset };
+  return {
+    run: mapTopTargetRun(run),
+    items: items.map(mapTopTargetItem),
+    total: Number(total?.count ?? 0),
+    limit: safeLimit,
+    offset: safeOffset,
+    bandCounts: {
+      high: Number(bandRow?.high ?? 0),
+      medium: Number(bandRow?.medium ?? 0),
+      low: Number(bandRow?.low ?? 0),
+    },
+  };
 }
 
 function latestTopTargetRunId() {
@@ -8303,13 +8347,11 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     if (!session) return json({ error: "unauthorized" }, 401);
     const { limit, offset } = pagingFromParams(url.searchParams);
     const hasOutreachDraft = ["1", "true", "yes"].includes(String(url.searchParams.get("hasOutreachDraft") || "").toLowerCase());
+    const bandParam = String(url.searchParams.get("band") || "").toLowerCase();
+    const band = ["high", "medium", "low"].includes(bandParam) ? bandParam : "";
     const baseDetail = getOrBuildTopTargetDetail(limit, 0);
     const rebuilt = Boolean(baseDetail.rebuilt);
-    const detail = hasOutreachDraft
-      ? getTopTargetRunDetail(baseDetail.run.id, limit, offset, { hasOutreachDraft })!
-      : offset === 0
-        ? baseDetail
-        : getTopTargetRunDetail(baseDetail.run.id, limit, offset)!;
+    const detail = getTopTargetRunDetail(baseDetail.run.id, limit, offset, { hasOutreachDraft, band })!;
     return json({
       targetListRunId: detail.run.id,
       source: "top_targets",
@@ -8320,6 +8362,8 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
       returned: detail.items.length,
       limit: detail.limit ?? limit,
       offset: detail.offset ?? offset,
+      band,
+      bandCounts: detail.bandCounts,
     });
   }
 

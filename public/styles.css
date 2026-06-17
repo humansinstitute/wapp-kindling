@@ -1729,3 +1729,61 @@ textarea {
     height: calc(100vh - 238px);
   }
 }
+
+/* Scored view: High / Medium / Low band tabs */
+.scoredTabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.scoredTab {
+  flex: 1;
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+.scoredTab:hover,
+.scoredTab:focus-visible {
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+.scoredTab.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.scoredTabCount {
+  display: inline-flex;
+  min-width: 22px;
+  height: 20px;
+  padding: 0 6px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: rgba(23, 33, 31, 0.08);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+.scoredTab.active .scoredTabCount {
+  background: rgba(255, 255, 255, 0.22);
+  color: #fff;
+}
+.scoredBandBlurb {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+.scoredDraftToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
