@@ -9,7 +9,7 @@ while true; do
   origin="http://localhost:${port:-43001}"
   echo "resolved kindling origin: ${origin}"
   bun scripts/start-scoring-catchup.ts \
-    --limit 3 --concurrency 3 \
+    --limit 4 --concurrency 4 \
     --autopilot-url http://localhost:3600 \
     --origin "${origin}" || true
   sleep 600
