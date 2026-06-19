@@ -17,7 +17,7 @@ import {
   verifyLoginEvent,
   verifyNip98Request,
 } from "./auth.ts";
-import { IS_TOWER_DB_RUNTIME, PIPELINE_NAME, PORT, PUBLIC_ORIGIN, WINGMAN_URL } from "./config.ts";
+import { IS_TOWER_DB_RUNTIME, PIPELINE_NAME, PORT, PUBLIC_ORIGIN, WINGMAN_URL, isTowerDbRuntime } from "./config.ts";
 import {
   acquireSchedulerLock,
   companyDataRingFilterValues,
@@ -7292,6 +7292,7 @@ async function runAutomatedOutreachLoop() {
 }
 
 export async function runAutomatedProspectingLoop() {
+  if (isTowerDbRuntime()) return null;
   await reconcileActiveKindlingRuns();
   reconcileSchedulerState();
   const results: Array<Record<string, unknown>> = [];
@@ -7306,6 +7307,27 @@ export async function runAutomatedProspectingLoop() {
   if (!results.length) return null;
   if (results.length === 1) return results[0];
   return { action: "multi", count: results.length, results };
+}
+
+export function startKindlingBackgroundTasks() {
+  if (isTowerDbRuntime()) {
+    console.log("kindling Tower DB runtime: legacy cleanup and prospecting automation disabled");
+    return { enabled: false, reason: "tower-db-runtime" as const, timers: 0 };
+  }
+
+  setInterval(cleanupExpiredAuthRows, 15 * 60 * 1000);
+  setTimeout(() => {
+    void runAutomatedProspectingLoop().catch((error) => {
+      console.error("automated prospecting startup pass failed", error);
+    });
+  }, 1000);
+  setInterval(() => {
+    void runAutomatedProspectingLoop().catch((error) => {
+      console.error("automated prospecting loop failed", error);
+    });
+  }, PROSPECTING_LOOP_INTERVAL_MS);
+
+  return { enabled: true, timers: 3 };
 }
 
 export async function handleApi(req: Request, url: URL): Promise<Response | null> {
@@ -9259,17 +9281,7 @@ if (import.meta.main) {
     process.exit(1);
   });
 
-  setInterval(cleanupExpiredAuthRows, 15 * 60 * 1000);
-  setTimeout(() => {
-    void runAutomatedProspectingLoop().catch((error) => {
-      console.error("automated prospecting startup pass failed", error);
-    });
-  }, 1000);
-  setInterval(() => {
-    void runAutomatedProspectingLoop().catch((error) => {
-      console.error("automated prospecting loop failed", error);
-    });
-  }, PROSPECTING_LOOP_INTERVAL_MS);
+  startKindlingBackgroundTasks();
 
   const server = Bun.serve({
     port: PORT,

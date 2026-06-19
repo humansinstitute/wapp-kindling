@@ -5,7 +5,7 @@ import type { TowerMigration } from "../src/tower-db.ts";
 process.env.KINDLING_DB_MODE = "tower";
 process.env.WINGMAN_URL = "http://127.0.0.1:9";
 
-const { handleApi } = await import("../src/server.ts");
+const { handleApi, runAutomatedProspectingLoop, startKindlingBackgroundTasks } = await import("../src/server.ts");
 const { createTowerStore, resetTowerStoreForTests } = await import("../src/tower-store.ts");
 const { initializeTowerDbRuntime } = await import("../src/tower-db.ts");
 const { db } = await import("../src/db.ts");
@@ -254,5 +254,24 @@ describe("Tower-mode Kindling API facade", () => {
     expect(db.query("SELECT COUNT(*) AS count FROM kindling_pipeline_runs").get()).toEqual(sqliteCountsBefore.kindlingPipelineRuns);
     expect(db.query("SELECT COUNT(*) AS count FROM work_queue").get()).toEqual(sqliteCountsBefore.workQueue);
     expect(fake.calls.every((call) => !["companies", "chats", "messages", "kindling_pipeline_runs", "work_queue"].includes(String(call.table ?? "")))).toBe(true);
+  });
+
+  test("Tower mode disables legacy startup automation loops", async () => {
+    const sqliteCountsBefore = {
+      kindlingPipelineRuns: db.query("SELECT COUNT(*) AS count FROM kindling_pipeline_runs").get() as { count: number },
+      schedulerRuns: db.query("SELECT COUNT(*) AS count FROM scheduler_runs").get() as { count: number },
+      workQueue: db.query("SELECT COUNT(*) AS count FROM work_queue").get() as { count: number },
+    };
+
+    expect(startKindlingBackgroundTasks()).toEqual({
+      enabled: false,
+      reason: "tower-db-runtime",
+      timers: 0,
+    });
+    expect(await runAutomatedProspectingLoop()).toBeNull();
+
+    expect(db.query("SELECT COUNT(*) AS count FROM kindling_pipeline_runs").get()).toEqual(sqliteCountsBefore.kindlingPipelineRuns);
+    expect(db.query("SELECT COUNT(*) AS count FROM scheduler_runs").get()).toEqual(sqliteCountsBefore.schedulerRuns);
+    expect(db.query("SELECT COUNT(*) AS count FROM work_queue").get()).toEqual(sqliteCountsBefore.workQueue);
   });
 });
