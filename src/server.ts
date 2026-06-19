@@ -512,7 +512,9 @@ async function handleTowerApi(req: Request, url: URL): Promise<Response | null> 
     const pipelineRoles = (await towerRows("pipeline_roles", { order: [{ field: "role_key", dir: "asc" }], limit: 100 })).map(mapPipelineRole);
     const companyCount = await towerCountCompanies(null);
     const enriched = await towerCount("companies", { enrichment_status: { in: ["enriched", "complete", "processed"] } });
-    const scored = await towerCount("service_fit_assessments");
+    const serviceFitAssessments = await towerCount("service_fit_assessments");
+    const rankedCompanies = await towerCountRankedCompanies();
+    const scored = Math.max(serviceFitAssessments, rankedCompanies);
     const workQueueRows = await towerRows("work_queue", { limit: 500 });
     const workQueue = towerWorkQueueCounts(workQueueRows);
     const coverage = towerEmptyCoverageSummary();
@@ -528,7 +530,8 @@ async function handleTowerApi(req: Request, url: URL): Promise<Response | null> 
         companies: companyCount,
         enriched,
         scored,
-        serviceFitAssessments: scored,
+        serviceFitAssessments,
+        rankedCompanies,
         outreachReady: await towerCount("outreach_drafts"),
         workQueue,
         activeRuns: recentRuns.filter((run) => ["queued", "running", "mock"].includes(run.status)).length,
@@ -668,8 +671,15 @@ async function handleTowerApi(req: Request, url: URL): Promise<Response | null> 
     const session = await requireTowerSession(req);
     if (!session) return json({ error: "unauthorized" }, 401);
     const profile = await towerCurrentMarketProfile();
-    const offerings = (await towerRows("service_offerings", { where: { status: { eq: "active" } }, order: [{ field: "name", dir: "asc" }], limit: 200 })).map(rowJson);
-    return json({ profile, offerings, marketProfileVersionId: String(profile?.version?.id ?? "") });
+    const marketProfileVersionId = String(profile?.version?.id ?? "");
+    const offerings = marketProfileVersionId
+      ? (await towerRows("service_offerings", {
+        where: { market_profile_version_id: { eq: marketProfileVersionId }, status: { eq: "active" } },
+        order: [{ field: "key", dir: "asc" }, { field: "variant_key", dir: "asc" }],
+        limit: 500,
+      })).map(mapServiceOffering)
+      : [];
+    return json({ profile, offerings, marketProfileVersionId });
   }
 
   if (pathname === "/api/kindling/coverage-slices" && req.method === "GET") {
@@ -5097,6 +5107,24 @@ function towerWorkQueueCounts(rows: Record<string, unknown>[]) {
   return counts;
 }
 
+async function towerCountRankedCompanies() {
+  const companyIds = new Set<string>();
+  const pageSize = 500;
+  for (let offset = 0; ; offset += pageSize) {
+    const rows = await getTowerStore().query("target_rankings", {
+      select: ["company_id"],
+      limit: pageSize,
+      offset,
+    });
+    for (const row of rows) {
+      const companyId = String(row.company_id ?? "");
+      if (companyId) companyIds.add(companyId);
+    }
+    if (rows.length < pageSize) break;
+  }
+  return companyIds.size;
+}
+
 function towerEmptyCoverageSummary() {
   return {
     totals: {
@@ -5213,7 +5241,63 @@ async function towerCurrentMarketProfile() {
   if (!profile) return null;
   const versionId = String(profile.current_version_id ?? "");
   const version = versionId ? await getTowerStore().getById("market_profile_versions", versionId) : null;
-  return { profile: rowJson(profile), version: rowJson(version) };
+  const structured = jsonParse<Record<string, unknown>>(version?.structured_json, {});
+  const serviceOfferings = version ? await towerActiveServiceOfferingsForMarketProfileVersion(version, structured) : [];
+  return {
+    id: String(profile.id),
+    name: String(profile.name),
+    currentVersionId: versionId || null,
+    version: version ? {
+      id: String(version.id),
+      versionNumber: Number(version.version_number),
+      structured,
+      summary: String(version.summary ?? ""),
+      rationale: String(version.rationale ?? ""),
+      sourceReferences: jsonParse<string[]>(version.source_references_json, []),
+      serviceOfferings: serviceOfferings.map(mapServiceOffering),
+      createdAt: Number(version.created_at),
+    } : null,
+    createdAt: Number(profile.created_at),
+    updatedAt: Number(profile.updated_at),
+  };
+}
+
+async function towerActiveServiceOfferingsForMarketProfileVersion(
+  version: Record<string, unknown>,
+  structured = jsonParse<Record<string, unknown>>(version.structured_json, {}),
+) {
+  const store = getTowerStore();
+  const marketProfileVersionId = String(version.id ?? "");
+  if (!marketProfileVersionId) return [];
+  const existing = await store.query("service_offerings", {
+    where: { market_profile_version_id: { eq: marketProfileVersionId } },
+    order: [{ field: "key", dir: "asc" }, { field: "variant_key", dir: "asc" }],
+    limit: 500,
+  });
+  if (!existing.length) {
+    const now = Date.now();
+    for (const offering of extractServiceOfferingsFromProfile(structured)) {
+      const id = serviceOfferingId(marketProfileVersionId, offering.key, offering.variantKey);
+      const row = {
+        id,
+        market_profile_version_id: marketProfileVersionId,
+        key: offering.key,
+        name: offering.name,
+        variant_key: offering.variantKey,
+        structured_json: JSON.stringify(offering.structured),
+        status: offering.status,
+        created_at: now,
+        updated_at: now,
+      };
+      await store.create("service_offerings", row, id);
+    }
+  }
+  const rows = await store.query("service_offerings", {
+    where: { market_profile_version_id: { eq: marketProfileVersionId }, status: { eq: "active" } },
+    order: [{ field: "key", dir: "asc" }, { field: "variant_key", dir: "asc" }],
+    limit: 500,
+  });
+  return rows;
 }
 
 async function towerCreateKindlingRun(roleKey: string, localRequestId: string, triggerRequest: Record<string, unknown>, webhookToken: string, status = "queued") {
