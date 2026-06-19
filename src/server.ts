@@ -511,8 +511,8 @@ async function handleTowerApi(req: Request, url: URL): Promise<Response | null> 
     const outreachDrafts = (await towerRows("outreach_drafts", { order: [{ field: "updated_at", dir: "desc" }], limit: 20 })).map(rowJson);
     const pipelineRoles = (await towerRows("pipeline_roles", { order: [{ field: "role_key", dir: "asc" }], limit: 100 })).map(mapPipelineRole);
     const companyCount = await towerCountCompanies(null);
-    const enriched = await towerCount("companies", { enrichment_status: { in: ["enriched", "complete", "processed"] } });
-    const serviceFitAssessments = await towerCount("service_fit_assessments");
+    const enriched = await towerCountRows("companies", { enrichment_status: { in: ["enriched", "complete", "processed"] } });
+    const serviceFitAssessments = await towerCountRows("service_fit_assessments");
     const rankedCompanies = await towerCountRankedCompanies();
     const rankedEnrichedCompanies = await towerCountRankedCompanies({ enrichedOnly: true });
     const scored = await towerCountServiceFitScoredCompanies();
@@ -534,7 +534,7 @@ async function handleTowerApi(req: Request, url: URL): Promise<Response | null> 
         serviceFitAssessments,
         rankedCompanies,
         rankedEnrichedCompanies,
-        outreachReady: await towerCount("outreach_drafts"),
+        outreachReady: await towerCountRows("outreach_drafts"),
         workQueue,
         activeRuns: recentRuns.filter((run) => ["queued", "running", "mock"].includes(run.status)).length,
         coverage: coverage.totals,
@@ -956,13 +956,48 @@ async function handleTowerApi(req: Request, url: URL): Promise<Response | null> 
     const token = req.headers.get("x-kindling-pipeline-token") || req.headers.get("x-kindling-wapp-token") || String(body.token ?? "");
     const rows = token ? await towerRows("kindling_pipeline_runs", { where: { webhook_token: { eq: token } }, limit: 1 }) : [];
     if (!rows.length) return json({ error: "webhook target not found" }, 400);
-    await towerStore.patch("kindling_pipeline_runs", String(rows[0]!.id), { status: String(body.status ?? "complete"), result_payload_json: JSON.stringify(body), error: String(body.error ?? ""), updated_at: Date.now() });
-    return json({ ok: true });
+    const run = rows[0]!;
+    const persisted = await towerApplyKindlingCallback(body, run);
+    if (!persisted.ok) return json({ error: persisted.error }, 400);
+    await towerStore.patch("kindling_pipeline_runs", String(run.id), { status: String(body.status ?? "complete"), result_payload_json: JSON.stringify(body), error: String(body.error ?? ""), updated_at: Date.now() });
+    return json({ ok: true, persisted: persisted.persisted ?? null });
   }
 
   if (pathname.startsWith("/api/kindling/pipeline-write/") && req.method === "POST") {
     const body = await readJson(req);
-    return json({ ok: true, persisted: { mode: "tower", accepted: true, role: pathname.split("/").pop(), requestId: String(body.requestId ?? "") } });
+    const token = req.headers.get("x-kindling-pipeline-token") || req.headers.get("x-kindling-wapp-token") || String(body.token ?? "");
+    const requestId = String(body.batchRequestId ?? body.requestId ?? "").trim();
+    const role = pathname.split("/").pop() ?? "";
+    const roleKeys = role === "service-assessment"
+      ? "score_company_service_fit"
+      : role === "enrichment-company"
+        ? ["enrich_industry_segment", "enrich_company"]
+        : role === "target-scan"
+          ? "scan_target_list"
+          : [];
+    const candidateRoleKeys = Array.isArray(roleKeys) ? roleKeys : roleKeys ? [roleKeys] : [];
+    const runs = [];
+    if (requestId && token && candidateRoleKeys.length) {
+      for (const roleKey of candidateRoleKeys) {
+        const matches = await towerRows("kindling_pipeline_runs", { where: { local_request_id: { eq: requestId }, role_key: { eq: roleKey }, webhook_token: { eq: token } }, limit: 1 });
+        runs.push(...matches);
+        if (runs.length) break;
+      }
+    }
+    if (!runs.length) return json({ error: "webhook target not found" }, 400);
+    if (role === "service-assessment") {
+      const persisted = await towerPersistServiceFitAssessmentBatch(body, runs[0]!);
+      if (!persisted.ok) return json({ error: persisted.error }, 400);
+      await towerStore.patch("kindling_pipeline_runs", String(runs[0]!.id), { status: "running", updated_at: Date.now() });
+      return json({ ok: true, persisted: persisted.assessments.length === 1 ? persisted.assessments[0] : persisted.assessments, assessments: persisted.assessments });
+    }
+    if (role === "enrichment-company") {
+      const persisted = await towerPersistCompanyEnrichment(body, runs[0]!);
+      if (!persisted.ok) return json({ error: persisted.error }, 400);
+      await towerStore.patch("kindling_pipeline_runs", String(runs[0]!.id), { status: "running", updated_at: Date.now() });
+      return json({ ok: true, persisted: persisted.persisted });
+    }
+    return json({ error: "Tower pipeline write route is not ported yet", role, requestId }, 501);
   }
 
   if (pathname === "/api/nip98/me" && req.method === "GET") {
@@ -5109,6 +5144,22 @@ function towerWorkQueueCounts(rows: Record<string, unknown>[]) {
   return counts;
 }
 
+async function towerCountRows(table: string, where: Record<string, Record<string, unknown>> = {}) {
+  let count = 0;
+  const pageSize = 500;
+  for (let offset = 0; ; offset += pageSize) {
+    const rows = await getTowerStore().query(table, {
+      select: ["id"],
+      where,
+      limit: pageSize,
+      offset,
+    });
+    count += rows.length;
+    if (rows.length < pageSize) break;
+  }
+  return count;
+}
+
 const TOWER_ENRICHED_STATUSES = new Set(["enriched", "complete", "processed"]);
 
 async function towerEnrichedCompanyIdSet() {
@@ -5360,6 +5411,193 @@ async function towerCreateKindlingRun(roleKey: string, localRequestId: string, t
     created_at: now,
     updated_at: now,
   }, id);
+}
+
+async function towerPersistServiceFitAssessment(input: { body: Record<string, unknown>; run: Record<string, unknown>; now?: number }) {
+  const now = input.now ?? Date.now();
+  const payload = serviceFitAssessmentPayload(input.body);
+  if (!payload.companyId) return { ok: false as const, error: "companyId is required" };
+  if (!payload.serviceOfferingId) return { ok: false as const, error: "serviceOfferingId is required" };
+  const score = normalizeAssessmentScore(payload.score);
+  if (score === null) return { ok: false as const, error: "score is required" };
+
+  const company = await getTowerStore().getById("companies", payload.companyId);
+  if (!company) return { ok: false as const, error: "company not found" };
+  if (!TOWER_ENRICHED_STATUSES.has(String(company.enrichment_status ?? ""))) {
+    return { ok: false as const, error: "company must be enriched before scoring" };
+  }
+  const offering = await getTowerStore().getById("service_offerings", payload.serviceOfferingId);
+  if (!offering) return { ok: false as const, error: "service offering not found" };
+  const marketProfileVersionId = payload.marketProfileVersionId || String(offering.market_profile_version_id);
+  if (marketProfileVersionId !== String(offering.market_profile_version_id)) {
+    return { ok: false as const, error: "service offering does not belong to market profile version" };
+  }
+  const runIdentity = validateServiceFitRunIdentity(payload, marketProfileVersionId, input.run);
+  if (!runIdentity.ok) return runIdentity;
+
+  const sourceRunId = String(input.run.id);
+  const id = serviceFitAssessmentId(payload.companyId, payload.serviceOfferingId, marketProfileVersionId, sourceRunId);
+  const band = normalizeAssessmentBand(payload.band, score);
+  const confidence = clampConfidence(payload.confidence, 0);
+  const drivers = jsonCollection(payload.drivers);
+  const evidence = jsonCollection(payload.evidence);
+  const caveats = jsonCollection(payload.caveats);
+  const fitExplanation = String(payload.fitExplanation ?? "").trim();
+  const recommendedAction = String(payload.recommendedAction ?? "").trim();
+  const row = {
+    id,
+    company_id: payload.companyId,
+    service_offering_id: payload.serviceOfferingId,
+    market_profile_version_id: marketProfileVersionId,
+    score,
+    band,
+    confidence,
+    drivers_json: JSON.stringify(drivers),
+    fit_explanation: fitExplanation,
+    evidence_json: JSON.stringify(evidence),
+    caveats_json: JSON.stringify(caveats),
+    recommended_action: recommendedAction,
+    source_run_id: sourceRunId,
+    assessment_json: JSON.stringify({
+      ...objectRecord(payload.raw),
+      outputKind: "service_fit_assessment",
+      companyId: payload.companyId,
+      serviceOfferingId: payload.serviceOfferingId,
+      marketProfileVersionId,
+      variantKey: payload.variantKey || String(offering.variant_key ?? ""),
+      score,
+      band,
+      confidence,
+      drivers,
+      fitExplanation,
+      evidence,
+      caveats,
+      recommendedAction,
+      sourceRunId,
+    }),
+    created_at: now,
+    updated_at: now,
+  };
+  const existing = await getTowerStore().getById("service_fit_assessments", id);
+  if (existing) {
+    const { id: _id, ...patch } = row;
+    await getTowerStore().patch("service_fit_assessments", id, patch);
+  } else {
+    await getTowerStore().create("service_fit_assessments", row, id);
+    await towerRecordActivity("company", payload.companyId, "pipeline", "service_fit_assessed", fitExplanation || `Service fit scored ${score}`, {
+      requestId: String(input.run.local_request_id ?? ""),
+      runId: sourceRunId,
+      serviceOfferingId: payload.serviceOfferingId,
+      marketProfileVersionId,
+      score,
+      band,
+    });
+  }
+  if (!["scored", "outreach_ready", "outreach", "contacted"].includes(String(company.data_ring ?? ""))) {
+    await towerPatchCompany(payload.companyId, { data_ring: "scored", updated_at: now });
+  }
+  return { ok: true as const, assessment: mapServiceFitAssessment({ ...row, offering_key: offering.key, offering_name: offering.name, offering_variant_key: offering.variant_key }) };
+}
+
+async function towerPersistServiceFitAssessmentBatch(body: Record<string, unknown>, run: Record<string, unknown>) {
+  const assessments = [];
+  const now = Date.now();
+  for (const assessmentBody of serviceFitAssessmentBodies(body)) {
+    const result = await towerPersistServiceFitAssessment({ body: assessmentBody, run, now });
+    if (!result.ok) return result;
+    assessments.push(result.assessment);
+  }
+  return { ok: true as const, assessments };
+}
+
+async function towerPersistCompanyEnrichment(body: Record<string, unknown>, run: Record<string, unknown>) {
+  const records = normalizeKindlingCallbackRecords("enrich_company", body);
+  const company = objectRecord(records.company ?? body.company);
+  const companyId = String(company.id ?? body.companyId ?? "").trim();
+  if (!companyId) return { ok: false as const, error: "company id is required" };
+  const existing = await getTowerStore().getById("companies", companyId);
+  if (!existing) return { ok: false as const, error: "company not found" };
+  const now = Date.now();
+  const profilePatch = { ...objectRecord(company.profilePatch), ...objectRecord(company.profile) };
+  const profile = {
+    ...jsonParse<Record<string, unknown>>(existing.profile_json, {}),
+    ...profilePatch,
+  };
+  await towerPatchCompany(companyId, {
+    website: String(company.website ?? existing.website ?? ""),
+    data_ring: normalizeCompanyDataRing(company.dataRing ?? "enhanced"),
+    enrichment_status: normalizeCompanyExecutionStatus(company.enrichmentStatus ?? "complete"),
+    confidence: clampConfidence(company.confidence, Number(existing.confidence ?? 0.75)),
+    profile_json: JSON.stringify(profile),
+    updated_at: now,
+  });
+
+  const sourceIds: string[] = [];
+  const sources = Array.isArray(company.sources) ? company.sources as Record<string, unknown>[] : Array.isArray(body.sources) ? body.sources as Record<string, unknown>[] : [];
+  const sourceRows = sources.length ? sources : [{
+    sourceType: "pipeline_enrichment",
+    url: String(company.website ?? existing.website ?? ""),
+    summary: String(company.sourceSummary ?? body.response ?? "Pipeline enrichment source"),
+    confidence: clampConfidence(company.confidence, 0.75),
+  }];
+  for (const source of sourceRows) {
+    const id = optionalText(source.id) ?? crypto.randomUUID();
+    const sourceRow = {
+      id,
+      company_id: companyId,
+      source_type: normalizeSourceType(source.sourceType ?? source.source_type),
+      url: String(source.url ?? source.sourceUrl ?? source.source_url ?? ""),
+      title: String(source.title ?? ""),
+      summary: String(source.summary ?? source.description ?? source.title ?? "Pipeline enrichment source"),
+      extracted_data_json: JSON.stringify(objectRecord(source.extractedData ?? source.extracted_data)),
+      confidence: clampConfidence(source.confidence, 0.75),
+      last_checked_at: optionalTimestamp(source.lastCheckedAt ?? source.last_checked_at),
+      last_checked_by_run_id: String(run.id),
+      terms_notes: String(source.termsNotes ?? source.terms_notes ?? ""),
+      created_at: now,
+    };
+    const existingSource = await getTowerStore().getById("sources", id);
+    if (existingSource) {
+      const { id: _id, ...patch } = sourceRow;
+      await getTowerStore().patch("sources", id, patch);
+    } else {
+      await getTowerStore().create("sources", sourceRow, id);
+    }
+    sourceIds.push(id);
+  }
+
+  await towerRecordActivity("company", companyId, "pipeline", "company_enhanced", String(body.response ?? "Enrichment complete"), {
+    requestId: String(run.local_request_id ?? body.requestId ?? ""),
+    runId: String(run.id),
+    sourceIds,
+  });
+  const profileVersionId = optionalText(objectRecord(company.profileVersion).id) ?? crypto.randomUUID();
+  await getTowerStore().create("customer_profile_versions", {
+    id: profileVersionId,
+    company_id: companyId,
+    version_number: now,
+    status: "active",
+    profile_json: JSON.stringify(objectRecord(company.profileVersion).profile ?? profile),
+    change_summary: String(company.changeSummary ?? objectRecord(company.profileVersion).changeSummary ?? body.response ?? "Pipeline enrichment profile update"),
+    source_ids_json: JSON.stringify(sourceIds),
+    activity_ids_json: JSON.stringify([]),
+    created_by: "pipeline",
+    created_at: now,
+  }, profileVersionId);
+  return { ok: true as const, persisted: { companyId, sourceCount: sourceIds.length, profileVersionId } };
+}
+
+async function towerApplyKindlingCallback(body: Record<string, unknown>, run: Record<string, unknown>) {
+  const roleKey = String(run.role_key ?? body.role ?? body.roleKey ?? "");
+  if (roleKey === "score_company_service_fit") {
+    const persisted = await towerPersistServiceFitAssessmentBatch(body, run);
+    if (!persisted.ok) return persisted;
+    return { ok: true as const, persisted: persisted.assessments };
+  }
+  if (roleKey === "enrich_company") {
+    return await towerPersistCompanyEnrichment(body, run);
+  }
+  return { ok: true as const, persisted: null };
 }
 
 function snakeBody(body: Record<string, unknown>) {
