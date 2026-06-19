@@ -1,17 +1,18 @@
 import { beforeEach, describe, expect, test } from "bun:test";
-import { finalizeEvent, getPublicKey } from "nostr-tools";
-import { TowerDbError, type TowerMigration } from "../src/tower-db.ts";
-
-process.env.KINDLING_DB_MODE = "tower";
-process.env.WINGMAN_URL = "http://127.0.0.1:9";
-
-const { handleApi, runAutomatedProspectingLoop, startKindlingBackgroundTasks } = await import("../src/server.ts");
-const { createTowerStore, resetTowerStoreForTests } = await import("../src/tower-store.ts");
-const { initializeTowerDbRuntime } = await import("../src/tower-db.ts");
-const { db } = await import("../src/db.ts");
+import { finalizeEvent, getPublicKey, nip19 } from "nostr-tools";
+import type { TowerMigration } from "../src/tower-db.ts";
 
 const secretKey = new Uint8Array(32).fill(8);
 const pubkey = getPublicKey(secretKey);
+
+process.env.KINDLING_DB_MODE = "tower";
+process.env.WINGMAN_URL = "http://127.0.0.1:9";
+process.env.WAPP_OWNER_NPUB = nip19.npubEncode(pubkey);
+
+const { handleApi, runAutomatedProspectingLoop, startKindlingBackgroundTasks } = await import("../src/server.ts");
+const { createTowerStore, resetTowerStoreForTests, towerHasAccess } = await import("../src/tower-store.ts");
+const { TowerDbError, initializeTowerDbRuntime } = await import("../src/tower-db.ts");
+const { db } = await import("../src/db.ts");
 
 type Call = { op: string; table?: string; id?: string; input?: Record<string, unknown> };
 
@@ -170,6 +171,15 @@ describe("Tower-mode Kindling API facade", () => {
     expect(challenge.res.status).toBe(200);
     expect(fake.calls).toContainEqual({ op: "get", table: "login_challenges", id: pubkey });
     expect(fake.calls.some((call) => call.op === "create" && call.table === "login_challenges")).toBe(true);
+  });
+
+  test("configured Tower WApp owner prevents empty access table from opening all access", async () => {
+    fake.table("access_rules").clear();
+    const otherPubkey = getPublicKey(new Uint8Array(32).fill(9));
+
+    expect(await towerHasAccess(pubkey, "edit")).toBe(true);
+    expect(await towerHasAccess(otherPubkey, "read")).toBe(false);
+    expect(await towerHasAccess(otherPubkey, "edit")).toBe(false);
   });
 
   test("target segment CRUD/list routes call Tower table APIs", async () => {

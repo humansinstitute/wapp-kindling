@@ -107,7 +107,9 @@ function normaliseNpubsFromJson(value: string): string[] {
 
 function initialAllowedPubkeys(): Set<string> {
   const pubkeys = new Set<string>();
-  for (const npub of [WAPP_OWNER_NPUB, ...normaliseNpubsFromJson(WAPP_ALLOWED_NPUBS_JSON)]) {
+  const ownerNpub = process.env.WAPP_OWNER_NPUB || WAPP_OWNER_NPUB;
+  const allowedNpubsJson = process.env.WAPP_ALLOWED_NPUBS_JSON || WAPP_ALLOWED_NPUBS_JSON;
+  for (const npub of [ownerNpub, ...normaliseNpubsFromJson(allowedNpubsJson)]) {
     const pubkey = normalizePubkey(npub);
     if (pubkey) pubkeys.add(pubkey);
   }
@@ -147,10 +149,13 @@ export async function towerRemoveAccessRule(pubkey: string, role: AccessRole, st
 }
 
 export async function towerHasAccess(pubkey: string, role: AccessRole, store = getTowerStore()) {
-  const ownerPubkey = normalizePubkey(WAPP_OWNER_NPUB);
+  const ownerPubkey = normalizePubkey(process.env.WAPP_OWNER_NPUB || WAPP_OWNER_NPUB);
   if (ownerPubkey && ownerPubkey === pubkey) return true;
-  if (initialAllowedPubkeys().has(pubkey) && role === "read") return true;
-  if (!(await towerHasConfiguredAccessRules(store))) return true;
+  const allowedPubkeys = initialAllowedPubkeys();
+  if (allowedPubkeys.has(pubkey) && role === "read") return true;
+  const hasAccessRules = await towerHasConfiguredAccessRules(store);
+  if (!hasAccessRules && (allowedPubkeys.size > 0 || ownerPubkey)) return false;
+  if (!hasAccessRules) return true;
   const roles: AccessRole[] = role === "read" ? ["read", "edit"] : ["edit"];
   const rows = await store.query("access_rules", {
     where: { pubkey: { eq: pubkey }, role: { in: roles } },
