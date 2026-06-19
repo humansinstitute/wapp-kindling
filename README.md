@@ -88,7 +88,7 @@ Tower mode is enabled when those four values are present, or explicitly with `KI
 
 Tower v1 exposes provision, migrations, and constrained per-table CRUD/query APIs. Kindling keeps browser auth, user/session/access checks, pipeline webhooks, and domain routes inside the WApp backend; browsers and agents should call Kindling APIs, not Tower DB directly.
 
-In Tower mode, `CHAT_WAPP_DB_PATH` is not used as authoritative app storage. Auth challenge/verify/session/access-rule/settings flows, target segments, companies, reporting/dashboard routes, work queue, scheduler settings/preview/run-once, coverage, top-target/today views, chats, pipeline run bookkeeping, pipeline webhook/write handlers, enrichment, scoring, target scan, outreach, and service-offering workflows use Tower WApp DB APIs. Unknown API paths return HTTP 404 in Tower mode instead of falling back to SQLite. The legacy cleanup and automated prospecting startup timers stay disabled in Tower mode; explicit scheduler run-once requests prepare Tower-backed pipeline runs.
+In Tower mode, `CHAT_WAPP_DB_PATH` is not used as authoritative app storage. Auth challenge/verify/session/access-rule/settings flows, target segments, companies, reporting/dashboard routes, work queue, scheduler settings/preview/run-once, coverage, top-target/today views, chats, pipeline run bookkeeping, pipeline webhook/write handlers, enrichment, scoring, target scan, outreach, and service-offering workflows use Tower WApp DB APIs. Unknown API paths return HTTP 404 in Tower mode instead of falling back to SQLite. Startup automation also runs through the Tower-backed scheduler path and starts queued Tower pipeline work when scheduler settings are enabled.
 
 Important Kindling routes:
 

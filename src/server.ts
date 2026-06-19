@@ -17,7 +17,7 @@ import {
   verifyLoginEvent,
   verifyNip98Request,
 } from "./auth.ts";
-import { IS_TOWER_DB_RUNTIME, PIPELINE_NAME, PORT, PUBLIC_ORIGIN, WINGMAN_URL, isTowerDbRuntime } from "./config.ts";
+import { APP_NPUB, IS_TOWER_DB_RUNTIME, PIPELINE_NAME, PORT, PUBLIC_ORIGIN, WINGMAN_URL, isTowerDbRuntime } from "./config.ts";
 import {
   acquireSchedulerLock,
   companyDataRingFilterValues,
@@ -5531,6 +5531,68 @@ async function towerCreateKindlingRun(roleKey: string, localRequestId: string, t
   }, id);
 }
 
+async function towerPatchSchedulerRunForRequest(requestId: string, patch: Record<string, unknown>) {
+  if (!requestId) return;
+  const rows = await getTowerStore().query("scheduler_runs", { where: { local_request_id: { eq: requestId } }, limit: 10 });
+  for (const row of rows) {
+    await getTowerStore().patch("scheduler_runs", String(row.id), { ...patch, updated_at: Date.now() });
+  }
+}
+
+async function towerMarkKindlingStartFailed(run: Record<string, unknown>, error: string) {
+  const now = Date.now();
+  const runId = String(run.id ?? "");
+  const requestId = String(run.local_request_id ?? "");
+  await getTowerStore().patch("kindling_pipeline_runs", runId, { status: "failed", error, updated_at: now });
+  await towerPatchSchedulerRunForRequest(requestId, {
+    status: "failed",
+    error,
+    finished_at: now,
+    result_json: JSON.stringify({ terminalStatus: "failed", retryable: true, source: "autopilot_start" }),
+  });
+  const queueRows = await getTowerStore().query("work_queue", { where: { locked_by_run_id: { eq: runId } }, limit: 50 });
+  for (const row of queueRows) {
+    await getTowerStore().patch("work_queue", String(row.id), { status: "failed", error, locked_by_run_id: null, updated_at: now });
+  }
+}
+
+async function towerStartKindlingRun(runId: string, authorization?: string) {
+  const run = await getTowerStore().getById("kindling_pipeline_runs", runId);
+  if (!run) throw new Error("pipeline run not found");
+  const roleKey = String(run.role_key ?? "");
+  const roles = await getTowerStore().query("pipeline_roles", { where: { role_key: { eq: roleKey } }, limit: 1 });
+  if (roles[0] && Number(roles[0]!.enabled ?? 1) === 0) throw new Error("pipeline role is disabled");
+  const triggerRequest = jsonParse<ReturnType<typeof buildKindlingTriggerRequest>>(run.trigger_payload_json, null as never);
+
+  try {
+    const bodyText = JSON.stringify(triggerRequest.body);
+    const effectiveAuthorization = authorization || buildServerNip98Authorization(triggerRequest.url, triggerRequest.method, bodyText);
+    const res = await fetch(triggerRequest.url, {
+      method: triggerRequest.method,
+      headers: {
+        "content-type": "application/json",
+        ...(effectiveAuthorization ? { authorization: effectiveAuthorization } : {}),
+      },
+      body: bodyText,
+    });
+    const payload = await res.json().catch(() => ({})) as Record<string, unknown>;
+    if (!res.ok) throw new Error(String(payload.error ?? res.statusText));
+    const remoteRun = payload.run && typeof payload.run === "object" ? payload.run as Record<string, unknown> : {};
+    const autopilotRunId = String(remoteRun.id ?? payload.runId ?? "");
+    await getTowerStore().patch("kindling_pipeline_runs", runId, { status: "running", autopilot_run_id: autopilotRunId, updated_at: Date.now() });
+    await towerPatchSchedulerRunForRequest(String(run.local_request_id ?? ""), {
+      status: "running",
+      autopilot_run_id: autopilotRunId || null,
+      result_json: JSON.stringify({ autopilotRunId: autopilotRunId || null }),
+    });
+    return { mode: "autopilot-http", runId: autopilotRunId || runId, status: "running" };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await towerMarkKindlingStartFailed(run, message);
+    throw error;
+  }
+}
+
 async function towerPrepareSchedulerQueuedRun(queueRow: Record<string, unknown>, userPubkey: string, origin: string, now = Date.now()) {
   const item = mapWorkQueueItem(queueRow);
   const company = item.targetType === "company" ? await towerGetCompanyRow(item.targetId) : null;
@@ -8981,8 +9043,36 @@ async function runAutomatedOutreachLoop() {
   }
 }
 
+async function runTowerAutomatedProspectingLoop() {
+  const settings = await towerSchedulerSettings();
+  if (!settings.enabled) return null;
+  if (await towerActiveSchedulerLock()) return null;
+  const queued = (await getTowerStore().query("work_queue", { where: { status: { eq: "queued" } }, order: [{ field: "priority", dir: "asc" }, { field: "updated_at", dir: "asc" }], limit: 1 }))[0] ?? null;
+  if (!queued) return null;
+  const schedulerPubkey = normalizePubkey(APP_NPUB);
+  if (!schedulerPubkey) {
+    console.error("kindling Tower scheduler cannot run without a valid APP_NPUB");
+    return null;
+  }
+  const prepared = await towerPrepareSchedulerQueuedRun(queued, schedulerPubkey, scheduledKindlingOrigin());
+  if (!prepared.ok) return null;
+  try {
+    const start = await towerStartKindlingRun(String(prepared.kindlingRun.id));
+    return {
+      action: String(prepared.roleKey || "queued_work"),
+      schedulerRunId: String(prepared.schedulerRun.id),
+      runId: String(prepared.kindlingRun.id),
+      requestId: prepared.requestId,
+      start,
+    };
+  } catch (error) {
+    console.error("Tower automated prospecting run failed to start", error);
+    return null;
+  }
+}
+
 export async function runAutomatedProspectingLoop() {
-  if (isTowerDbRuntime()) return null;
+  if (isTowerDbRuntime()) return await runTowerAutomatedProspectingLoop();
   await reconcileActiveKindlingRuns();
   reconcileSchedulerState();
   const results: Array<Record<string, unknown>> = [];
@@ -9001,8 +9091,20 @@ export async function runAutomatedProspectingLoop() {
 
 export function startKindlingBackgroundTasks() {
   if (isTowerDbRuntime()) {
-    console.log("kindling Tower DB runtime: legacy cleanup and prospecting automation disabled");
-    return { enabled: false, reason: "tower-db-runtime" as const, timers: 0 };
+    console.log("kindling Tower DB runtime: Tower-backed prospecting automation enabled");
+    const startupTimer = setTimeout(() => {
+      void runAutomatedProspectingLoop().catch((error) => {
+        console.error("Tower automated prospecting startup pass failed", error);
+      });
+    }, 1000);
+    startupTimer.unref?.();
+    const intervalTimer = setInterval(() => {
+      void runAutomatedProspectingLoop().catch((error) => {
+        console.error("Tower automated prospecting loop failed", error);
+      });
+    }, PROSPECTING_LOOP_INTERVAL_MS);
+    intervalTimer.unref?.();
+    return { enabled: true, reason: "tower-db-runtime" as const, timers: 2 };
   }
 
   setInterval(cleanupExpiredAuthRows, 15 * 60 * 1000);

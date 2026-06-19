@@ -298,7 +298,7 @@ describe("Tower-mode Kindling API facade", () => {
     expect(db.query("SELECT COUNT(*) AS count FROM work_queue").get()).toEqual(sqliteCountsBefore.workQueue);
   });
 
-  test("Tower mode disables legacy startup automation loops", async () => {
+  test("Tower mode starts Tower-backed automation without touching SQLite when disabled", async () => {
     const sqliteCountsBefore = {
       kindlingPipelineRuns: db.query("SELECT COUNT(*) AS count FROM kindling_pipeline_runs").get() as { count: number },
       schedulerRuns: db.query("SELECT COUNT(*) AS count FROM scheduler_runs").get() as { count: number },
@@ -306,9 +306,9 @@ describe("Tower-mode Kindling API facade", () => {
     };
 
     expect(startKindlingBackgroundTasks()).toEqual({
-      enabled: false,
+      enabled: true,
       reason: "tower-db-runtime",
-      timers: 0,
+      timers: 2,
     });
     expect(await runAutomatedProspectingLoop()).toBeNull();
 
