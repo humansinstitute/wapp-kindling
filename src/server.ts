@@ -466,6 +466,17 @@ async function handleTowerApi(req: Request, url: URL): Promise<Response | null> 
   return null;
 }
 
+function towerUnsupportedRoute(req: Request, url: URL): Response | null {
+  if (!towerStoreEnabled() || !url.pathname.startsWith("/api/")) return null;
+  return json({
+    error: "unsupported in Tower DB mode",
+    mode: "tower",
+    route: url.pathname,
+    method: req.method,
+    detail: "This Kindling workflow has not been migrated to Tower WApp DB yet, so it is blocked instead of using SQLite fallback storage.",
+  }, 501);
+}
+
 function toServerAutopilotUrl(value: string) {
   return value.replace(/\/$/, "");
 }
@@ -7306,6 +7317,9 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
   if (pathname === "/api/health" && req.method === "GET") {
     return json({ ok: true, now: new Date().toISOString() });
   }
+
+  const unsupportedTowerResponse = towerUnsupportedRoute(req, url);
+  if (unsupportedTowerResponse) return unsupportedTowerResponse;
 
   if (pathname === "/api/auth/challenge" && req.method === "POST") {
     const body = await readJson(req);

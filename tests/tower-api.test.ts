@@ -8,6 +8,7 @@ process.env.WINGMAN_URL = "http://127.0.0.1:9";
 const { handleApi } = await import("../src/server.ts");
 const { createTowerStore, resetTowerStoreForTests } = await import("../src/tower-store.ts");
 const { initializeTowerDbRuntime } = await import("../src/tower-db.ts");
+const { db } = await import("../src/db.ts");
 
 const secretKey = new Uint8Array(32).fill(8);
 const pubkey = getPublicKey(secretKey);
@@ -205,5 +206,53 @@ describe("Tower-mode Kindling API facade", () => {
     expect(fake.calls.some((call) => call.op === "create" && call.table === "companies")).toBe(true);
     expect(fake.calls.some((call) => call.op === "query" && call.table === "companies")).toBe(true);
     expect(fake.calls.some((call) => call.op === "patch" && call.table === "companies")).toBe(true);
+  });
+
+  test("unported Tower-mode Kindling workflows return 501 instead of falling through to SQLite", async () => {
+    const sqliteCountsBefore = {
+      companies: db.query("SELECT COUNT(*) AS count FROM companies").get() as { count: number },
+      chats: db.query("SELECT COUNT(*) AS count FROM chats").get() as { count: number },
+      messages: db.query("SELECT COUNT(*) AS count FROM messages").get() as { count: number },
+      kindlingPipelineRuns: db.query("SELECT COUNT(*) AS count FROM kindling_pipeline_runs").get() as { count: number },
+      workQueue: db.query("SELECT COUNT(*) AS count FROM work_queue").get() as { count: number },
+    };
+    const blockedRoutes = [
+      { label: "summary/reporting", path: "/api/kindling/summary", method: "GET" },
+      { label: "scheduler settings", path: "/api/kindling/scheduler-settings", method: "GET" },
+      { label: "scheduler run", path: "/api/kindling/scheduler/run-once", method: "POST" },
+      { label: "work queue", path: "/api/kindling/work-queue", method: "GET" },
+      { label: "pipeline roles", path: "/api/kindling/pipeline-roles", method: "GET" },
+      { label: "pipeline webhook", path: "/api/kindling/pipeline-webhook", method: "POST" },
+      { label: "target scan write", path: "/api/kindling/pipeline-write/target-scan", method: "POST" },
+      { label: "enrichment write", path: "/api/kindling/pipeline-write/enrichment-company", method: "POST" },
+      { label: "coverage slices", path: "/api/kindling/coverage-slices", method: "GET" },
+      { label: "target scans", path: "/api/kindling/target-scans", method: "POST" },
+      { label: "company enrichment", path: "/api/kindling/companies/company-1/enrich", method: "POST" },
+      { label: "company outreach", path: "/api/kindling/companies/company-1/outreach", method: "POST" },
+      { label: "top targets", path: "/api/kindling/top-targets", method: "GET" },
+      { label: "top target rebuild", path: "/api/kindling/top-targets/rebuild", method: "POST" },
+      { label: "todays targets", path: "/api/kindling/todays-targets", method: "GET" },
+      { label: "chat list", path: "/api/chats", method: "GET" },
+      { label: "chat create", path: "/api/chats", method: "POST" },
+      { label: "chat messages", path: "/api/chats/chat-1/messages", method: "POST" },
+    ];
+
+    for (const route of blockedRoutes) {
+      const response = await api(route.path, { method: route.method, body: route.method === "GET" ? undefined : {} });
+      expect(response.res.status, route.label).toBe(501);
+      expect(response.payload).toMatchObject({
+        error: "unsupported in Tower DB mode",
+        mode: "tower",
+        route: route.path,
+        method: route.method,
+      });
+    }
+
+    expect(db.query("SELECT COUNT(*) AS count FROM companies").get()).toEqual(sqliteCountsBefore.companies);
+    expect(db.query("SELECT COUNT(*) AS count FROM chats").get()).toEqual(sqliteCountsBefore.chats);
+    expect(db.query("SELECT COUNT(*) AS count FROM messages").get()).toEqual(sqliteCountsBefore.messages);
+    expect(db.query("SELECT COUNT(*) AS count FROM kindling_pipeline_runs").get()).toEqual(sqliteCountsBefore.kindlingPipelineRuns);
+    expect(db.query("SELECT COUNT(*) AS count FROM work_queue").get()).toEqual(sqliteCountsBefore.workQueue);
+    expect(fake.calls.every((call) => !["companies", "chats", "messages", "kindling_pipeline_runs", "work_queue"].includes(String(call.table ?? "")))).toBe(true);
   });
 });
