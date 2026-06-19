@@ -997,7 +997,13 @@ async function handleTowerApi(req: Request, url: URL): Promise<Response | null> 
       await towerStore.patch("kindling_pipeline_runs", String(runs[0]!.id), { status: "running", updated_at: Date.now() });
       return json({ ok: true, persisted: persisted.persisted });
     }
-    return json({ error: "Tower pipeline write route is not ported yet", role, requestId }, 501);
+    if (role === "target-scan") {
+      const persisted = await towerPersistScanRecords(body, runs[0]!);
+      if (!persisted.ok) return json({ error: persisted.error }, 400);
+      await towerStore.patch("kindling_pipeline_runs", String(runs[0]!.id), { status: "running", updated_at: Date.now() });
+      return json({ ok: true, persisted: persisted.persisted });
+    }
+    return json({ error: "unknown Tower pipeline write route", role, requestId }, 404);
   }
 
   if (pathname === "/api/nip98/me" && req.method === "GET") {
@@ -4938,7 +4944,7 @@ function buildKindlingRoleFields(roleKey: string, context: Record<string, unknow
       },
     };
   }
-  if (roleKey === "develop_service_offering") {
+  if (roleKey === "develop_service_offering" || roleKey === "define_service_offering") {
     return {
       history: Array.isArray(context.history) ? context.history : [],
     };
@@ -5158,6 +5164,21 @@ async function towerCountRows(table: string, where: Record<string, Record<string
     if (rows.length < pageSize) break;
   }
   return count;
+}
+
+async function pageTowerRows(table: string, input: Record<string, unknown> = {}) {
+  const rows: Record<string, unknown>[] = [];
+  const pageSize = 500;
+  for (let offset = 0; ; offset += pageSize) {
+    const page = await getTowerStore().query(table, {
+      ...input,
+      limit: pageSize,
+      offset,
+    });
+    rows.push(...page);
+    if (page.length < pageSize) break;
+  }
+  return rows;
 }
 
 const TOWER_ENRICHED_STATUSES = new Set(["enriched", "complete", "processed"]);
@@ -5587,8 +5608,373 @@ async function towerPersistCompanyEnrichment(body: Record<string, unknown>, run:
   return { ok: true as const, persisted: { companyId, sourceCount: sourceIds.length, profileVersionId } };
 }
 
+async function towerFindExistingScanCompany(company: Record<string, unknown>, records: Record<string, unknown>) {
+  const website = String(company.website ?? "").trim();
+  if (website) {
+    const rows = await getTowerStore().query("companies", { where: { website: { eq: website } }, limit: 1 });
+    if (rows[0]) return rows[0];
+  }
+  const name = String(company.name ?? "").trim();
+  if (!name) return null;
+  const location = String(company.location ?? records.location ?? "").trim();
+  const industry = String(company.industry ?? records.industry ?? "").trim();
+  const rows = await getTowerStore().query("companies", {
+    where: { name: { eq: name }, location: { eq: location }, industry: { eq: industry } },
+    limit: 1,
+  });
+  return rows[0] ?? null;
+}
+
+async function towerFindTargetSegmentIdForScan(value: unknown) {
+  const raw = String(value ?? "").trim();
+  if (!raw) return null;
+  const direct = await getTowerStore().getById("target_segments", raw);
+  if (direct) return String(direct.id);
+  const rows = await getTowerStore().query("target_segments", { where: { label: { eq: raw } }, limit: 1 });
+  return rows[0] ? String(rows[0].id) : null;
+}
+
+async function towerGetOrCreateTargetGeography(label: string, now = Date.now()) {
+  const cleanLabel = label.trim() || "Unspecified";
+  const canonicalKey = canonicalGeographyKey(cleanLabel);
+  const existing = (await getTowerStore().query("target_geographies", { where: { canonical_key: { eq: canonicalKey } }, limit: 1 }))[0];
+  if (existing) return String(existing.id);
+  const id = `geo-${canonicalKey}`.slice(0, 96);
+  await getTowerStore().create("target_geographies", {
+    id,
+    parent_id: null,
+    label: cleanLabel,
+    kind: "search_text",
+    canonical_key: canonicalKey,
+    status: "active",
+    created_at: now,
+    updated_at: now,
+  }, id);
+  return id;
+}
+
+async function towerTargetCountsForCoverage(segmentId: string | null, fallbackFound: number) {
+  if (segmentId) {
+    const segment = await getTowerStore().getById("target_segments", segmentId);
+    const targets = jsonParse<Record<string, unknown>>(segment?.coverage_targets_json, {});
+    if (Object.keys(targets).length) return targets;
+  }
+  return fallbackFound > 0 ? { found: fallbackFound } : {};
+}
+
+async function towerGetOrCreateCoverageSlice(input: {
+  segmentId: string | null;
+  geographyId: string | null;
+  geographyText: string;
+  sourceFamily: string;
+  strategyType: string;
+  targetCounts?: Record<string, unknown>;
+  now?: number;
+}) {
+  const now = input.now ?? Date.now();
+  const geographyText = input.geographyText.trim();
+  const sourceFamily = input.sourceFamily.trim().toLowerCase() || "web";
+  const strategyType = input.strategyType.trim().toLowerCase() || "search";
+  const rows = await getTowerStore().query("coverage_slices", {
+    where: {
+      geography_text: { eq: geographyText },
+      source_family: { eq: sourceFamily },
+      strategy_type: { eq: strategyType },
+    },
+    limit: 500,
+  });
+  const existing = rows.find((row) =>
+    String(row.segment_id ?? "") === String(input.segmentId ?? "")
+    && String(row.geography_id ?? "") === String(input.geographyId ?? "")
+  );
+  if (existing) {
+    if (input.targetCounts && Object.keys(input.targetCounts).length) {
+      await getTowerStore().patch("coverage_slices", String(existing.id), { target_counts_json: JSON.stringify(input.targetCounts), updated_at: now });
+    }
+    return String(existing.id);
+  }
+  const id = crypto.randomUUID();
+  await getTowerStore().create("coverage_slices", {
+    id,
+    segment_id: input.segmentId,
+    geography_id: input.geographyId,
+    geography_text: geographyText,
+    source_family: sourceFamily,
+    strategy_type: strategyType,
+    status: "active",
+    target_counts_json: JSON.stringify(input.targetCounts ?? {}),
+    current_counts_json: "{}",
+    yield_metrics_json: "{}",
+    last_run_at: null,
+    next_run_after_at: null,
+    stalled_reason: null,
+    created_at: now,
+    updated_at: now,
+  }, id);
+  return id;
+}
+
+async function towerRollUpCoverageSlice(coverageSliceId: string, now = Date.now()) {
+  const attempts = await pageTowerRows("scan_strategy_attempts", {
+    where: { coverage_slice_id: { eq: coverageSliceId } },
+    select: ["status", "result_count", "created_at"],
+  });
+  const executed = attempts.filter((row) => String(row.status) !== "planned");
+  const resultCount = executed.reduce((sum, row) => sum + Number(row.result_count ?? 0), 0);
+  const lastRunAt = executed.reduce((max, row) => Math.max(max, Number(row.created_at ?? 0)), 0) || now;
+  const blockedAttempts = executed.filter((row) => String(row.status) === "blocked").length;
+  const currentCounts = { found: resultCount, unique: resultCount, possibleDuplicates: 0, weakSource: 0, enriched: 0, scored: 0, outreachReady: 0, parked: 0, stale: 0, executedAttempts: executed.length };
+  const yieldMetrics = { executedAttempts: executed.length, resultCount, averageResultCount: executed.length ? resultCount / executed.length : 0, netNewCompanies: resultCount, blockedAttempts };
+  const stalledReason = executed.length > 0 && resultCount === 0 ? "no_results" : null;
+  await getTowerStore().patch("coverage_slices", coverageSliceId, {
+    current_counts_json: JSON.stringify(currentCounts),
+    yield_metrics_json: JSON.stringify(yieldMetrics),
+    last_run_at: lastRunAt,
+    status: stalledReason ? "stalled" : "active",
+    stalled_reason: stalledReason,
+    updated_at: now,
+  });
+}
+
+async function towerUpsertTargetRanking(companyId: string, reason: string, score: Record<string, unknown>, now = Date.now()) {
+  const rank = await towerCountRows("target_rankings") + 1;
+  const id = crypto.randomUUID();
+  await getTowerStore().create("target_rankings", { id, company_id: companyId, rank, reason, score_json: JSON.stringify(score), created_at: now }, id);
+}
+
+async function towerSourceAlreadyExists(companyId: string, url: string, summary: string) {
+  const rows = await getTowerStore().query("sources", { where: { company_id: { eq: companyId }, url: { eq: url }, summary: { eq: summary } }, limit: 1 });
+  return Boolean(rows[0]);
+}
+
+async function towerPersistScanRecords(body: Record<string, unknown>, run: Record<string, unknown>) {
+  const requestId = String(body.requestId ?? run.local_request_id ?? "").trim();
+  if (!requestId) return { ok: false as const, error: "requestId is required" };
+  const records = normalizeKindlingCallbackRecords("scan_target_list", {
+    ...body,
+    role: "scan_target_list",
+    status: String(body.status ?? "running"),
+  });
+  const now = Date.now();
+  const companies = Array.isArray(records.companies) ? records.companies as Record<string, unknown>[] : [];
+  const jobRow = await getTowerStore().getById("discovery_jobs", requestId);
+  const segmentId = await towerFindTargetSegmentIdForScan(records.segmentId ?? records.targetSegmentId ?? jobRow?.segment_id ?? records.industry);
+  const geographyText = String(records.geographyText ?? records.location ?? jobRow?.geography_text ?? jobRow?.location ?? "").trim();
+  const geographyId = jobRow?.geography_id ? String(jobRow.geography_id) : await towerGetOrCreateTargetGeography(geographyText, now);
+  const touchedCoverageSlices = new Set<string>();
+  let createdCompanies = 0;
+  let updatedCompanies = 0;
+  let sourceRecords = 0;
+
+  for (const company of companies) {
+    const existing = await towerFindExistingScanCompany(company, records);
+    const name = String(company.name ?? "").trim() || "Untitled company";
+    const location = String(company.location ?? records.location ?? "");
+    const industry = String(company.industry ?? records.industry ?? "");
+    const website = String(company.website ?? "");
+    const confidence = Number(company.confidence ?? 0.4);
+    const companyId = existing ? String(existing.id) : crypto.randomUUID();
+
+    if (existing) {
+      await towerPatchCompany(companyId, {
+        location: location || existing.location || "",
+        industry: industry || existing.industry || "",
+        website: website || existing.website || "",
+        confidence: Math.max(Number(existing.confidence ?? 0), confidence),
+        updated_at: now,
+      });
+      await towerRecordActivity("company", companyId, "pipeline", "company_matched", `Matched by scan ${requestId}`, { requestId });
+      updatedCompanies++;
+    } else {
+      await towerCreateCompany({
+        id: companyId,
+        name,
+        location,
+        industry,
+        website,
+        data_ring: normalizeCompanyDataRing(company.dataRing ?? "found"),
+        duplicate_status: normalizeDuplicateStatus(company.duplicateStatus),
+        enrichment_status: "not_started",
+        confidence,
+        profile_json: "{}",
+        created_at: now,
+        updated_at: now,
+      });
+      await towerRecordActivity("company", companyId, "pipeline", "company_created", `Created by scan ${requestId}`, { requestId });
+      await towerUpsertTargetRanking(companyId, "New scan target with sparse but usable data.", { fit: confidence }, now);
+      createdCompanies++;
+    }
+
+    const sourceUrl = String(company.website ?? "");
+    const sourceSummary = String(company.sourceSummary ?? company.evidence ?? "Scan source");
+    if (!await towerSourceAlreadyExists(companyId, sourceUrl, sourceSummary)) {
+      const sourceId = crypto.randomUUID();
+      await getTowerStore().create("sources", {
+        id: sourceId,
+        company_id: companyId,
+        source_type: "scan",
+        url: sourceUrl,
+        title: "",
+        summary: sourceSummary,
+        extracted_data_json: "{}",
+        confidence,
+        last_checked_at: null,
+        last_checked_by_run_id: String(run.id),
+        terms_notes: "",
+        created_at: now,
+      }, sourceId);
+      sourceRecords++;
+    }
+  }
+
+  const possibleDuplicates = Array.isArray(records.possibleDuplicates) ? records.possibleDuplicates as Record<string, unknown>[] : [];
+  for (const duplicate of possibleDuplicates) {
+    for (const name of [duplicate.companyName, duplicate.possibleMatchName]) {
+      const companyName = String(name ?? "").trim();
+      if (!companyName) continue;
+      const matches = await getTowerStore().query("companies", { where: { name: { eq: companyName } }, limit: 20 });
+      for (const match of matches) await towerPatchCompany(String(match.id), { duplicate_status: "possible_duplicate", updated_at: now });
+    }
+  }
+
+  let strategyAttempts = 0;
+  const slices = Array.isArray(records.searchSlices) ? records.searchSlices as Record<string, unknown>[] : [];
+  for (const slice of slices) {
+    const strategyType = String(slice.strategyType ?? slice.strategy ?? "search");
+    const query = String(slice.query ?? "");
+    const location = String(slice.location ?? records.location ?? "");
+    const status = String(slice.status ?? "searched");
+    if (status === "planned") continue;
+    const sliceSegmentId = await towerFindTargetSegmentIdForScan(slice.segmentId ?? slice.targetSegmentId ?? segmentId ?? slice.industry ?? records.industry);
+    const sliceGeographyText = String(slice.geographyText ?? slice.location ?? geographyText).trim();
+    const sliceGeographyId = await towerGetOrCreateTargetGeography(sliceGeographyText, now);
+    const sourceFamily = normalizeSourceFamily(slice.sourceFamily ?? slice.source_family, strategyType);
+    const coverageSliceId = await towerGetOrCreateCoverageSlice({
+      segmentId: sliceSegmentId,
+      geographyId: sliceGeographyId,
+      geographyText: sliceGeographyText,
+      sourceFamily,
+      strategyType,
+      targetCounts: await towerTargetCountsForCoverage(sliceSegmentId, Number(jobRow?.target_count ?? 0)),
+      now,
+    });
+    const existingAttempt = (await getTowerStore().query("scan_strategy_attempts", {
+      where: { discovery_job_id: { eq: requestId }, strategy_type: { eq: strategyType }, query: { eq: query }, location: { eq: location }, status: { eq: status } },
+      limit: 1,
+    }))[0];
+    if (existingAttempt) {
+      touchedCoverageSlices.add(coverageSliceId);
+      continue;
+    }
+    const id = crypto.randomUUID();
+    await getTowerStore().create("scan_strategy_attempts", {
+      id,
+      discovery_job_id: requestId,
+      segment_id: sliceSegmentId,
+      geography_id: sliceGeographyId,
+      geography_text: sliceGeographyText,
+      coverage_slice_id: coverageSliceId,
+      source_family: sourceFamily,
+      industry: String(slice.industry ?? records.industry ?? ""),
+      location,
+      strategy_type: strategyType,
+      query,
+      status,
+      result_count: Number(slice.resultCount ?? slice.companiesFound ?? 0),
+      notes: String(slice.notes ?? ""),
+      payload_json: JSON.stringify(slice),
+      created_at: now,
+    }, id);
+    touchedCoverageSlices.add(coverageSliceId);
+    strategyAttempts++;
+  }
+  for (const coverageSliceId of touchedCoverageSlices) await towerRollUpCoverageSlice(coverageSliceId, now);
+
+  const companyCount = Math.max(companies.length, createdCompanies + updatedCompanies, Number(jobRow?.company_count ?? 0));
+  const storedStatus = String(body.status ?? "running") === "complete" && companyCount < Number(jobRow?.target_count ?? 0) ? "partial" : String(body.status ?? "running");
+  const primaryCoverageSliceId = touchedCoverageSlices.values().next().value ?? (jobRow?.coverage_slice_id ? String(jobRow.coverage_slice_id) : null);
+  await getTowerStore().patch("discovery_jobs", requestId, {
+    status: storedStatus,
+    company_count: companyCount,
+    source_count: sourceRecords || companyCount,
+    summary: String(body.response ?? (storedStatus === "complete" ? "Scan complete" : "Scan batch written")),
+    segment_id: jobRow?.segment_id ?? segmentId,
+    geography_id: jobRow?.geography_id ?? geographyId,
+    geography_text: jobRow?.geography_text || geographyText,
+    coverage_slice_id: jobRow?.coverage_slice_id ?? primaryCoverageSliceId,
+    updated_at: now,
+  });
+  return { ok: true as const, persisted: { createdCompanies, updatedCompanies, returnedCompanies: companies.length, strategyAttempts, matchingCompanies: companyCount, status: storedStatus } };
+}
+
+async function towerPersistServiceOfferingDefinition(body: Record<string, unknown>, run: Record<string, unknown>) {
+  const records = normalizeKindlingCallbackRecords("define_service_offering", body);
+  const versionRecord = objectRecord(records.marketProfileVersion);
+  const now = Date.now();
+  const profile = (await getTowerStore().query("market_profiles", { order: [{ field: "created_at", dir: "asc" }], limit: 1 }))[0];
+  const profileId = profile ? String(profile.id) : crypto.randomUUID();
+  if (!profile) {
+    await getTowerStore().create("market_profiles", { id: profileId, name: "Kindling service offering", current_version_id: null, created_at: now, updated_at: now }, profileId);
+  }
+  const versionNumber = await towerCountRows("market_profile_versions", { profile_id: { eq: profileId } }) + 1;
+  const versionId = crypto.randomUUID();
+  const structured = objectRecord(versionRecord.structured);
+  await getTowerStore().create("market_profile_versions", {
+    id: versionId,
+    profile_id: profileId,
+    version_number: versionNumber,
+    structured_json: JSON.stringify(structured),
+    summary: String(versionRecord.summary ?? body.response ?? "Service offering updated"),
+    rationale: String(versionRecord.rationale ?? ""),
+    source_references_json: JSON.stringify(Array.isArray(versionRecord.sourceReferences) ? versionRecord.sourceReferences : []),
+    created_at: now,
+  }, versionId);
+  await getTowerStore().patch("market_profiles", profileId, { current_version_id: versionId, updated_at: now });
+  for (const offering of extractServiceOfferingsFromProfile(structured)) {
+    const id = serviceOfferingId(versionId, offering.key, offering.variantKey);
+    await getTowerStore().create("service_offerings", {
+      id,
+      market_profile_version_id: versionId,
+      key: offering.key,
+      name: offering.name,
+      variant_key: offering.variantKey,
+      structured_json: JSON.stringify(offering.structured),
+      status: offering.status,
+      created_at: now,
+      updated_at: now,
+    }, id);
+  }
+  await towerRecordActivity("market_profile", profileId, "pipeline", "profile_version_created", String(body.response ?? "Service offering updated"), { runId: run.id });
+  return { ok: true as const, persisted: { profileId, versionId, versionNumber } };
+}
+
+async function towerPersistOutreachDraft(body: Record<string, unknown>, run: Record<string, unknown>) {
+  const records = normalizeKindlingCallbackRecords("draft_outreach", body);
+  const draft = objectRecord(records.outreachDraft);
+  const companyId = String(draft.companyId ?? run.local_request_id ?? body.companyId ?? "").trim();
+  if (!companyId) return { ok: false as const, error: "companyId is required" };
+  const company = await getTowerStore().getById("companies", companyId);
+  if (!company) return { ok: false as const, error: "company not found" };
+  const now = Date.now();
+  const id = crypto.randomUUID();
+  await getTowerStore().create("outreach_drafts", {
+    id,
+    company_id: companyId,
+    pitch_text: String(draft.pitchText ?? body.response ?? ""),
+    status: "draft",
+    source_run_id: String(run.id),
+    created_at: now,
+    updated_at: now,
+  }, id);
+  await towerRecordActivity("company", companyId, "pipeline", "outreach_drafted", String(body.response ?? "Outreach drafted"), { requestId: String(run.local_request_id ?? "") });
+  return { ok: true as const, persisted: { draftId: id, companyId } };
+}
+
 async function towerApplyKindlingCallback(body: Record<string, unknown>, run: Record<string, unknown>) {
   const roleKey = String(run.role_key ?? body.role ?? body.roleKey ?? "");
+  if (roleKey === "develop_service_offering" || roleKey === "define_service_offering") {
+    return await towerPersistServiceOfferingDefinition(body, run);
+  }
   if (roleKey === "score_company_service_fit") {
     const persisted = await towerPersistServiceFitAssessmentBatch(body, run);
     if (!persisted.ok) return persisted;
@@ -5596,6 +5982,12 @@ async function towerApplyKindlingCallback(body: Record<string, unknown>, run: Re
   }
   if (roleKey === "enrich_company") {
     return await towerPersistCompanyEnrichment(body, run);
+  }
+  if (roleKey === "scan_target_list") {
+    return await towerPersistScanRecords(body, run);
+  }
+  if (roleKey === "draft_outreach") {
+    return await towerPersistOutreachDraft(body, run);
   }
   return { ok: true as const, persisted: null };
 }
