@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
-import { finalizeEvent, nip19 } from "nostr-tools";
+import { finalizeEvent, nip19, verifyEvent } from "nostr-tools";
 import type { Event as NostrEvent } from "nostr-tools";
 import {
   addAccessRule,
@@ -41,6 +41,34 @@ import {
 } from "./db.ts";
 import { buildPipelineTriggerRequest, startPreparedChatPipeline, type PipelineTriggerRequest } from "./pipeline.ts";
 import { initializeTowerDbRuntime } from "./tower-db.ts";
+import {
+  getTowerStore,
+  towerAddAccessRule,
+  towerCountCompanies,
+  towerCreateChallenge,
+  towerCreateCompany,
+  towerCreateSession,
+  towerCreateTargetSegment,
+  towerDeleteChallenge,
+  towerGetAccessRules,
+  towerGetAppSettings,
+  towerGetChallenge,
+  towerGetCompany,
+  towerGetCompanyRow,
+  towerGetSessionToken,
+  towerGetTargetSegment,
+  towerHasAccess,
+  towerListCompanies,
+  towerListCompanyDetailRows,
+  towerListTargetSegments,
+  towerPatchCompany,
+  towerPatchTargetSegment,
+  towerRecordActivity,
+  towerRemoveAccessRule,
+  towerSetSetting,
+  towerStoreEnabled,
+  type TowerTargetSegment,
+} from "./tower-store.ts";
 
 const PUBLIC_DIR = join(import.meta.dir, "..", "public");
 const COMPANY_LIST_LIMIT = 500;
@@ -111,6 +139,331 @@ function requireSession(req: Request) {
   const session = getSession(req);
   if (!session) return null;
   return session;
+}
+
+function bearerToken(req: Request): string | null {
+  const raw = req.headers.get("authorization");
+  if (!raw) return null;
+  const [scheme, token] = raw.split(" ");
+  return scheme?.toLowerCase() === "bearer" && token ? token.trim() : null;
+}
+
+async function requireTowerSession(req: Request) {
+  const token = bearerToken(req);
+  return token ? await towerGetSessionToken(token) : null;
+}
+
+async function requireTowerEditSession(req: Request) {
+  const session = await requireTowerSession(req);
+  if (!session) return null;
+  return await towerHasAccess(session.pubkey, "edit") ? session : null;
+}
+
+async function towerCanLogin(pubkey: string) {
+  return towerHasAccess(pubkey, "read");
+}
+
+async function verifyTowerLoginEvent(event: NostrEvent) {
+  if (!normalizePubkey(event.pubkey)) return { ok: false as const, error: "Invalid pubkey" };
+  if (!verifyEvent(event)) return { ok: false as const, error: "Invalid signature" };
+  const row = await towerGetChallenge(event.pubkey);
+  if (!row) return { ok: false as const, error: "Challenge not found" };
+  if (Number(row.expires_at) < Date.now()) return { ok: false as const, error: "Challenge expired" };
+  if (event.content !== `kindling-login:${row.nonce}`) return { ok: false as const, error: "Challenge mismatch" };
+  if (Math.abs(event.created_at * 1000 - Date.now()) > 5 * 60 * 1000) {
+    return { ok: false as const, error: "Event timestamp out of range" };
+  }
+  if (!(await towerCanLogin(event.pubkey))) {
+    return { ok: false as const, error: "This npub is not allowed to log in to this WApp" };
+  }
+  await towerDeleteChallenge(event.pubkey);
+  return { ok: true as const, ...(await towerCreateSession(event.pubkey)) };
+}
+
+function buildTowerTargetSegmentTree(segments: TowerTargetSegment[]): TowerTargetSegment[] {
+  const byId = new Map(segments.map((segment) => [segment.id, { ...segment, children: [] as TowerTargetSegment[] }]));
+  const roots: TowerTargetSegment[] = [];
+  for (const segment of byId.values()) {
+    const parent = segment.parentId ? byId.get(segment.parentId) : null;
+    if (parent) parent.children?.push(segment);
+    else roots.push(segment);
+  }
+  const sortChildren = (items: TowerTargetSegment[]) => {
+    items.sort((a, b) => a.priority - b.priority || a.label.localeCompare(b.label));
+    for (const item of items) sortChildren(item.children ?? []);
+  };
+  sortChildren(roots);
+  return roots;
+}
+
+async function towerTargetSegmentParentLoop(segmentId: string, parentId: string | null) {
+  if (!parentId) return false;
+  if (parentId === segmentId) return true;
+  const segments = await towerListTargetSegments();
+  const byId = new Map(segments.map((segment) => [segment.id, segment]));
+  let current = byId.get(parentId);
+  const seen = new Set<string>();
+  while (current) {
+    if (current.id === segmentId) return true;
+    if (seen.has(current.id)) return true;
+    seen.add(current.id);
+    current = current.parentId ? byId.get(current.parentId) : undefined;
+  }
+  return false;
+}
+
+async function handleTowerApi(req: Request, url: URL): Promise<Response | null> {
+  if (!towerStoreEnabled()) return null;
+  const { pathname } = url;
+
+  if (pathname === "/api/auth/challenge" && req.method === "POST") {
+    const body = await readJson(req);
+    const pubkey = normalizePubkey(String(body.pubkey ?? ""));
+    if (!pubkey) return json({ error: "pubkey must be a 64-char hex key or npub" }, 400);
+    return json({ pubkey, npub: pubkeyToNpub(pubkey), ...(await towerCreateChallenge(pubkey)) });
+  }
+
+  if (pathname === "/api/auth/verify" && req.method === "POST") {
+    const body = await readJson(req);
+    const event = body.event;
+    if (!event || typeof event !== "object" || Array.isArray(event)) return json({ error: "event is required" }, 400);
+    const result = await verifyTowerLoginEvent(event as NostrEvent);
+    return result.ok ? json(result) : json({ error: result.error }, 401);
+  }
+
+  if (pathname === "/api/me" && req.method === "GET") {
+    const session = await requireTowerSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    return json({
+      pubkey: session.pubkey,
+      npub: pubkeyToNpub(session.pubkey),
+      expiresAt: session.expiresAt,
+      access: {
+        login: await towerCanLogin(session.pubkey),
+        read: await towerHasAccess(session.pubkey, "read"),
+        edit: await towerHasAccess(session.pubkey, "edit"),
+      },
+    });
+  }
+
+  if (pathname === "/api/settings" && req.method === "GET") {
+    const session = await requireTowerSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    return json({ settings: await towerGetAppSettings(), accessRules: await towerGetAccessRules() });
+  }
+
+  if (pathname === "/api/settings" && req.method === "PUT") {
+    const session = await requireTowerEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const body = await readJson(req);
+    const autopilotUrl = body.autopilotUrl === undefined ? null : normalizeAutopilotUrl(body.autopilotUrl);
+    const defaultPipeline = body.defaultPipeline === undefined ? null : normalizePipelineName(body.defaultPipeline);
+    if (body.autopilotUrl !== undefined && !autopilotUrl) return json({ error: "autopilotUrl must be a valid http(s) URL" }, 400);
+    if (body.defaultPipeline !== undefined && !defaultPipeline) return json({ error: "defaultPipeline is required" }, 400);
+    if (autopilotUrl) await towerSetSetting("autopilotUrl", autopilotUrl);
+    if (defaultPipeline) await towerSetSetting("defaultPipeline", defaultPipeline);
+    return json({ settings: await towerGetAppSettings() });
+  }
+
+  if (pathname === "/api/access-rules" && req.method === "GET") {
+    const session = await requireTowerSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    return json({ accessRules: await towerGetAccessRules() });
+  }
+
+  if (pathname === "/api/access-rules" && req.method === "POST") {
+    const session = await requireTowerEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const body = await readJson(req);
+    const pubkey = normalizePubkey(String(body.npub ?? body.pubkey ?? ""));
+    const role = normalizeAccessRole(body.role);
+    if (!pubkey) return json({ error: "npub or pubkey is required" }, 400);
+    if (!role) return json({ error: "role must be read or edit" }, 400);
+    return json({ accessRule: await towerAddAccessRule(pubkey, role), accessRules: await towerGetAccessRules() }, 201);
+  }
+
+  const accessRuleMatch = pathname.match(/^\/api\/access-rules\/(read|edit)\/([^/]+)$/);
+  if (accessRuleMatch && req.method === "DELETE") {
+    const session = await requireTowerEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const role = normalizeAccessRole(accessRuleMatch[1]);
+    const pubkey = normalizePubkey(decodeURIComponent(accessRuleMatch[2]!));
+    if (!role || !pubkey) return json({ error: "valid role and npub/pubkey are required" }, 400);
+    await towerRemoveAccessRule(pubkey, role);
+    return json({ ok: true, accessRules: await towerGetAccessRules() });
+  }
+
+  if (pathname === "/api/kindling/target-segments" && req.method === "GET") {
+    const session = await requireTowerSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    const segments = await towerListTargetSegments();
+    return json({ segments, tree: buildTowerTargetSegmentTree(segments) });
+  }
+
+  if (pathname === "/api/kindling/target-segments" && req.method === "POST") {
+    const session = await requireTowerEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const body = await readJson(req);
+    const label = String(body.label ?? "").trim();
+    if (!label) return json({ error: "label is required" }, 400);
+    const id = String(body.id ?? crypto.randomUUID()).trim();
+    if (!id) return json({ error: "id is required" }, 400);
+    if (await towerGetTargetSegment(id)) return json({ error: "segment already exists" }, 409);
+    const parentId = body.parentId === null || body.parent_id === null
+      ? null
+      : String(body.parentId ?? body.parent_id ?? "").trim() || null;
+    const parent = parentId ? await towerGetTargetSegment(parentId) : null;
+    if (parentId && !parent) return json({ error: "parent segment not found" }, 400);
+    if (await towerTargetSegmentParentLoop(id, parentId)) return json({ error: "parent would create a segment loop" }, 400);
+    const status = normalizeSegmentStatus(body.status);
+    if (!status) return json({ error: "status must be active or parked" }, 400);
+    const defaultTargetCount = normalizePositiveInteger(body.defaultTargetCount ?? body.default_target_count, 100);
+    const row = {
+      id,
+      parent_id: parentId,
+      label,
+      tier: Math.min(5, Math.max(1, normalizePositiveInteger(body.tier, parent?.tier ?? 1))),
+      priority: normalizePositiveInteger(body.priority, 100),
+      status,
+      default_geo: String(body.defaultGeo ?? body.default_geo ?? "Perth, WA").trim() || "Perth, WA",
+      default_target_count: defaultTargetCount,
+      default_batch_size: normalizePositiveInteger(body.defaultBatchSize ?? body.default_batch_size, Math.min(25, defaultTargetCount)),
+      coverage_targets_json: JSON.stringify(parseJsonObjectField(body.coverageTargets ?? body.targets ?? body.coverage_targets_json, {})),
+      scan_prompts_json: JSON.stringify(parseJsonObjectField(body.scanPrompts ?? body.prompts ?? body.scan_prompts_json, {})),
+      created_at: Date.now(),
+      updated_at: Date.now(),
+    };
+    const segment = await towerCreateTargetSegment(row);
+    await towerRecordActivity("target_segment", id, "user", "target_segment_created", "Target segment created", { pubkey: session.pubkey });
+    return json({ segment, segments: await towerListTargetSegments() }, 201);
+  }
+
+  const targetSegmentMatch = pathname.match(/^\/api\/kindling\/target-segments\/([^/]+)$/);
+  if (targetSegmentMatch && req.method === "PATCH") {
+    const session = await requireTowerEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const segmentId = decodeURIComponent(targetSegmentMatch[1]!);
+    const existing = await getTowerStore().getById("target_segments", segmentId);
+    if (!existing) return json({ error: "segment not found" }, 404);
+    const body = await readJson(req);
+    const parentId = body.parentId === null || body.parent_id === null
+      ? null
+      : String(body.parentId ?? body.parent_id ?? existing.parent_id ?? "").trim() || null;
+    const parent = parentId ? await towerGetTargetSegment(parentId) : null;
+    if (parentId && !parent) return json({ error: "parent segment not found" }, 400);
+    if (await towerTargetSegmentParentLoop(segmentId, parentId)) return json({ error: "parent would create a segment loop" }, 400);
+    const status = normalizeSegmentStatus(body.status, String(existing.status));
+    if (!status) return json({ error: "status must be active or parked" }, 400);
+    const label = String(body.label ?? existing.label).trim();
+    if (!label) return json({ error: "label is required" }, 400);
+    const set = {
+      parent_id: parentId,
+      label,
+      tier: Math.min(5, Math.max(1, normalizePositiveInteger(body.tier, Number(existing.tier)))),
+      priority: normalizePositiveInteger(body.priority, Number(existing.priority)),
+      status,
+      default_geo: String(body.defaultGeo ?? body.default_geo ?? existing.default_geo ?? "Perth, WA").trim() || "Perth, WA",
+      default_target_count: normalizePositiveInteger(body.defaultTargetCount ?? body.default_target_count, Number(existing.default_target_count)),
+      default_batch_size: normalizePositiveInteger(body.defaultBatchSize ?? body.default_batch_size, Number(existing.default_batch_size)),
+      coverage_targets_json: JSON.stringify(parseJsonObjectField(body.coverageTargets ?? body.targets ?? body.coverage_targets_json, jsonParse<Record<string, unknown>>(existing.coverage_targets_json, {}))),
+      scan_prompts_json: JSON.stringify(parseJsonObjectField(body.scanPrompts ?? body.prompts ?? body.scan_prompts_json, jsonParse<Record<string, unknown>>(existing.scan_prompts_json, {}))),
+      updated_at: Date.now(),
+    };
+    const segment = await towerPatchTargetSegment(segmentId, set);
+    await towerRecordActivity("target_segment", segmentId, "user", "target_segment_updated", "Target segment updated", { pubkey: session.pubkey });
+    return json({ segment, segments: await towerListTargetSegments() });
+  }
+
+  if (pathname === "/api/kindling/companies" && req.method === "GET") {
+    const session = await requireTowerSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    const { limit, offset } = pagingFromParams(url.searchParams);
+    const companies = await towerListCompanies(url.searchParams, { limit, offset, compact: true });
+    return json({ companies, total: await towerCountCompanies(url.searchParams), returned: companies.length, limit, offset });
+  }
+
+  if (pathname === "/api/kindling/companies" && req.method === "POST") {
+    const session = await requireTowerEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const body = await readJson(req);
+    const name = String(body.name ?? "").trim();
+    if (!name) return json({ error: "name is required" }, 400);
+    const now = Date.now();
+    const id = crypto.randomUUID();
+    const company = await towerCreateCompany({
+      id,
+      name,
+      location: String(body.location ?? "").trim(),
+      industry: String(body.industry ?? "").trim(),
+      website: String(body.website ?? "").trim(),
+      data_ring: normalizeCompanyDataRing(body.dataRing ?? "found"),
+      duplicate_status: String(body.duplicateStatus ?? "unknown"),
+      enrichment_status: "not_started",
+      confidence: Number(body.confidence ?? 0),
+      profile_json: JSON.stringify({ notes: String(body.notes ?? "").trim() }),
+      created_at: now,
+      updated_at: now,
+    });
+    await towerRecordActivity("company", id, "user", "company_created", "Manual company created", { pubkey: session.pubkey });
+    return json({ company }, 201);
+  }
+
+  const companyMatch = pathname.match(/^\/api\/kindling\/companies\/([^/]+)$/);
+  if (companyMatch && req.method === "GET") {
+    const session = await requireTowerSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    const companyId = decodeURIComponent(companyMatch[1]!);
+    const company = await towerGetCompany(companyId);
+    if (!company) return json({ error: "company not found" }, 404);
+    const detail = await towerListCompanyDetailRows(companyId);
+    const sources = detail.sources.map(mapSource);
+    const sourceById = new Map(sources.map((source) => [source.id, source]));
+    const signals = detail.signals.map(mapSignal).map((signal) => ({
+      ...signal,
+      source: signal.sourceId ? sourceById.get(signal.sourceId) ?? null : null,
+      lowConfidence: !signal.sourceId && !signal.sourceUrl && signal.confidence <= 0.4,
+    }));
+    const drafts = detail.drafts.map(rowJson);
+    return json({
+      company,
+      sources,
+      signals,
+      customerProfileVersions: detail.customerProfileVersions.map(mapCustomerProfileVersion),
+      evidence: { sources, signals },
+      people: [],
+      activities: detail.activities.map(rowJson),
+      serviceFitAssessments: detail.serviceFitAssessments.map(mapServiceFitAssessment),
+      drafts,
+      outreachDrafts: drafts,
+      segments: detail.segments.map(rowJson),
+    });
+  }
+
+  if (companyMatch && req.method === "PATCH") {
+    const session = await requireTowerEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const companyId = decodeURIComponent(companyMatch[1]!);
+    const existing = await towerGetCompanyRow(companyId);
+    if (!existing) return json({ error: "company not found" }, 404);
+    const body = await readJson(req);
+    const profile = { ...jsonParse<Record<string, unknown>>(existing.profile_json, {}), notes: String(body.notes ?? jsonParse<Record<string, unknown>>(existing.profile_json, {}).notes ?? "") };
+    const company = await towerPatchCompany(companyId, {
+      name: String(body.name ?? existing.name).trim() || String(existing.name),
+      location: String(body.location ?? existing.location ?? "").trim(),
+      industry: String(body.industry ?? existing.industry ?? "").trim(),
+      website: String(body.website ?? existing.website ?? "").trim(),
+      data_ring: normalizeCompanyDataRing(body.dataRing ?? existing.data_ring),
+      duplicate_status: String(body.duplicateStatus ?? existing.duplicate_status),
+      enrichment_status: normalizeCompanyExecutionStatus(body.enrichmentStatus ?? existing.enrichment_status),
+      confidence: Number(body.confidence ?? existing.confidence ?? 0),
+      profile_json: JSON.stringify(profile),
+      updated_at: Date.now(),
+    });
+    await towerRecordActivity("company", companyId, "user", "company_updated", "Company profile edited", { pubkey: session.pubkey });
+    return json({ company });
+  }
+
+  return null;
 }
 
 function toServerAutopilotUrl(value: string) {
@@ -6945,6 +7298,9 @@ export async function runAutomatedProspectingLoop() {
 }
 
 export async function handleApi(req: Request, url: URL): Promise<Response | null> {
+  const towerResponse = await handleTowerApi(req, url);
+  if (towerResponse) return towerResponse;
+
   const { pathname } = url;
 
   if (pathname === "/api/health" && req.method === "GET") {

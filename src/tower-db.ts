@@ -66,6 +66,10 @@ export class TowerDbClient {
     return this.request("POST", `/db/tables/${encodeURIComponent(table)}/rows`, { id, data });
   }
 
+  async getRow(table: string, id: string) {
+    return this.request("GET", `/db/tables/${encodeURIComponent(table)}/rows/${encodeURIComponent(id)}`);
+  }
+
   async queryRows(table: string, input: Record<string, unknown>) {
     return this.request("POST", `/db/tables/${encodeURIComponent(table)}/query`, input);
   }

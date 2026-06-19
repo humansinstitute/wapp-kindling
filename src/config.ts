@@ -9,10 +9,17 @@ export const APP_NSEC = String(process.env.APP_NSEC || "").trim();
 export const APP_NPUB = String(process.env.APP_NPUB || "").trim();
 export const TOWER_URL = String(process.env.TOWER_URL || "").trim().replace(/\/$/, "");
 export const WORKSPACE_OWNER_NPUB = String(process.env.WORKSPACE_OWNER_NPUB || "").trim();
-export const IS_TOWER_DB_RUNTIME =
-  KINDLING_DB_MODE === "tower" ||
-  KINDLING_DB_MODE === "tower-api" ||
-  Boolean(APP_NSEC && APP_NPUB && TOWER_URL && WORKSPACE_OWNER_NPUB);
+
+export function isTowerDbRuntime() {
+  const mode = String(process.env.KINDLING_DB_MODE || KINDLING_DB_MODE || "").trim().toLowerCase();
+  const appNsec = String(process.env.APP_NSEC || APP_NSEC || "").trim();
+  const appNpub = String(process.env.APP_NPUB || APP_NPUB || "").trim();
+  const towerUrl = String(process.env.TOWER_URL || TOWER_URL || "").trim().replace(/\/$/, "");
+  const workspaceOwnerNpub = String(process.env.WORKSPACE_OWNER_NPUB || WORKSPACE_OWNER_NPUB || "").trim();
+  return mode === "tower" || mode === "tower-api" || Boolean(appNsec && appNpub && towerUrl && workspaceOwnerNpub);
+}
+
+export const IS_TOWER_DB_RUNTIME = isTowerDbRuntime();
 export const DB_PATH = IS_TOWER_DB_RUNTIME
   ? ":memory:"
   : process.env.CHAT_WAPP_DB_PATH || join(APP_ROOT, "data/chat-wapp.sqlite");
