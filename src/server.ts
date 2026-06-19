@@ -17,7 +17,7 @@ import {
   verifyLoginEvent,
   verifyNip98Request,
 } from "./auth.ts";
-import { PIPELINE_NAME, PORT, PUBLIC_ORIGIN, WINGMAN_URL } from "./config.ts";
+import { IS_TOWER_DB_RUNTIME, PIPELINE_NAME, PORT, PUBLIC_ORIGIN, WINGMAN_URL } from "./config.ts";
 import {
   acquireSchedulerLock,
   companyDataRingFilterValues,
@@ -40,6 +40,7 @@ import {
   type SchedulerSettingsPatch,
 } from "./db.ts";
 import { buildPipelineTriggerRequest, startPreparedChatPipeline, type PipelineTriggerRequest } from "./pipeline.ts";
+import { initializeTowerDbRuntime } from "./tower-db.ts";
 
 const PUBLIC_DIR = join(import.meta.dir, "..", "public");
 const COMPANY_LIST_LIMIT = 500;
@@ -8879,6 +8880,15 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
 }
 
 if (import.meta.main) {
+  await initializeTowerDbRuntime().then((result) => {
+    if (result.mode === "tower") {
+      console.log(`kindling Tower DB runtime initialized with ${result.migrationCount} migration(s)`);
+    }
+  }).catch((error) => {
+    console.error(`kindling ${IS_TOWER_DB_RUNTIME ? "Tower" : "SQLite"} DB runtime initialization failed`, error);
+    process.exit(1);
+  });
+
   setInterval(cleanupExpiredAuthRows, 15 * 60 * 1000);
   setTimeout(() => {
     void runAutomatedProspectingLoop().catch((error) => {

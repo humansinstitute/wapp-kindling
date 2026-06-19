@@ -71,9 +71,24 @@ Use a direct run only for isolated development/debugging outside the WApp card r
 
 You need a Nostr browser signer for login and for NIP-98 requests to Autopilot. Until access rules exist, the first signed-in user can bootstrap settings. After that, only configured read/edit npubs can use the app, and only edit users can change admin settings or role mappings.
 
-## Local Data
+## Database Runtime
 
-The default SQLite path is `data/chat-wapp.sqlite`. The environment variable is still `CHAT_WAPP_DB_PATH` because this repo grew from the chat WApp starter.
+SQLite remains the default for tests and direct local fallback. The default SQLite path is `data/chat-wapp.sqlite`. The environment variable is still `CHAT_WAPP_DB_PATH` because this repo grew from the chat WApp starter.
+
+When Autopilot starts Kindling as a Tower-backed WApp, it injects the app identity and Tower binding:
+
+```txt
+APP_NPUB
+APP_NSEC
+TOWER_URL
+WORKSPACE_OWNER_NPUB
+```
+
+Tower mode is enabled when those four values are present, or explicitly with `KINDLING_DB_MODE=tower`. On startup Kindling signs Tower WApp DB requests with `APP_NSEC`, provisions its WApp DB namespace, and applies SQL migrations from `src/db/migrations/` before serving. `APP_NSEC` must only be injected as runtime secret material; do not write it into repo files, logs, or browser-visible responses.
+
+Tower v1 exposes provision, migrations, and constrained per-table CRUD/query APIs. Kindling keeps browser auth, user/session/access checks, pipeline webhooks, and domain routes inside the WApp backend; browsers and agents should call Kindling APIs, not Tower DB directly.
+
+In Tower mode, `CHAT_WAPP_DB_PATH` is not used as authoritative app storage. The existing synchronous SQLite handle is kept as an in-memory compatibility layer while the Tower-backed data-access rewrite proceeds.
 
 Important Kindling routes:
 
