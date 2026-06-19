@@ -663,10 +663,38 @@ async function handleTowerApi(req: Request, url: URL): Promise<Response | null> 
     const session = await requireTowerEditSession(req);
     if (!session) return json({ error: "edit access required" }, 403);
     const dryRun = url.searchParams.get("dryRun") === "true";
+    const now = Date.now();
     const queued = (await towerRows("work_queue", { where: { status: { eq: "queued" } }, order: [{ field: "priority", dir: "asc" }], limit: 1 }))[0] ?? null;
     const decision = { dryRun, workAvailable: Boolean(queued), action: queued ? String(queued.kind ?? "work_queue") : "", item: queued ? mapWorkQueueItem(queued) : null };
     if (dryRun || !queued) return json({ dryRun, decision, settings: await towerSchedulerSettings(), recentRuns: [], activeLock: await towerActiveSchedulerLock() });
-    return json({ error: "scheduler execution requires the remaining Tower pipeline write port", dryRun, decision }, 501);
+    const prepared = await towerPrepareSchedulerQueuedRun(queued, session.pubkey, webhookOrigin(req), now);
+    if (!prepared.ok) {
+      const schedulerRun = await towerCreateSchedulerRun({
+        status: "skipped",
+        selectedAction: decision.action,
+        skipReason: prepared.error,
+        roleKey: prepared.roleKey ?? null,
+        context: { dryRun: false, decision },
+        result: { dryRun: false, decision, error: prepared.error },
+        startedAt: now,
+        finishedAt: now,
+        now,
+      });
+      return json({ dryRun: false, decision: { ...decision, workAvailable: false, reason: prepared.error }, run: rowJson(schedulerRun), settings: await towerSchedulerSettings(), recentRuns: (await towerRows("scheduler_runs", { order: [{ field: "updated_at", dir: "desc" }], limit: 20 })).map(rowJson), activeLock: await towerActiveSchedulerLock() }, 409);
+    }
+    return json({
+      dryRun: false,
+      decision: { ...decision, roleKey: prepared.roleKey },
+      run: rowJson(prepared.schedulerRun),
+      lock: rowJson(prepared.lock),
+      requiresAutopilotAuth: true,
+      runId: String(prepared.kindlingRun.id),
+      requestId: prepared.requestId,
+      triggerRequest: prepared.triggerRequest,
+      settings: await towerSchedulerSettings(),
+      recentRuns: (await towerRows("scheduler_runs", { order: [{ field: "updated_at", dir: "desc" }], limit: 20 })).map(rowJson),
+      activeLock: await towerActiveSchedulerLock(),
+    }, 202);
   }
 
   if (pathname === "/api/kindling/scoring/offerings" && req.method === "GET") {
@@ -804,7 +832,7 @@ async function handleTowerApi(req: Request, url: URL): Promise<Response | null> 
       created_at: now,
       updated_at: now,
     }, requestId);
-    const triggerRequest = buildKindlingTriggerRequest({
+    const triggerRequest = await towerBuildKindlingTriggerRequest({
       roleKey: "scan_target_list",
       localRequestId: requestId,
       message: `Scan target list ${industry || "companies"} in ${location}`,
@@ -833,7 +861,7 @@ async function handleTowerApi(req: Request, url: URL): Promise<Response | null> 
       await towerStore.create("work_queue", { id: queueId, kind: "enrich_company", target_type: "company", target_id: String(company.id), segment_id: "", segment: industry, priority: 50, status: "queued", reason: `Queued by industry batch ${requestId}`, attempts: 0, error: "", context_json: JSON.stringify({ batchId: requestId, industry }), created_at: now, updated_at: now }, queueId);
       await towerStore.create("enrichment_requests", { id: crypto.randomUUID(), company_id: String(company.id), work_queue_id: queueId, status: "queued", request_kind: "industry_batch", summary: `Queued by industry batch ${requestId}`, created_at: now, updated_at: now }, crypto.randomUUID());
     }
-    const triggerRequest = buildKindlingTriggerRequest({
+    const triggerRequest = await towerBuildKindlingTriggerRequest({
       roleKey: "enrich_industry_segment",
       localRequestId: requestId,
       message: `Enrich up to ${companies.length} ${industry} companies`,
@@ -863,7 +891,7 @@ async function handleTowerApi(req: Request, url: URL): Promise<Response | null> 
     await towerStore.create("enrichment_requests", { id: requestId, company_id: companyId, work_queue_id: queueId, status: "queued", request_kind: requestKind, summary: "", created_at: now, updated_at: now }, requestId);
     await towerPatchCompany(companyId, { enrichment_status: "queued", updated_at: now });
     const webhookToken = crypto.randomUUID().replaceAll("-", "");
-    const triggerRequest = buildKindlingTriggerRequest({ roleKey: "enrich_company", localRequestId: requestId, message: `Enrich ${String(company.name)}`, context: { companyId, companyName: String(company.name), company: mapCompany(company) }, webhookUrl: `${webhookOrigin(req)}/api/kindling/pipeline-webhook`, webhookToken, userPubkey: session.pubkey, userNpub: pubkeyToNpub(session.pubkey) });
+    const triggerRequest = await towerBuildKindlingTriggerRequest({ roleKey: "enrich_company", localRequestId: requestId, message: `Enrich ${String(company.name)}`, context: { companyId, companyName: String(company.name), company: mapCompany(company) }, webhookUrl: `${webhookOrigin(req)}/api/kindling/pipeline-webhook`, webhookToken, userPubkey: session.pubkey, userNpub: pubkeyToNpub(session.pubkey) });
     const run = await towerCreateKindlingRun("enrich_company", requestId, triggerRequest, webhookToken);
     return json({ requiresAutopilotAuth: true, runId: String(run.id), requestId, triggerRequest }, 202);
   }
@@ -877,7 +905,7 @@ async function handleTowerApi(req: Request, url: URL): Promise<Response | null> 
     if (!company) return json({ error: "company not found" }, 404);
     const requestId = crypto.randomUUID();
     const webhookToken = crypto.randomUUID().replaceAll("-", "");
-    const triggerRequest = buildKindlingTriggerRequest({ roleKey: "draft_outreach", localRequestId: requestId, message: `Draft outreach for ${String(company.name)}`, context: { companyId, companyName: String(company.name), company: mapCompany(company), activeProfileVersion: (await towerCurrentMarketProfile())?.version ?? null }, webhookUrl: `${webhookOrigin(req)}/api/kindling/pipeline-webhook`, webhookToken, userPubkey: session.pubkey, userNpub: pubkeyToNpub(session.pubkey) });
+    const triggerRequest = await towerBuildKindlingTriggerRequest({ roleKey: "draft_outreach", localRequestId: requestId, message: `Draft outreach for ${String(company.name)}`, context: { companyId, companyName: String(company.name), company: mapCompany(company), activeProfileVersion: (await towerCurrentMarketProfile())?.version ?? null }, webhookUrl: `${webhookOrigin(req)}/api/kindling/pipeline-webhook`, webhookToken, userPubkey: session.pubkey, userNpub: pubkeyToNpub(session.pubkey) });
     const run = await towerCreateKindlingRun("draft_outreach", requestId, triggerRequest, webhookToken);
     return json({ requiresAutopilotAuth: true, runId: String(run.id), requestId, triggerRequest }, 202);
   }
@@ -888,7 +916,7 @@ async function handleTowerApi(req: Request, url: URL): Promise<Response | null> 
     const requestId = crypto.randomUUID();
     const webhookToken = crypto.randomUUID().replaceAll("-", "");
     const body = await readJson(req);
-    const triggerRequest = buildKindlingTriggerRequest({ roleKey: "define_service_offering", localRequestId: requestId, message: String(body.prompt ?? "Define service offering"), context: { prompt: body.prompt ?? "" }, webhookUrl: `${webhookOrigin(req)}/api/kindling/pipeline-webhook`, webhookToken, userPubkey: session.pubkey, userNpub: pubkeyToNpub(session.pubkey) });
+    const triggerRequest = await towerBuildKindlingTriggerRequest({ roleKey: "define_service_offering", localRequestId: requestId, message: String(body.prompt ?? "Define service offering"), context: { prompt: body.prompt ?? "" }, webhookUrl: `${webhookOrigin(req)}/api/kindling/pipeline-webhook`, webhookToken, userPubkey: session.pubkey, userNpub: pubkeyToNpub(session.pubkey) });
     const run = await towerCreateKindlingRun("define_service_offering", requestId, triggerRequest, webhookToken);
     return json({ requiresAutopilotAuth: true, runId: String(run.id), requestId, triggerRequest }, 202);
   }
@@ -900,7 +928,7 @@ async function handleTowerApi(req: Request, url: URL): Promise<Response | null> 
     const webhookToken = crypto.randomUUID().replaceAll("-", "");
     const body = await readJson(req);
     const company = body.companyId ? await towerGetCompanyRow(String(body.companyId)) : null;
-    const triggerRequest = buildKindlingTriggerRequest({ roleKey: "score_company_service_fit", localRequestId: requestId, message: `Score ${String(company?.name ?? body.companyId ?? "company")}`, context: { body, company }, webhookUrl: `${webhookOrigin(req)}/api/kindling/pipeline-webhook`, webhookToken, userPubkey: session.pubkey, userNpub: pubkeyToNpub(session.pubkey) });
+    const triggerRequest = await towerBuildKindlingTriggerRequest({ roleKey: "score_company_service_fit", localRequestId: requestId, message: `Score ${String(company?.name ?? body.companyId ?? "company")}`, context: { body, company }, webhookUrl: `${webhookOrigin(req)}/api/kindling/pipeline-webhook`, webhookToken, userPubkey: session.pubkey, userNpub: pubkeyToNpub(session.pubkey) });
     const run = await towerCreateKindlingRun("score_company_service_fit", requestId, triggerRequest, webhookToken);
     return json({ requiresAutopilotAuth: true, runId: String(run.id), requestId, triggerRequest }, 202);
   }
@@ -1118,15 +1146,14 @@ async function handleTowerApi(req: Request, url: URL): Promise<Response | null> 
   return null;
 }
 
-function towerUnsupportedRoute(req: Request, url: URL): Response | null {
+function towerNotFoundRoute(req: Request, url: URL): Response | null {
   if (!towerStoreEnabled() || !url.pathname.startsWith("/api/")) return null;
   return json({
-    error: "unsupported in Tower DB mode",
+    error: "not found",
     mode: "tower",
     route: url.pathname,
     method: req.method,
-    detail: "This Kindling workflow has not been migrated to Tower WApp DB yet, so it is blocked instead of using SQLite fallback storage.",
-  }, 501);
+  }, 404);
 }
 
 function toServerAutopilotUrl(value: string) {
@@ -4992,10 +5019,23 @@ function buildKindlingTriggerRequest(input: {
   userNpub: string;
 }) {
   const settings = getAppSettings();
-  if (!settings.autopilotUrl) throw new Error("Autopilot URL is required");
+  return buildKindlingTriggerRequestWithSettings(input, settings.autopilotUrl);
+}
+
+function buildKindlingTriggerRequestWithSettings(input: {
+  roleKey: string;
+  localRequestId: string;
+  message: string;
+  context: Record<string, unknown>;
+  webhookUrl: string;
+  webhookToken: string;
+  userPubkey: string;
+  userNpub: string;
+}, autopilotUrl: string) {
+  if (!autopilotUrl) throw new Error("Autopilot URL is required");
   const role = getPipelineRole(input.roleKey);
   const pipelineName = role?.activePipelineSlug || input.roleKey;
-  const url = new URL(`/api/pipelines/triggers/http/${encodeURIComponent(pipelineName)}`, toServerAutopilotUrl(settings.autopilotUrl));
+  const url = new URL(`/api/pipelines/triggers/http/${encodeURIComponent(pipelineName)}`, toServerAutopilotUrl(autopilotUrl));
   return {
     url: url.toString(),
     method: "POST" as const,
@@ -5022,6 +5062,12 @@ function buildKindlingTriggerRequest(input: {
       },
     },
   };
+}
+
+async function towerBuildKindlingTriggerRequest(input: Parameters<typeof buildKindlingTriggerRequest>[0]) {
+  const settings = await towerGetAppSettings();
+  const autopilotUrl = settings.autopilotUrl || WINGMAN_URL;
+  return buildKindlingTriggerRequestWithSettings(input, autopilotUrl);
 }
 
 function kindlingRunNeedsAutopilotAuth(roleSlug: string, authorization?: string) {
@@ -5352,6 +5398,57 @@ async function towerActiveSchedulerLock() {
   return rowJson(lock);
 }
 
+async function towerCreateSchedulerRun(input: {
+  status: string;
+  selectedAction?: string;
+  skipReason?: string;
+  roleKey?: string | null;
+  localRequestId?: string | null;
+  context?: Record<string, unknown>;
+  result?: Record<string, unknown>;
+  startedAt?: number;
+  finishedAt?: number | null;
+  now?: number;
+}) {
+  const now = input.now ?? Date.now();
+  const id = crypto.randomUUID();
+  return await getTowerStore().create("scheduler_runs", {
+    id,
+    run_type: "scheduled",
+    status: input.status,
+    selected_action: String(input.selectedAction ?? ""),
+    skip_reason: String(input.skipReason ?? ""),
+    role_key: input.roleKey ?? null,
+    local_request_id: input.localRequestId ?? null,
+    autopilot_run_id: null,
+    lock_key: "prospecting",
+    context_json: JSON.stringify(input.context ?? {}),
+    result_json: JSON.stringify(input.result ?? {}),
+    error: null,
+    started_at: input.startedAt ?? now,
+    finished_at: input.finishedAt ?? (input.status === "skipped" ? now : null),
+    created_at: now,
+    updated_at: now,
+  }, id);
+}
+
+async function towerAcquireSchedulerLock(runId: string, ownerId: string, leaseMs: number, now = Date.now()) {
+  const existing = await towerActiveSchedulerLock();
+  if (existing) return null;
+  const row = {
+    lock_key: "prospecting",
+    run_id: runId,
+    owner_id: ownerId,
+    lease_expires_at: now + leaseMs,
+    created_at: now,
+    updated_at: now,
+  };
+  const current = await getTowerStore().getById("scheduler_locks", "prospecting");
+  if (current) await getTowerStore().patch("scheduler_locks", "prospecting", row);
+  else await getTowerStore().create("scheduler_locks", row, "prospecting");
+  return await getTowerStore().getById("scheduler_locks", "prospecting");
+}
+
 async function towerCurrentMarketProfile() {
   const profile = (await getTowerStore().query("market_profiles", { order: [{ field: "updated_at", dir: "desc" }], limit: 1 }))[0];
   if (!profile) return null;
@@ -5432,6 +5529,74 @@ async function towerCreateKindlingRun(roleKey: string, localRequestId: string, t
     created_at: now,
     updated_at: now,
   }, id);
+}
+
+async function towerPrepareSchedulerQueuedRun(queueRow: Record<string, unknown>, userPubkey: string, origin: string, now = Date.now()) {
+  const item = mapWorkQueueItem(queueRow);
+  const company = item.targetType === "company" ? await towerGetCompanyRow(item.targetId) : null;
+  const contextJson = jsonParse<Record<string, unknown>>(queueRow.context_json, {});
+  let roleKey = "";
+  let message = "";
+  let context: Record<string, unknown> = { queueId: item.id, workQueueItem: item };
+
+  if (item.kind === "service_fit_assessment" && company) {
+    const profile = await towerCurrentMarketProfile();
+    const offerings = profile?.version?.serviceOfferings ?? [];
+    roleKey = "score_company_service_fit";
+    message = `Score ${String(company.name)} against active service offerings`;
+    context = { ...context, companyId: String(company.id), companyName: String(company.name), company: mapCompany(company), serviceOfferings: offerings, marketProfileVersion: profile?.version ?? null, marketProfileVersionId: String(profile?.version?.id ?? "") };
+  } else if ((item.kind === "company_enrichment" || item.kind === "enrich_company") && company) {
+    roleKey = "enrich_company";
+    message = `Enrich ${String(company.name)}`;
+    context = { ...context, companyId: String(company.id), companyName: String(company.name), company: mapCompany(company) };
+  } else if (item.kind === "draft_outreach" && company) {
+    roleKey = "draft_outreach";
+    message = `Draft outreach for ${String(company.name)}`;
+    context = { ...context, companyId: String(company.id), companyName: String(company.name), company: mapCompany(company), activeProfileVersion: (await towerCurrentMarketProfile())?.version ?? null };
+  } else if (item.kind === "target_scan" || item.kind === "acquisition_slice") {
+    roleKey = "scan_target_list";
+    const industry = String(contextJson.industry ?? item.segment ?? "Target companies");
+    const location = String(contextJson.location ?? contextJson.geographyText ?? "Perth, WA");
+    const targetCount = Number(contextJson.targetCount ?? 25);
+    message = `Scan target list ${industry} in ${location}`;
+    context = { ...context, industry, location, targetCount, body: contextJson };
+  } else {
+    return { ok: false as const, error: `unsupported queued work kind: ${item.kind}`, roleKey: "" };
+  }
+
+  const schedulerRun = await towerCreateSchedulerRun({
+    status: "running",
+    selectedAction: item.kind,
+    roleKey,
+    context: { queuedItem: item },
+    result: { prepared: true },
+    startedAt: now,
+    now,
+  });
+  const settings = await towerSchedulerSettings();
+  const lock = await towerAcquireSchedulerLock(String(schedulerRun.id), `scheduler:${userPubkey.slice(0, 16)}`, Math.max(10 * 60 * 1000, Number(settings.cooldowns.scoringMs ?? 0)), now);
+  if (!lock) return { ok: false as const, error: "scheduler lock prospecting could not be acquired", roleKey };
+
+  const requestId = crypto.randomUUID();
+  const webhookToken = crypto.randomUUID().replaceAll("-", "");
+  const triggerRequest = await towerBuildKindlingTriggerRequest({
+    roleKey,
+    localRequestId: requestId,
+    message,
+    context,
+    webhookUrl: `${origin}/api/kindling/pipeline-webhook`,
+    webhookToken,
+    userPubkey,
+    userNpub: pubkeyToNpub(userPubkey),
+  });
+  const kindlingRun = await towerCreateKindlingRun(roleKey, requestId, triggerRequest, webhookToken);
+  await getTowerStore().patch("scheduler_runs", String(schedulerRun.id), {
+    local_request_id: requestId,
+    result_json: JSON.stringify({ prepared: true, requestId, queueId: item.id, roleKey }),
+    updated_at: now,
+  });
+  await getTowerStore().patch("work_queue", item.id, { status: "running", locked_by_run_id: String(kindlingRun.id), attempts: item.attempts + 1, updated_at: now });
+  return { ok: true as const, roleKey, requestId, triggerRequest, kindlingRun, schedulerRun: await getTowerStore().getById("scheduler_runs", String(schedulerRun.id)) ?? schedulerRun, lock };
 }
 
 async function towerPersistServiceFitAssessment(input: { body: Record<string, unknown>; run: Record<string, unknown>; now?: number }) {
@@ -8865,8 +9030,8 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     return json({ ok: true, now: new Date().toISOString() });
   }
 
-  const unsupportedTowerResponse = towerUnsupportedRoute(req, url);
-  if (unsupportedTowerResponse) return unsupportedTowerResponse;
+  const towerNotFoundResponse = towerNotFoundRoute(req, url);
+  if (towerNotFoundResponse) return towerNotFoundResponse;
 
   if (pathname === "/api/auth/challenge" && req.method === "POST") {
     const body = await readJson(req);
