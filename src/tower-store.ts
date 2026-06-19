@@ -303,8 +303,15 @@ export async function towerListCompanies(filters: URLSearchParams | null, option
 
 export async function towerCountCompanies(filters: URLSearchParams | null, store = getTowerStore()) {
   const { where, postFilter } = towerCompanyFilters(filters);
-  const rows = await store.query("companies", { select: ["id", "name", "website"], where, limit: 500 });
-  return postFilter(rows).length;
+  let total = 0;
+  let offset = 0;
+  const limit = 500;
+  while (true) {
+    const rows = await store.query("companies", { select: ["id", "name", "website"], where, limit, offset });
+    total += postFilter(rows).length;
+    if (rows.length < limit) return total;
+    offset += limit;
+  }
 }
 
 export async function towerGetCompany(id: string, store = getTowerStore()) {

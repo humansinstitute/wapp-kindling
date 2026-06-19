@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createTowerDbClientFromEnv, initializeTowerDbRuntime, TowerDbError } from "../src/tower-db.ts";
 
@@ -69,6 +69,12 @@ function sqliteRows(db: Database, table: string): Row[] {
   return db.query(`SELECT * FROM "${table.replaceAll('"', '""')}"`).all() as Row[];
 }
 
+function jsonRows(exportPath: string, table: string): Row[] {
+  const parsed = JSON.parse(readFileSync(exportPath, "utf8"));
+  const rows = parsed?.rows?.[table] ?? parsed?.tables?.[table] ?? [];
+  return Array.isArray(rows) ? rows as Row[] : [];
+}
+
 function rowId(table: string, row: Row): string {
   if (typeof row.id === "string" && row.id) return row.id;
   if (table === "users" || table === "login_challenges") return String(row.pubkey || "");
@@ -100,7 +106,8 @@ async function copyRow(client: ReturnType<typeof createTowerDbClientFromEnv>, ta
     return "created" as const;
   } catch (error) {
     if (error instanceof TowerDbError && error.status === 409) {
-      await client.patchRow(table, id, data);
+      const { id: _id, ...patch } = data;
+      await client.patchRow(table, id, patch);
       return "updated" as const;
     }
     throw error;
@@ -108,15 +115,21 @@ async function copyRow(client: ReturnType<typeof createTowerDbClientFromEnv>, ta
 }
 
 async function main() {
+  const jsonPathArg = argValue("--json");
+  const jsonPath = jsonPathArg ? resolve(jsonPathArg) : "";
   const dbPath = resolve(argValue("--sqlite", process.env.CHAT_WAPP_DB_PATH || "data/chat-wapp.sqlite"));
-  if (!existsSync(dbPath)) throw new Error(`SQLite database not found: ${dbPath}`);
+  if (jsonPath) {
+    if (!existsSync(jsonPath)) throw new Error(`JSON export not found: ${jsonPath}`);
+  } else if (!existsSync(dbPath)) {
+    throw new Error(`SQLite database not found: ${dbPath}`);
+  }
   const dryRun = hasFlag("--dry-run");
   const includeVolatile = hasFlag("--include-volatile");
   const tables = argValue("--tables")
     ? argValue("--tables").split(",").map((table) => table.trim()).filter(Boolean)
     : DEFAULT_TABLES;
 
-  const db = new Database(dbPath, { readonly: true });
+  const db = jsonPath ? null : new Database(dbPath, { readonly: true });
   const client = createTowerDbClientFromEnv();
   await initializeTowerDbRuntime(client, true);
 
@@ -126,12 +139,16 @@ async function main() {
       summary.push({ table, rows: 0, created: 0, updated: 0, skipped: 0 });
       continue;
     }
-    if (!tableExists(db, table)) {
+    if (db && !tableExists(db, table)) {
       summary.push({ table, rows: 0, created: 0, updated: 0, skipped: 0 });
       continue;
     }
-    const columns = new Set(sqliteColumns(db, table));
-    const rows = sqliteRows(db, table);
+    const rows = jsonPath ? jsonRows(jsonPath, table) : sqliteRows(db!, table);
+    if (!rows.length) {
+      summary.push({ table, rows: 0, created: 0, updated: 0, skipped: 0 });
+      continue;
+    }
+    const columns = new Set(db ? sqliteColumns(db, table) : Object.keys(rows[0] ?? {}));
     let created = 0;
     let updated = 0;
     let skipped = 0;
@@ -155,7 +172,7 @@ async function main() {
     updated: acc.updated + item.updated,
     skipped: acc.skipped + item.skipped,
   }), { rows: 0, created: 0, updated: 0, skipped: 0 });
-  console.log(JSON.stringify({ ok: true, dryRun, sqlite: dbPath, totals, summary }, null, 2));
+  console.log(JSON.stringify({ ok: true, dryRun, source: jsonPath || dbPath, totals, summary }, null, 2));
 }
 
 main().catch((error) => {
