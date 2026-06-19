@@ -6,9 +6,9 @@ import { finalizeEvent, getPublicKey, nip19 } from "nostr-tools";
 import {
   APP_NPUB,
   APP_NSEC,
-  IS_TOWER_DB_RUNTIME,
   TOWER_URL,
   WORKSPACE_OWNER_NPUB,
+  isTowerDbRuntime,
 } from "./config.ts";
 
 const MIGRATIONS_DIR = join(import.meta.dir, "db", "migrations");
@@ -144,11 +144,12 @@ export function loadTowerMigrations(): TowerMigration[] {
     });
 }
 
-export async function initializeTowerDbRuntime(client = createTowerDbClientFromEnv(), enabled = IS_TOWER_DB_RUNTIME) {
+export async function initializeTowerDbRuntime(client?: Pick<TowerDbClient, "provision" | "runMigrations">, enabled = isTowerDbRuntime()) {
   if (!enabled) return { mode: "sqlite" as const };
-  await client.provision("kindling");
+  const towerClient = client ?? createTowerDbClientFromEnv();
+  await towerClient.provision("kindling");
   const migrations = loadTowerMigrations();
-  await client.runMigrations(migrations);
+  await towerClient.runMigrations(migrations);
   return { mode: "tower" as const, migrationCount: migrations.length };
 }
 

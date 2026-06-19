@@ -91,4 +91,9 @@ describe("TowerDbClient", () => {
     expect(calls[0]).toBe("provision:kindling");
     expect(calls[1]?.startsWith("migrate:")).toBe(true);
   });
+
+  test("SQLite startup does not require Tower key material", async () => {
+    const result = await initializeTowerDbRuntime(undefined, false);
+    expect(result).toEqual({ mode: "sqlite" });
+  });
 });
