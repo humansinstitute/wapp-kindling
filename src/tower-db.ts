@@ -27,6 +27,18 @@ export type TowerDbClientOptions = {
   fetchImpl?: typeof fetch;
 };
 
+export class TowerDbError extends Error {
+  readonly status: number;
+  readonly payload: unknown;
+
+  constructor(message: string, status: number, payload: unknown) {
+    super(message);
+    this.name = "TowerDbError";
+    this.status = status;
+    this.payload = payload;
+  }
+}
+
 export class TowerDbClient {
   private readonly towerUrl: string;
   private readonly workspaceOwnerNpub: string;
@@ -100,7 +112,7 @@ export class TowerDbClient {
     const payload = text ? parseJson(text) : {};
     if (!response.ok) {
       const message = typeof payload.error === "string" ? payload.error : `Tower DB request failed with HTTP ${response.status}`;
-      throw new Error(message);
+      throw new TowerDbError(message, response.status, payload);
     }
     return payload;
   }

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, test } from "bun:test";
 import { finalizeEvent, getPublicKey } from "nostr-tools";
-import type { TowerMigration } from "../src/tower-db.ts";
+import { TowerDbError, type TowerMigration } from "../src/tower-db.ts";
 
 process.env.KINDLING_DB_MODE = "tower";
 process.env.WINGMAN_URL = "http://127.0.0.1:9";
@@ -17,6 +17,7 @@ type Call = { op: string; table?: string; id?: string; input?: Record<string, un
 
 class FakeTowerClient {
   calls: Call[] = [];
+  throwOnMissingGet = false;
   tables = new Map<string, Map<string, Record<string, unknown>>>();
 
   async provision(appSlug: string) {
@@ -41,7 +42,9 @@ class FakeTowerClient {
 
   async getRow(table: string, id: string) {
     this.calls.push({ op: "get", table, id });
-    return { row: this.table(table).get(id) ?? null };
+    const row = this.table(table).get(id);
+    if (!row && this.throwOnMissingGet) throw new TowerDbError("row not found", 404, { error: "row not found" });
+    return { row: row ?? null };
   }
 
   async queryRows(table: string, input: Record<string, unknown>) {
@@ -157,6 +160,16 @@ describe("Tower-mode Kindling API facade", () => {
     expect(me.payload.pubkey).toBe(pubkey);
     expect(me.payload.access).toMatchObject({ login: true, read: true, edit: true });
     expect(fake.calls.some((call) => call.op === "get" && call.table === "sessions")).toBe(true);
+  });
+
+  test("login challenge upsert tolerates Tower missing-row responses", async () => {
+    fake.throwOnMissingGet = true;
+
+    const challenge = await api("/api/auth/challenge", { method: "POST", body: { pubkey } });
+
+    expect(challenge.res.status).toBe(200);
+    expect(fake.calls).toContainEqual({ op: "get", table: "login_challenges", id: pubkey });
+    expect(fake.calls.some((call) => call.op === "create" && call.table === "login_challenges")).toBe(true);
   });
 
   test("target segment CRUD/list routes call Tower table APIs", async () => {

@@ -1,6 +1,6 @@
 import { CHALLENGE_TTL_MS, PIPELINE_NAME, SESSION_TTL_MS, WAPP_ALLOWED_NPUBS_JSON, WAPP_OWNER_NPUB, WINGMAN_URL, isTowerDbRuntime } from "./config.ts";
 import { normalizeCompanyDataRing, normalizeCompanyExecutionStatus, type AccessRole, type AccessRule, type AppSettings, type Session } from "./db.ts";
-import { createTowerDbClientFromEnv, type TowerDbClient } from "./tower-db.ts";
+import { TowerDbError, createTowerDbClientFromEnv, type TowerDbClient } from "./tower-db.ts";
 import { normalizePubkey, pubkeyToNpub } from "./auth.ts";
 
 type QueryInput = {
@@ -34,7 +34,7 @@ export function createTowerStore(client: TowerDbClient = createTowerDbClientFrom
     return rowsFromPayload(payload);
   };
   const getById = async (table: string, id: string) => {
-    const payload = await client.getRow(table, id);
+    const payload = await ignoreMissingRow(() => client.getRow(table, id));
     return rowFromPayload(payload);
   };
   const create = async (table: string, row: Record<string, unknown>, id = String(row.id ?? row.pubkey ?? row.token ?? row.key ?? "")) => {
@@ -63,6 +63,21 @@ export function createTowerStore(client: TowerDbClient = createTowerDbClientFrom
     upsert,
     deleteRow,
   };
+}
+
+async function ignoreMissingRow<T>(fn: () => Promise<T>): Promise<T | null> {
+  try {
+    return await fn();
+  } catch (error) {
+    if (isMissingRowError(error)) return null;
+    throw error;
+  }
+}
+
+function isMissingRowError(error: unknown) {
+  if (error instanceof TowerDbError && error.status === 404) return true;
+  if (!(error instanceof Error)) return false;
+  return /\brow not found\b/i.test(error.message);
 }
 
 function rowsFromPayload(payload: unknown): Record<string, unknown>[] {
