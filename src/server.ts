@@ -514,7 +514,8 @@ async function handleTowerApi(req: Request, url: URL): Promise<Response | null> 
     const enriched = await towerCount("companies", { enrichment_status: { in: ["enriched", "complete", "processed"] } });
     const serviceFitAssessments = await towerCount("service_fit_assessments");
     const rankedCompanies = await towerCountRankedCompanies();
-    const scored = Math.max(serviceFitAssessments, rankedCompanies);
+    const rankedEnrichedCompanies = await towerCountRankedCompanies({ enrichedOnly: true });
+    const scored = await towerCountServiceFitScoredCompanies();
     const workQueueRows = await towerRows("work_queue", { limit: 500 });
     const workQueue = towerWorkQueueCounts(workQueueRows);
     const coverage = towerEmptyCoverageSummary();
@@ -532,6 +533,7 @@ async function handleTowerApi(req: Request, url: URL): Promise<Response | null> 
         scored,
         serviceFitAssessments,
         rankedCompanies,
+        rankedEnrichedCompanies,
         outreachReady: await towerCount("outreach_drafts"),
         workQueue,
         activeRuns: recentRuns.filter((run) => ["queued", "running", "mock"].includes(run.status)).length,
@@ -5107,8 +5109,31 @@ function towerWorkQueueCounts(rows: Record<string, unknown>[]) {
   return counts;
 }
 
-async function towerCountRankedCompanies() {
+const TOWER_ENRICHED_STATUSES = new Set(["enriched", "complete", "processed"]);
+
+async function towerEnrichedCompanyIdSet() {
   const companyIds = new Set<string>();
+  const pageSize = 500;
+  for (let offset = 0; ; offset += pageSize) {
+    const rows = await getTowerStore().query("companies", {
+      select: ["id", "enrichment_status"],
+      limit: pageSize,
+      offset,
+    });
+    for (const row of rows) {
+      if (TOWER_ENRICHED_STATUSES.has(String(row.enrichment_status ?? ""))) {
+        const companyId = String(row.id ?? "");
+        if (companyId) companyIds.add(companyId);
+      }
+    }
+    if (rows.length < pageSize) break;
+  }
+  return companyIds;
+}
+
+async function towerCountRankedCompanies(options: { enrichedOnly?: boolean } = {}) {
+  const rankedCompanyIds = new Set<string>();
+  const enrichedCompanyIds = options.enrichedOnly ? await towerEnrichedCompanyIdSet() : null;
   const pageSize = 500;
   for (let offset = 0; ; offset += pageSize) {
     const rows = await getTowerStore().query("target_rankings", {
@@ -5118,11 +5143,30 @@ async function towerCountRankedCompanies() {
     });
     for (const row of rows) {
       const companyId = String(row.company_id ?? "");
-      if (companyId) companyIds.add(companyId);
+      if (companyId && (!enrichedCompanyIds || enrichedCompanyIds.has(companyId))) rankedCompanyIds.add(companyId);
     }
     if (rows.length < pageSize) break;
   }
-  return companyIds.size;
+  return rankedCompanyIds.size;
+}
+
+async function towerCountServiceFitScoredCompanies() {
+  const enrichedCompanyIds = await towerEnrichedCompanyIdSet();
+  const scoredCompanyIds = new Set<string>();
+  const pageSize = 500;
+  for (let offset = 0; ; offset += pageSize) {
+    const rows = await getTowerStore().query("service_fit_assessments", {
+      select: ["company_id"],
+      limit: pageSize,
+      offset,
+    });
+    for (const row of rows) {
+      const companyId = String(row.company_id ?? "");
+      if (companyId && enrichedCompanyIds.has(companyId)) scoredCompanyIds.add(companyId);
+    }
+    if (rows.length < pageSize) break;
+  }
+  return scoredCompanyIds.size;
 }
 
 function towerEmptyCoverageSummary() {
