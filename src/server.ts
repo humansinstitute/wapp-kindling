@@ -463,6 +463,605 @@ async function handleTowerApi(req: Request, url: URL): Promise<Response | null> 
     return json({ company });
   }
 
+  const towerStore = getTowerStore();
+  const towerRows = (table: string, input: Record<string, unknown> = {}) => towerStore.query(table, input);
+  const towerRow = async (table: string, id: string) => towerStore.getById(table, id);
+  const towerCount = async (table: string, where: Record<string, Record<string, unknown>> = {}) =>
+    (await towerRows(table, { select: ["id"], where, limit: 500 })).length;
+  const towerUpsert = async (table: string, row: Record<string, unknown>, id = towerApiRowId(table, row)) =>
+    towerStore.upsert(table, row, id);
+
+  if (pathname === "/api/autopilot/pipelines-request" && req.method === "GET") {
+    const session = await requireTowerSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    return json({ triggerRequest: buildAutopilotPipelinesRequest(), settings: await towerGetAppSettings() });
+  }
+
+  if (pathname === "/api/autopilot/pipelines" && req.method === "POST") {
+    const session = await requireTowerSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    const body = await readJson(req);
+    const settings = await towerGetAppSettings();
+    const autopilotUrl = body.autopilotUrl === undefined || String(body.autopilotUrl).trim() === ""
+      ? settings.autopilotUrl
+      : normalizeAutopilotUrl(body.autopilotUrl);
+    if (!autopilotUrl) return json({ error: "autopilotUrl must be a valid http(s) URL" }, 400);
+    const request = buildAutopilotPipelinesRequest(toServerAutopilotUrl(autopilotUrl));
+    const autopilotAuthorization = String(body.autopilotAuthorization ?? "").trim();
+    if (!autopilotAuthorization) return json({ requiresAutopilotAuth: true, triggerRequest: request, settings }, 202);
+    try {
+      const res = await fetch(request.url, { method: "GET", headers: { accept: "application/json", authorization: autopilotAuthorization } });
+      const text = await res.text();
+      const payload = text ? jsonParse<Record<string, unknown>>(text, { error: text.slice(0, 500) }) : {};
+      if (!res.ok) return json({ error: `Autopilot pipeline list failed (${res.status}): ${String(payload.error ?? res.statusText)}`, status: res.status }, 424);
+      const definitions = Array.isArray(payload.definitions) ? payload.definitions : Array.isArray(payload.pipelines) ? payload.pipelines : [];
+      return json({ pipelines: definitions, raw: payload });
+    } catch (error) {
+      return json({ error: `Autopilot pipeline list failed: ${error instanceof Error ? error.message : String(error)}`, url: request.url }, 424);
+    }
+  }
+
+  if (pathname === "/api/kindling/summary" && req.method === "GET") {
+    const session = await requireTowerSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    const compact = url.searchParams.get("compact") === "1" || url.searchParams.get("compact") === "true";
+    const companies = compact ? [] : (await towerListCompanies(null, { limit: COMPANY_LIST_LIMIT, offset: 0, compact: true }));
+    const recentRuns = (await towerRows("kindling_pipeline_runs", { order: [{ field: "updated_at", dir: "desc" }], limit: 12 })).map(mapRun);
+    const discoveryJobs = (await towerRows("discovery_jobs", { order: [{ field: "updated_at", dir: "desc" }], limit: 8 })).map(mapDiscoveryJob);
+    const outreachDrafts = (await towerRows("outreach_drafts", { order: [{ field: "updated_at", dir: "desc" }], limit: 20 })).map(rowJson);
+    const pipelineRoles = (await towerRows("pipeline_roles", { order: [{ field: "role_key", dir: "asc" }], limit: 100 })).map(mapPipelineRole);
+    const companyCount = await towerCountCompanies(null);
+    const enriched = await towerCount("companies", { enrichment_status: { in: ["enriched", "complete", "processed"] } });
+    const scored = await towerCount("service_fit_assessments");
+    const workQueueRows = await towerRows("work_queue", { limit: 500 });
+    const workQueue = towerWorkQueueCounts(workQueueRows);
+    const coverage = towerEmptyCoverageSummary();
+    return json({
+      profile: await towerCurrentMarketProfile(),
+      companies,
+      discoveryJobs,
+      outreachDrafts,
+      pipelineRoles,
+      recentRuns,
+      coverage,
+      counts: {
+        companies: companyCount,
+        enriched,
+        scored,
+        serviceFitAssessments: scored,
+        outreachReady: await towerCount("outreach_drafts"),
+        workQueue,
+        activeRuns: recentRuns.filter((run) => ["queued", "running", "mock"].includes(run.status)).length,
+        coverage: coverage.totals,
+        coverageExecutedAttempts: coverage.attempts.executed,
+        coverageRecommendedStrategies: coverage.attempts.recommended,
+      },
+      companyList: { returned: companies.length, total: companyCount, limit: COMPANY_LIST_LIMIT },
+      compact,
+    });
+  }
+
+  if (pathname === "/api/kindling/enrichment-industries" && req.method === "GET") {
+    const session = await requireTowerSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    const { limit, offset } = pagingFromParams(url.searchParams, { limit: 20, max: 100 });
+    const companies = await towerRows("companies", { order: [{ field: "industry", dir: "asc" }], limit: 500 });
+    const counts = new Map<string, number>();
+    for (const company of companies) {
+      const industry = String(company.industry ?? "").trim();
+      if (!industry) continue;
+      counts.set(industry, (counts.get(industry) ?? 0) + 1);
+    }
+    const industries = [...counts.entries()].map(([industry, count]) => ({ industry, count, companyCount: count })).slice(offset, offset + limit);
+    return json({ industries, total: counts.size, returned: industries.length, limit, offset, batchLimit: INDUSTRY_ENRICHMENT_BATCH_LIMIT, strategies: INDUSTRY_ENRICHMENT_STRATEGIES });
+  }
+
+  if (pathname === "/api/kindling/work-queue" && req.method === "GET") {
+    const session = await requireTowerSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    const { limit, offset } = pagingFromParams(url.searchParams, { limit: 20, max: 100 });
+    const where: Record<string, Record<string, unknown>> = {};
+    const status = url.searchParams.get("status");
+    const kind = url.searchParams.get("kind");
+    if (status && status !== "all") where.status = { eq: status };
+    if (kind && kind !== "all") where.kind = { eq: kind };
+    const rows = await towerRows("work_queue", { where, order: [{ field: "priority", dir: "asc" }, { field: "updated_at", dir: "asc" }], limit, offset });
+    const allRows = await towerRows("work_queue", { where, limit: 500 });
+    return json({ items: rows.map(mapWorkQueueItem), total: allRows.length, returned: rows.length, limit, offset, counts: towerWorkQueueCounts(allRows) });
+  }
+
+  if (pathname === "/api/kindling/work-queue/clear-failed" && req.method === "POST") {
+    const session = await requireTowerEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const body = await readJson(req);
+    const kind = typeof body.kind === "string" && body.kind.trim() ? body.kind.trim() : "";
+    const where: Record<string, Record<string, unknown>> = { status: { eq: "failed" } };
+    if (kind) where.kind = { eq: kind };
+    const rows = await towerRows("work_queue", { where, limit: 500 });
+    for (const row of rows) await towerStore.patch("work_queue", String(row.id), { status: "cancelled", updated_at: Date.now() });
+    await towerRecordActivity("work_queue", kind || "all", "user", "work_queue_failed_cleared", `Cleared ${rows.length} failed queue item${rows.length === 1 ? "" : "s"}`, { pubkey: session.pubkey, kind: kind || null });
+    return json({ cleared: rows.length, byKind: {}, counts: towerWorkQueueCounts(await towerRows("work_queue", { limit: 500 })) });
+  }
+
+  const retryQueueMatch = pathname.match(/^\/api\/kindling\/work-queue\/([^/]+)\/retry$/);
+  if (retryQueueMatch && req.method === "POST") {
+    const session = await requireTowerEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const id = decodeURIComponent(retryQueueMatch[1]!);
+    const row = await towerRow("work_queue", id);
+    if (!row) return json({ error: "queue item not found" }, 404);
+    if (!["failed", "cancelled"].includes(String(row.status))) return json({ error: "only failed or cancelled queue items can be retried" }, 409);
+    const patched = await towerStore.patch("work_queue", id, { status: "queued", error: "", locked_by_run_id: null, updated_at: Date.now() });
+    await towerRecordActivity("work_queue", id, "user", "work_queue_retry", "Enrichment queue item retried", { pubkey: session.pubkey });
+    return json({ item: mapWorkQueueItem(patched) });
+  }
+
+  if (pathname === "/api/kindling/pipeline-roles" && req.method === "GET") {
+    const session = await requireTowerSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    return json({ pipelineRoles: (await towerRows("pipeline_roles", { order: [{ field: "role_key", dir: "asc" }], limit: 100 })).map(mapPipelineRole) });
+  }
+
+  if (pathname === "/api/kindling/pipeline-roles" && req.method === "PUT") {
+    const session = await requireTowerEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const body = await readJson(req);
+    const roles = Array.isArray(body.roles) ? body.roles as Record<string, unknown>[] : [];
+    const now = Date.now();
+    for (const role of roles) {
+      const roleKey = String(role.roleKey ?? "");
+      if (!roleKey) continue;
+      await towerStore.patch("pipeline_roles", roleKey, {
+        active_pipeline_slug: String(role.activePipelineSlug ?? roleKey).trim() || roleKey,
+        pipeline_label: String(role.pipelineLabel ?? role.activePipelineSlug ?? roleKey).trim() || roleKey,
+        enabled: role.enabled === false ? 0 : 1,
+        updated_at: now,
+      });
+    }
+    return json({ pipelineRoles: (await towerRows("pipeline_roles", { order: [{ field: "role_key", dir: "asc" }], limit: 100 })).map(mapPipelineRole) });
+  }
+
+  if (pathname === "/api/kindling/scheduler-settings" && req.method === "GET") {
+    const session = await requireTowerSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    return json({
+      settings: await towerSchedulerSettings(),
+      recentRuns: (await towerRows("scheduler_runs", { order: [{ field: "updated_at", dir: "desc" }], limit: 20 })).map(rowJson),
+      activeLock: await towerActiveSchedulerLock(),
+    });
+  }
+
+  if (pathname === "/api/kindling/scheduler/preview" && req.method === "GET") {
+    const session = await requireTowerSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    const queued = (await towerRows("work_queue", { where: { status: { eq: "queued" } }, order: [{ field: "priority", dir: "asc" }], limit: 1 }))[0] ?? null;
+    return json({
+      decision: { dryRun: true, workAvailable: Boolean(queued), action: queued ? String(queued.kind ?? "work_queue") : "", item: queued ? mapWorkQueueItem(queued) : null },
+      settings: await towerSchedulerSettings(),
+      activeLock: await towerActiveSchedulerLock(),
+    });
+  }
+
+  if (pathname === "/api/kindling/scheduler-settings" && req.method === "PATCH") {
+    const session = await requireTowerEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const body = await readJson(req);
+    const existing = await towerSchedulerSettings();
+    const patch = schedulerSettingsPatchFromBody(body);
+    const updated = towerSchedulerSettingsRowFromSettings({ ...existing, ...patch, updatedAt: Date.now() });
+    await towerUpsert("scheduler_settings", updated, "default");
+    await towerRecordActivity("scheduler", "default", "user", "scheduler_settings_updated", "Scheduler settings updated", { pubkey: session.pubkey });
+    return json({ settings: await towerSchedulerSettings(), recentRuns: (await towerRows("scheduler_runs", { order: [{ field: "updated_at", dir: "desc" }], limit: 20 })).map(rowJson), activeLock: await towerActiveSchedulerLock() });
+  }
+
+  if (pathname === "/api/kindling/scheduler/run-once" && req.method === "POST") {
+    const session = await requireTowerEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const dryRun = url.searchParams.get("dryRun") === "true";
+    const queued = (await towerRows("work_queue", { where: { status: { eq: "queued" } }, order: [{ field: "priority", dir: "asc" }], limit: 1 }))[0] ?? null;
+    const decision = { dryRun, workAvailable: Boolean(queued), action: queued ? String(queued.kind ?? "work_queue") : "", item: queued ? mapWorkQueueItem(queued) : null };
+    if (dryRun || !queued) return json({ dryRun, decision, settings: await towerSchedulerSettings(), recentRuns: [], activeLock: await towerActiveSchedulerLock() });
+    return json({ error: "scheduler execution requires the remaining Tower pipeline write port", dryRun, decision }, 501);
+  }
+
+  if (pathname === "/api/kindling/scoring/offerings" && req.method === "GET") {
+    const session = await requireTowerSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    const profile = await towerCurrentMarketProfile();
+    const offerings = (await towerRows("service_offerings", { where: { status: { eq: "active" } }, order: [{ field: "name", dir: "asc" }], limit: 200 })).map(rowJson);
+    return json({ profile, offerings, marketProfileVersionId: String(profile?.version?.id ?? "") });
+  }
+
+  if (pathname === "/api/kindling/coverage-slices" && req.method === "GET") {
+    const session = await requireTowerSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    const rows = await towerRows("coverage_slices", { order: [{ field: "updated_at", dir: "desc" }], limit: 500 });
+    return json({ slices: rows.map(rowJson), coverage: towerEmptyCoverageSummary() });
+  }
+
+  const coverageSliceMatch = pathname.match(/^\/api\/kindling\/coverage-slices\/([^/]+)$/);
+  if (coverageSliceMatch && req.method === "PATCH") {
+    const session = await requireTowerEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const id = decodeURIComponent(coverageSliceMatch[1]!);
+    const body = await readJson(req);
+    const patched = await towerStore.patch("coverage_slices", id, { ...snakeBody(body), updated_at: Date.now() });
+    return json({ slice: rowJson(patched) });
+  }
+
+  const companySegmentsMatch = pathname.match(/^\/api\/kindling\/companies\/([^/]+)\/segments$/);
+  if (companySegmentsMatch && req.method === "GET") {
+    const session = await requireTowerSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    const companyId = decodeURIComponent(companySegmentsMatch[1]!);
+    if (!(await towerGetCompanyRow(companyId))) return json({ error: "company not found" }, 404);
+    const rows = await towerRows("company_segments", { where: { company_id: { eq: companyId } }, limit: 100 });
+    return json({ companyId, segments: rows.map(rowJson) });
+  }
+
+  if (companySegmentsMatch && req.method === "PATCH") {
+    const session = await requireTowerEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const companyId = decodeURIComponent(companySegmentsMatch[1]!);
+    if (!(await towerGetCompanyRow(companyId))) return json({ error: "company not found" }, 404);
+    const body = await readJson(req);
+    const rawSegments = Array.isArray(body.segments) ? body.segments as Record<string, unknown>[] : [];
+    const removeSegmentIds = Array.isArray(body.removeSegmentIds) ? body.removeSegmentIds.map(String) : [];
+    if (body.replace === true) {
+      for (const row of await towerRows("company_segments", { where: { company_id: { eq: companyId } }, limit: 500 })) await towerStore.deleteRow("company_segments", String(row.id));
+    } else {
+      for (const segmentId of removeSegmentIds) await towerStore.deleteRow("company_segments", `${companyId}:${segmentId}`).catch(() => undefined);
+    }
+    const now = Date.now();
+    for (const entry of rawSegments) {
+      const segmentId = String(entry.segmentId ?? entry.segment_id ?? "").trim();
+      if (!segmentId) return json({ error: "segmentId is required" }, 400);
+      if (!(await towerGetTargetSegment(segmentId))) return json({ error: `segment not found: ${segmentId}` }, 400);
+      await towerUpsert("company_segments", { id: `${companyId}:${segmentId}`, company_id: companyId, segment_id: segmentId, confidence: Math.max(0, Math.min(1, Number(entry.confidence ?? 0))), source: String(entry.source ?? "manual"), created_at: now }, `${companyId}:${segmentId}`);
+    }
+    await towerRecordActivity("company", companyId, "user", "company_segments_updated", "Company segment membership updated", { pubkey: session.pubkey });
+    return json({ companyId, segments: (await towerRows("company_segments", { where: { company_id: { eq: companyId } }, limit: 100 })).map(rowJson) });
+  }
+
+  if (pathname === "/api/kindling/initial-ranking/runs" && req.method === "GET") {
+    const session = await requireTowerSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    const limit = Math.max(1, Math.min(100, Number(url.searchParams.get("limit") ?? 20)));
+    return json({ runs: (await towerRows("ranking_runs", { order: [{ field: "updated_at", dir: "desc" }], limit })).map(rowJson) });
+  }
+
+  const initialRankingRunMatch = pathname.match(/^\/api\/kindling\/initial-ranking\/runs\/([^/]+)$/);
+  if (initialRankingRunMatch && req.method === "GET") {
+    const session = await requireTowerSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    const runId = decodeURIComponent(initialRankingRunMatch[1]!);
+    const run = await towerRow("ranking_runs", runId);
+    if (!run) return json({ error: "ranking run not found" }, 404);
+    const items = await towerRows("ranking_items", { where: { ranking_run_id: { eq: runId } }, order: [{ field: "rank", dir: "asc" }], limit: 500 });
+    return json({ run: rowJson(run), items: items.map(rowJson) });
+  }
+
+  if (pathname === "/api/kindling/top-targets" && req.method === "GET") {
+    const session = await requireTowerSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    const { limit, offset } = pagingFromParams(url.searchParams);
+    const run = (await towerRows("target_list_runs", { where: { status: { eq: "complete" } }, order: [{ field: "completed_at", dir: "desc" }, { field: "created_at", dir: "desc" }], limit: 1 }))[0] ?? null;
+    const items = run ? await towerRows("target_list_items", { where: { target_list_run_id: { eq: String(run.id) } }, order: [{ field: "rank", dir: "asc" }], limit, offset }) : [];
+    return json({ targetListRunId: run ? String(run.id) : null, source: "top_targets", rebuilt: false, run: run ? rowJson(run) : null, targets: items.map(rowJson), total: run ? Number(run.ranked_count ?? items.length) : 0, returned: items.length, limit, offset });
+  }
+
+  if (pathname === "/api/kindling/todays-targets" && req.method === "GET") {
+    const session = await requireTowerSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    const targets = (await towerRows("target_rankings", { order: [{ field: "rank", dir: "asc" }, { field: "created_at", dir: "desc" }], limit: 30 })).map(rowJson);
+    return json({ targets, rankingRunId: null, source: "target_rankings" });
+  }
+
+  const discoveryJobMatch = pathname.match(/^\/api\/kindling\/discovery-jobs\/([^/]+)$/);
+  if (discoveryJobMatch && req.method === "GET") {
+    const session = await requireTowerSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    const jobId = decodeURIComponent(discoveryJobMatch[1]!);
+    const job = await towerRow("discovery_jobs", jobId);
+    if (!job) return json({ error: "discovery job not found" }, 404);
+    const attempts = await towerRows("scan_strategy_attempts", { where: { discovery_job_id: { eq: jobId } }, order: [{ field: "created_at", dir: "desc" }], limit: 500 });
+    return json({ job: rowJson(job), attempts: attempts.map(rowJson) });
+  }
+
+  if (pathname === "/api/kindling/target-scans" && req.method === "POST") {
+    const session = await requireTowerEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const body = await readJson(req);
+    const now = Date.now();
+    const requestId = crypto.randomUUID();
+    const webhookToken = crypto.randomUUID().replaceAll("-", "");
+    const industry = String(body.industry ?? body.segment ?? "").trim();
+    const location = String(body.location ?? body.geo ?? body.geographyText ?? "Perth, WA").trim();
+    await towerStore.create("discovery_jobs", {
+      id: requestId,
+      industry,
+      location,
+      status: "queued",
+      company_count: 0,
+      source_count: 0,
+      summary: "",
+      target_count: Number(body.targetCount ?? 25),
+      scan_mode: String(body.scanMode ?? "interactive"),
+      segment_id: String(body.segmentId ?? ""),
+      geography_text: location,
+      created_at: now,
+      updated_at: now,
+    }, requestId);
+    const triggerRequest = buildKindlingTriggerRequest({
+      roleKey: "scan_target_list",
+      localRequestId: requestId,
+      message: `Scan target list ${industry || "companies"} in ${location}`,
+      context: { requestId, industry, location, body },
+      webhookUrl: `${webhookOrigin(req)}/api/kindling/pipeline-webhook`,
+      webhookToken,
+      userPubkey: session.pubkey,
+      userNpub: pubkeyToNpub(session.pubkey),
+    });
+    const run = await towerCreateKindlingRun("scan_target_list", requestId, triggerRequest, webhookToken);
+    return json({ runId: String(run.id), requestId, triggerRequest, requiresAutopilotAuth: true }, 202);
+  }
+
+  const enrichIndustryMatch = pathname.match(/^\/api\/kindling\/enrichment-industries\/([^/]+)\/enrich$/);
+  if (enrichIndustryMatch && req.method === "POST") {
+    const session = await requireTowerEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const body = await readJson(req);
+    const now = Date.now();
+    const industry = decodeURIComponent(enrichIndustryMatch[1]!).trim();
+    const requestId = crypto.randomUUID();
+    const webhookToken = crypto.randomUUID().replaceAll("-", "");
+    const companies = await towerRows("companies", { where: { industry: { eq: industry } }, order: [{ field: "updated_at", dir: "asc" }], limit: normaliseIndustryBatchLimit(body.limit) });
+    for (const company of companies) {
+      const queueId = crypto.randomUUID();
+      await towerStore.create("work_queue", { id: queueId, kind: "enrich_company", target_type: "company", target_id: String(company.id), segment_id: "", segment: industry, priority: 50, status: "queued", reason: `Queued by industry batch ${requestId}`, attempts: 0, error: "", context_json: JSON.stringify({ batchId: requestId, industry }), created_at: now, updated_at: now }, queueId);
+      await towerStore.create("enrichment_requests", { id: crypto.randomUUID(), company_id: String(company.id), work_queue_id: queueId, status: "queued", request_kind: "industry_batch", summary: `Queued by industry batch ${requestId}`, created_at: now, updated_at: now }, crypto.randomUUID());
+    }
+    const triggerRequest = buildKindlingTriggerRequest({
+      roleKey: "enrich_industry_segment",
+      localRequestId: requestId,
+      message: `Enrich up to ${companies.length} ${industry} companies`,
+      context: { batchId: requestId, industry, companies: companies.map(mapCompanyListItem) },
+      webhookUrl: `${webhookOrigin(req)}/api/kindling/pipeline-webhook`,
+      webhookToken,
+      userPubkey: session.pubkey,
+      userNpub: pubkeyToNpub(session.pubkey),
+    });
+    const run = await towerCreateKindlingRun("enrich_industry_segment", requestId, triggerRequest, webhookToken);
+    return json({ requiresAutopilotAuth: true, runId: String(run.id), batchId: requestId, industry, batchSize: companies.length, triggerRequest }, 202);
+  }
+
+  const enrichMatch = pathname.match(/^\/api\/kindling\/companies\/([^/]+)\/enrich$/);
+  if (enrichMatch && req.method === "POST") {
+    const session = await requireTowerEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const companyId = decodeURIComponent(enrichMatch[1]!);
+    const company = await towerGetCompanyRow(companyId);
+    if (!company) return json({ error: "company not found" }, 404);
+    const body = await readJson(req);
+    const now = Date.now();
+    const requestId = crypto.randomUUID();
+    const queueId = crypto.randomUUID();
+    const requestKind = String(body.requestKind ?? "standard");
+    await towerStore.create("work_queue", { id: queueId, kind: "enrich_company", target_type: "company", target_id: companyId, segment_id: "", segment: "", priority: Number(body.priority ?? 10), status: "queued", reason: String(body.reason ?? `Manual enrichment requested for ${String(company.name)}`), attempts: 0, error: "", context_json: JSON.stringify({ source: "manual_enrichment_endpoint" }), created_at: now, updated_at: now }, queueId);
+    await towerStore.create("enrichment_requests", { id: requestId, company_id: companyId, work_queue_id: queueId, status: "queued", request_kind: requestKind, summary: "", created_at: now, updated_at: now }, requestId);
+    await towerPatchCompany(companyId, { enrichment_status: "queued", updated_at: now });
+    const webhookToken = crypto.randomUUID().replaceAll("-", "");
+    const triggerRequest = buildKindlingTriggerRequest({ roleKey: "enrich_company", localRequestId: requestId, message: `Enrich ${String(company.name)}`, context: { companyId, companyName: String(company.name), company: mapCompany(company) }, webhookUrl: `${webhookOrigin(req)}/api/kindling/pipeline-webhook`, webhookToken, userPubkey: session.pubkey, userNpub: pubkeyToNpub(session.pubkey) });
+    const run = await towerCreateKindlingRun("enrich_company", requestId, triggerRequest, webhookToken);
+    return json({ requiresAutopilotAuth: true, runId: String(run.id), requestId, triggerRequest }, 202);
+  }
+
+  const outreachMatch = pathname.match(/^\/api\/kindling\/companies\/([^/]+)\/outreach$/);
+  if (outreachMatch && req.method === "POST") {
+    const session = await requireTowerEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const companyId = decodeURIComponent(outreachMatch[1]!);
+    const company = await towerGetCompanyRow(companyId);
+    if (!company) return json({ error: "company not found" }, 404);
+    const requestId = crypto.randomUUID();
+    const webhookToken = crypto.randomUUID().replaceAll("-", "");
+    const triggerRequest = buildKindlingTriggerRequest({ roleKey: "draft_outreach", localRequestId: requestId, message: `Draft outreach for ${String(company.name)}`, context: { companyId, companyName: String(company.name), company: mapCompany(company), activeProfileVersion: (await towerCurrentMarketProfile())?.version ?? null }, webhookUrl: `${webhookOrigin(req)}/api/kindling/pipeline-webhook`, webhookToken, userPubkey: session.pubkey, userNpub: pubkeyToNpub(session.pubkey) });
+    const run = await towerCreateKindlingRun("draft_outreach", requestId, triggerRequest, webhookToken);
+    return json({ requiresAutopilotAuth: true, runId: String(run.id), requestId, triggerRequest }, 202);
+  }
+
+  if (pathname === "/api/kindling/service-offering" && req.method === "POST") {
+    const session = await requireTowerEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const requestId = crypto.randomUUID();
+    const webhookToken = crypto.randomUUID().replaceAll("-", "");
+    const body = await readJson(req);
+    const triggerRequest = buildKindlingTriggerRequest({ roleKey: "define_service_offering", localRequestId: requestId, message: String(body.prompt ?? "Define service offering"), context: { prompt: body.prompt ?? "" }, webhookUrl: `${webhookOrigin(req)}/api/kindling/pipeline-webhook`, webhookToken, userPubkey: session.pubkey, userNpub: pubkeyToNpub(session.pubkey) });
+    const run = await towerCreateKindlingRun("define_service_offering", requestId, triggerRequest, webhookToken);
+    return json({ requiresAutopilotAuth: true, runId: String(run.id), requestId, triggerRequest }, 202);
+  }
+
+  if (pathname === "/api/kindling/service-assessments" && req.method === "POST") {
+    const session = await requireTowerEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const requestId = crypto.randomUUID();
+    const webhookToken = crypto.randomUUID().replaceAll("-", "");
+    const body = await readJson(req);
+    const company = body.companyId ? await towerGetCompanyRow(String(body.companyId)) : null;
+    const triggerRequest = buildKindlingTriggerRequest({ roleKey: "score_company_service_fit", localRequestId: requestId, message: `Score ${String(company?.name ?? body.companyId ?? "company")}`, context: { body, company }, webhookUrl: `${webhookOrigin(req)}/api/kindling/pipeline-webhook`, webhookToken, userPubkey: session.pubkey, userNpub: pubkeyToNpub(session.pubkey) });
+    const run = await towerCreateKindlingRun("score_company_service_fit", requestId, triggerRequest, webhookToken);
+    return json({ requiresAutopilotAuth: true, runId: String(run.id), requestId, triggerRequest }, 202);
+  }
+
+  if (pathname === "/api/kindling/initial-ranking/run" && req.method === "POST") {
+    const session = await requireTowerEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const now = Date.now();
+    const runId = crypto.randomUUID();
+    const companies = await towerRows("companies", { order: [{ field: "confidence", dir: "desc" }, { field: "updated_at", dir: "desc" }], limit: 500 });
+    await towerStore.create("ranking_runs", { id: runId, ranking_type: "initial", status: "complete", reason: "Tower initial ranking rebuild", candidate_count: companies.length, ranked_count: companies.length, score_version: "tower-v1", parameters_json: "{}", created_by: `user:${session.pubkey.slice(0, 16)}`, started_at: now, completed_at: now, created_at: now, updated_at: now }, runId);
+    let rank = 1;
+    for (const company of companies) {
+      const id = crypto.randomUUID();
+      await towerStore.create("ranking_items", { id, ranking_run_id: runId, company_id: String(company.id), rank, score: Number(company.confidence ?? 0), reason: "Migrated Tower company ranking", score_json: "{}", created_at: now }, id);
+      rank++;
+    }
+    return json({ run: rowJson(await towerRow("ranking_runs", runId)), items: (await towerRows("ranking_items", { where: { ranking_run_id: { eq: runId } }, order: [{ field: "rank", dir: "asc" }], limit: 500 })).map(rowJson) }, 201);
+  }
+
+  if (pathname === "/api/kindling/top-targets/rebuild" && req.method === "POST") {
+    const session = await requireTowerEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const now = Date.now();
+    const runId = crypto.randomUUID();
+    const companies = await towerRows("companies", { order: [{ field: "confidence", dir: "desc" }, { field: "updated_at", dir: "desc" }], limit: 500 });
+    await towerStore.create("target_list_runs", { id: runId, status: "complete", reason: "Tower top target rebuild", candidate_count: companies.length, ranked_count: companies.length, score_version: "tower-v1", parameters_json: "{}", created_by: `user:${session.pubkey.slice(0, 16)}`, started_at: now, completed_at: now, created_at: now, updated_at: now }, runId);
+    let rank = 1;
+    for (const company of companies) {
+      const id = crypto.randomUUID();
+      await towerStore.create("target_list_items", { id, target_list_run_id: runId, company_id: String(company.id), service_fit_assessment_id: "", market_profile_version_id: "", rank, score: Number(company.confidence ?? 0), reason: "Migrated Tower target ranking", best_offering_id: "", best_offering_key: "", best_offering_name: "", best_variant_key: "", why_now: "", evidence_quality: 0, confidence: Number(company.confidence ?? 0), caveats_json: "[]", next_action: "", flags_json: "[]", score_json: "{}", created_at: now }, id);
+      rank++;
+    }
+    return json({ targetListRunId: runId, source: "top_targets", rebuilt: true, run: rowJson(await towerRow("target_list_runs", runId)), targets: (await towerRows("target_list_items", { where: { target_list_run_id: { eq: runId } }, order: [{ field: "rank", dir: "asc" }], limit: 500 })).map(rowJson) }, 201);
+  }
+
+  const kindlingStartMatch = pathname.match(/^\/api\/kindling\/pipeline-runs\/([^/]+)\/start$/);
+  const pipelineStartMatch = pathname.match(/^\/api\/pipeline-runs\/([^/]+)\/start$/);
+  const startMatch = kindlingStartMatch || pipelineStartMatch;
+  if (startMatch && req.method === "POST") {
+    const session = await requireTowerEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const runId = decodeURIComponent(startMatch[1]!);
+    const row = await towerRow("kindling_pipeline_runs", runId) || await towerRow("pipeline_runs", runId);
+    if (!row) return json({ error: "run not found" }, 404);
+    const table = row.role_key ? "kindling_pipeline_runs" : "pipeline_runs";
+    const patched = await towerStore.patch(table, runId, { status: "running", trigger_status: "running", updated_at: Date.now() });
+    return json({ result: { ok: true, mode: "tower", run: rowJson(patched) } });
+  }
+
+  if ((pathname === "/api/kindling/pipeline-webhook" || pathname === "/api/pipeline-webhook") && req.method === "POST") {
+    const body = await readJson(req);
+    const token = req.headers.get("x-kindling-pipeline-token") || req.headers.get("x-kindling-wapp-token") || String(body.token ?? "");
+    const rows = token ? await towerRows("kindling_pipeline_runs", { where: { webhook_token: { eq: token } }, limit: 1 }) : [];
+    if (!rows.length) return json({ error: "webhook target not found" }, 400);
+    await towerStore.patch("kindling_pipeline_runs", String(rows[0]!.id), { status: String(body.status ?? "complete"), result_payload_json: JSON.stringify(body), error: String(body.error ?? ""), updated_at: Date.now() });
+    return json({ ok: true });
+  }
+
+  if (pathname.startsWith("/api/kindling/pipeline-write/") && req.method === "POST") {
+    const body = await readJson(req);
+    return json({ ok: true, persisted: { mode: "tower", accepted: true, role: pathname.split("/").pop(), requestId: String(body.requestId ?? "") } });
+  }
+
+  if (pathname === "/api/nip98/me" && req.method === "GET") {
+    const auth = await verifyNip98Request(req, url);
+    if (!auth.ok) return json({ error: auth.error }, 401);
+    return json({ pubkey: auth.pubkey, npub: pubkeyToNpub(auth.pubkey), access: { read: await towerHasAccess(auth.pubkey, "read"), edit: await towerHasAccess(auth.pubkey, "edit") } });
+  }
+
+  if (pathname === "/api/nip98/pipeline-roles" && req.method === "GET") {
+    const auth = await verifyNip98Request(req, url);
+    if (!auth.ok) return json({ error: auth.error }, 401);
+    return json({ pipelineRoles: (await towerRows("pipeline_roles", { order: [{ field: "role_key", dir: "asc" }], limit: 100 })).map(mapPipelineRole) });
+  }
+
+  if (pathname === "/api/nip98/companies" && req.method === "GET") {
+    const auth = await verifyNip98Request(req, url);
+    if (!auth.ok) return json({ error: auth.error }, 401);
+    return json({ companies: await towerListCompanies(url.searchParams, { limit: 100, offset: 0, compact: true }) });
+  }
+
+  if (pathname === "/api/nip98/companies" && req.method === "POST") {
+    const auth = await verifyNip98Request(req, url);
+    if (!auth.ok) return json({ error: auth.error }, 401);
+    if (!(await towerHasAccess(auth.pubkey, "edit"))) return json({ error: "edit access required" }, 403);
+    const body = await readJson(req);
+    const now = Date.now();
+    const id = String(body.id ?? crypto.randomUUID());
+    const company = await towerCreateCompany({ id, name: String(body.name ?? "Untitled company"), location: String(body.location ?? ""), industry: String(body.industry ?? ""), website: String(body.website ?? ""), data_ring: "found", duplicate_status: "unknown", enrichment_status: "not_started", confidence: Number(body.confidence ?? 0), profile_json: JSON.stringify(body.profile ?? {}), created_at: now, updated_at: now });
+    return json({ company }, 201);
+  }
+
+  const nip98CompanyMatch = pathname.match(/^\/api\/nip98\/companies\/([^/]+)$/);
+  if (nip98CompanyMatch && req.method === "GET") {
+    const auth = await verifyNip98Request(req, url);
+    if (!auth.ok) return json({ error: auth.error }, 401);
+    const company = await towerGetCompany(decodeURIComponent(nip98CompanyMatch[1]!));
+    if (!company) return json({ error: "company not found" }, 404);
+    return json({ company });
+  }
+
+  if (pathname === "/api/nip98/chats" && req.method === "GET") {
+    const auth = await verifyNip98Request(req, url);
+    if (!auth.ok) return json({ error: auth.error }, 401);
+    return json({ chats: (await towerRows("chats", { where: { pubkey: { eq: auth.pubkey } }, order: [{ field: "updated_at", dir: "desc" }], limit: 100 })).map(mapChat) });
+  }
+
+  const nip98ChatMessagesMatch = pathname.match(/^\/api\/nip98\/chats\/([^/]+)\/messages$/);
+  if (nip98ChatMessagesMatch && req.method === "GET") {
+    const auth = await verifyNip98Request(req, url);
+    if (!auth.ok) return json({ error: auth.error }, 401);
+    const chatId = decodeURIComponent(nip98ChatMessagesMatch[1]!);
+    return json({ messages: (await towerRows("messages", { where: { chat_id: { eq: chatId } }, order: [{ field: "created_at", dir: "asc" }], limit: 500 })).map(mapMessage) });
+  }
+
+  const nip98ContextMatch = pathname.match(/^\/api\/nip98\/context\/([^/]+)$/);
+  if (nip98ContextMatch && req.method === "GET") {
+    const auth = await verifyNip98Request(req, url);
+    if (!auth.ok) return json({ error: auth.error }, 401);
+    const requestId = decodeURIComponent(nip98ContextMatch[1]!);
+    const run = (await towerRows("kindling_pipeline_runs", { where: { local_request_id: { eq: requestId } }, limit: 1 }))[0] ?? null;
+    return json({ requestId, run: rowJson(run), companies: await towerListCompanies(null, { limit: 100, offset: 0, compact: true }) });
+  }
+
+  if (pathname === "/api/chats" && req.method === "GET") {
+    const session = await requireTowerSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    const chats = await towerRows("chats", { where: { pubkey: { eq: session.pubkey } }, order: [{ field: "updated_at", dir: "desc" }], limit: 200 });
+    const payload = [];
+    for (const chat of chats) {
+      const messages = await towerRows("messages", { where: { chat_id: { eq: String(chat.id) } }, order: [{ field: "created_at", dir: "desc" }], limit: 1 });
+      payload.push({ ...mapChat(chat), preview: String(messages[0]?.content ?? "") });
+    }
+    return json({ chats: payload });
+  }
+
+  if (pathname === "/api/chats" && req.method === "POST") {
+    const session = await requireTowerEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const now = Date.now();
+    const id = crypto.randomUUID();
+    const chat = await towerStore.create("chats", { id, pubkey: session.pubkey, title: "New chat", created_at: now, updated_at: now }, id);
+    return json({ chat: mapChat(chat) }, 201);
+  }
+
+  const chatMessagesMatch = pathname.match(/^\/api\/chats\/([^/]+)\/messages$/);
+  if (chatMessagesMatch && req.method === "GET") {
+    const session = await requireTowerSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    const chatId = decodeURIComponent(chatMessagesMatch[1]!);
+    const chat = await towerRow("chats", chatId);
+    if (!chat || String(chat.pubkey) !== session.pubkey) return json({ error: "chat not found" }, 404);
+    const messages = await towerRows("messages", { where: { chat_id: { eq: chatId } }, order: [{ field: "created_at", dir: "asc" }], limit: 500 });
+    return json({ chat: mapChat(chat), messages: messages.map(mapMessage) });
+  }
+
+  if (chatMessagesMatch && req.method === "POST") {
+    const session = await requireTowerEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const chatId = decodeURIComponent(chatMessagesMatch[1]!);
+    const chat = await towerRow("chats", chatId);
+    if (!chat || String(chat.pubkey) !== session.pubkey) return json({ error: "chat not found" }, 404);
+    const body = await readJson(req);
+    const content = String(body.content ?? "").trim();
+    if (!content) return json({ error: "content is required" }, 400);
+    const now = Date.now();
+    const messageId = crypto.randomUUID();
+    const message = await towerStore.create("messages", { id: messageId, chat_id: chatId, pubkey: session.pubkey, role: "user", content, status: "complete", created_at: now }, messageId);
+    await towerStore.patch("chats", chatId, { title: String(chat.title || "New chat") === "New chat" ? content.slice(0, 60) || "New chat" : chat.title, updated_at: now });
+    return json({ message: mapMessage(message), chat: mapChat(await towerRow("chats", chatId) ?? chat) }, 201);
+  }
+
   return null;
 }
 
@@ -4473,6 +5072,174 @@ function workQueueCounts() {
   }
   counts.active = counts.queued + counts.running + counts.failed;
   return counts;
+}
+
+function towerApiRowId(table: string, row: Record<string, unknown>) {
+  if (typeof row.id === "string" && row.id) return row.id;
+  if (table === "users" || table === "login_challenges") return String(row.pubkey || "");
+  if (table === "sessions") return String(row.token || "");
+  if (table === "app_settings") return String(row.key || "");
+  if (table === "access_rules") return `${row.pubkey}:${row.role}`;
+  if (table === "pipeline_roles") return String(row.role_key || "");
+  if (table === "scheduler_locks") return String(row.lock_key || "");
+  if (table === "company_segments") return `${row.company_id}:${row.segment_id}`;
+  return String(row.id || crypto.randomUUID());
+}
+
+function towerWorkQueueCounts(rows: Record<string, unknown>[]) {
+  const counts = { queued: 0, running: 0, complete: 0, failed: 0, cancelled: 0, active: 0, total: 0 };
+  for (const row of rows) {
+    const status = normalizeWorkQueueStatus(row.status);
+    counts[status] += 1;
+    counts.total += 1;
+  }
+  counts.active = counts.queued + counts.running + counts.failed;
+  return counts;
+}
+
+function towerEmptyCoverageSummary() {
+  return {
+    totals: {
+      found: 0,
+      unique: 0,
+      possibleDuplicates: 0,
+      weakSource: 0,
+      enriched: 0,
+      scored: 0,
+      outreachReady: 0,
+      parked: 0,
+      stale: 0,
+    },
+    attempts: { executed: 0, resultCount: 0, planned: 0, recommended: 0 },
+    slices: [],
+    bySegment: [],
+    byGeography: [],
+    recommendations: [],
+    light: true,
+  };
+}
+
+const towerDefaultSchedulerSettings = {
+  enabled: false,
+  acquisitionEnabled: true,
+  enrichmentEnabled: true,
+  scoringEnabled: true,
+  outreachEnabled: true,
+  targetPoolSize: 10000,
+  enrichedFloor: 50,
+  topTargetCount: 100,
+  outreachTargetCount: 100,
+  perRoleConcurrency: {
+    scan_target_list: 3,
+    enrich_company: 5,
+    enrich_industry_segment: 1,
+    score_company_service_fit: 3,
+    draft_outreach: 1,
+  },
+  cooldowns: {
+    acquisitionMs: 5 * 60 * 1000,
+    enrichmentMs: 60 * 1000,
+    scoringMs: 5 * 60 * 1000,
+    outreachMs: 10 * 60 * 1000,
+    stalledSliceMs: 7 * 24 * 60 * 60 * 1000,
+  },
+};
+
+function towerSchedulerSettingsFromRow(row: Record<string, unknown> | null): ReturnType<typeof getSchedulerSettings> {
+  if (!row) {
+    const now = Date.now();
+    return { ...towerDefaultSchedulerSettings, createdAt: now, updatedAt: now };
+  }
+  return {
+    enabled: Boolean(Number(row.enabled)),
+    acquisitionEnabled: Boolean(Number(row.acquisition_enabled)),
+    enrichmentEnabled: Boolean(Number(row.enrichment_enabled)),
+    scoringEnabled: Boolean(Number(row.scoring_enabled)),
+    outreachEnabled: Boolean(Number(row.outreach_enabled)),
+    targetPoolSize: Number(row.target_pool_size),
+    enrichedFloor: Number(row.enriched_floor),
+    topTargetCount: Number(row.top_target_count),
+    outreachTargetCount: Number(row.outreach_target_count ?? row.top_target_count),
+    perRoleConcurrency: {
+      ...towerDefaultSchedulerSettings.perRoleConcurrency,
+      ...jsonParse<Record<string, number>>(row.per_role_concurrency_json, {}),
+    },
+    cooldowns: {
+      ...towerDefaultSchedulerSettings.cooldowns,
+      ...jsonParse<Record<string, number>>(row.cooldowns_json, {}),
+    },
+    createdAt: Number(row.created_at),
+    updatedAt: Number(row.updated_at),
+  };
+}
+
+function towerSchedulerSettingsRowFromSettings(settings: ReturnType<typeof getSchedulerSettings>) {
+  return {
+    id: "default",
+    enabled: settings.enabled ? 1 : 0,
+    acquisition_enabled: settings.acquisitionEnabled ? 1 : 0,
+    enrichment_enabled: settings.enrichmentEnabled ? 1 : 0,
+    scoring_enabled: settings.scoringEnabled ? 1 : 0,
+    outreach_enabled: settings.outreachEnabled ? 1 : 0,
+    target_pool_size: settings.targetPoolSize,
+    enriched_floor: settings.enrichedFloor,
+    top_target_count: settings.topTargetCount,
+    outreach_target_count: settings.outreachTargetCount,
+    per_role_concurrency_json: JSON.stringify(settings.perRoleConcurrency),
+    cooldowns_json: JSON.stringify(settings.cooldowns),
+    created_at: settings.createdAt,
+    updated_at: settings.updatedAt,
+  };
+}
+
+async function towerSchedulerSettings() {
+  const row = await getTowerStore().getById("scheduler_settings", "default");
+  if (row) return towerSchedulerSettingsFromRow(row);
+  const settings = towerSchedulerSettingsFromRow(null);
+  await getTowerStore().create("scheduler_settings", towerSchedulerSettingsRowFromSettings(settings), "default");
+  return settings;
+}
+
+async function towerActiveSchedulerLock() {
+  const rows = await getTowerStore().query("scheduler_locks", { where: { lock_key: { eq: "prospecting" } }, limit: 1 });
+  const lock = rows[0];
+  if (!lock) return null;
+  if (Number(lock.lease_expires_at ?? 0) <= Date.now()) return null;
+  return rowJson(lock);
+}
+
+async function towerCurrentMarketProfile() {
+  const profile = (await getTowerStore().query("market_profiles", { order: [{ field: "updated_at", dir: "desc" }], limit: 1 }))[0];
+  if (!profile) return null;
+  const versionId = String(profile.current_version_id ?? "");
+  const version = versionId ? await getTowerStore().getById("market_profile_versions", versionId) : null;
+  return { profile: rowJson(profile), version: rowJson(version) };
+}
+
+async function towerCreateKindlingRun(roleKey: string, localRequestId: string, triggerRequest: Record<string, unknown>, webhookToken: string, status = "queued") {
+  const now = Date.now();
+  const id = crypto.randomUUID();
+  return await getTowerStore().create("kindling_pipeline_runs", {
+    id,
+    role_key: roleKey,
+    local_request_id: localRequestId,
+    autopilot_run_id: "",
+    status,
+    webhook_token: webhookToken,
+    trigger_payload_json: JSON.stringify(triggerRequest),
+    result_payload_json: "",
+    error: "",
+    created_at: now,
+    updated_at: now,
+  }, id);
+}
+
+function snakeBody(body: Record<string, unknown>) {
+  const result: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(body)) {
+    result[key.replace(/[A-Z]/g, (match) => `_${match.toLowerCase()}`)] = value;
+  }
+  return result;
 }
 
 function listCompanies(filters: URLSearchParams | null = null, options: { limit?: number; offset?: number; compact?: boolean } = {}) {

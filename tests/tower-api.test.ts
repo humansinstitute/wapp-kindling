@@ -231,7 +231,7 @@ describe("Tower-mode Kindling API facade", () => {
     expect(fake.calls.some((call) => call.op === "patch" && call.table === "companies")).toBe(true);
   });
 
-  test("unported Tower-mode Kindling workflows return 501 instead of falling through to SQLite", async () => {
+  test("Tower-mode Kindling dashboard routes use Tower rows instead of SQLite fallback", async () => {
     const sqliteCountsBefore = {
       companies: db.query("SELECT COUNT(*) AS count FROM companies").get() as { count: number },
       chats: db.query("SELECT COUNT(*) AS count FROM chats").get() as { count: number },
@@ -239,44 +239,63 @@ describe("Tower-mode Kindling API facade", () => {
       kindlingPipelineRuns: db.query("SELECT COUNT(*) AS count FROM kindling_pipeline_runs").get() as { count: number },
       workQueue: db.query("SELECT COUNT(*) AS count FROM work_queue").get() as { count: number },
     };
-    const blockedRoutes = [
-      { label: "summary/reporting", path: "/api/kindling/summary", method: "GET" },
+    await fake.createRow("pipeline_roles", {
+      id: "scan_target_list",
+      role_key: "scan_target_list",
+      display_name: "Scan Target List",
+      active_pipeline_slug: "scan-target-list",
+      pipeline_label: "Scan Target List",
+      required_input_fields_json: "[]",
+      expected_output_shape: "json",
+      enabled: 1,
+      updated_at: 1,
+    }, "scan_target_list");
+    await fake.createRow("work_queue", {
+      id: "queue-1",
+      kind: "enrich_company",
+      target_type: "company",
+      target_id: "company-1",
+      status: "queued",
+      priority: 10,
+      created_at: 1,
+      updated_at: 1,
+    }, "queue-1");
+    token = (await api("/api/auth/verify", {
+      method: "POST",
+      body: { event: loginEvent(String((await api("/api/auth/challenge", { method: "POST", body: { pubkey } })).payload.content)) },
+    })).payload.token as string;
+
+    const routes = [
+      { label: "summary/reporting", path: "/api/kindling/summary?compact=1", method: "GET" },
       { label: "scheduler settings", path: "/api/kindling/scheduler-settings", method: "GET" },
-      { label: "scheduler run", path: "/api/kindling/scheduler/run-once", method: "POST" },
+      { label: "scheduler preview", path: "/api/kindling/scheduler/preview", method: "GET" },
       { label: "work queue", path: "/api/kindling/work-queue", method: "GET" },
       { label: "pipeline roles", path: "/api/kindling/pipeline-roles", method: "GET" },
-      { label: "pipeline webhook", path: "/api/kindling/pipeline-webhook", method: "POST" },
-      { label: "target scan write", path: "/api/kindling/pipeline-write/target-scan", method: "POST" },
-      { label: "enrichment write", path: "/api/kindling/pipeline-write/enrichment-company", method: "POST" },
       { label: "coverage slices", path: "/api/kindling/coverage-slices", method: "GET" },
-      { label: "target scans", path: "/api/kindling/target-scans", method: "POST" },
-      { label: "company enrichment", path: "/api/kindling/companies/company-1/enrich", method: "POST" },
-      { label: "company outreach", path: "/api/kindling/companies/company-1/outreach", method: "POST" },
       { label: "top targets", path: "/api/kindling/top-targets", method: "GET" },
-      { label: "top target rebuild", path: "/api/kindling/top-targets/rebuild", method: "POST" },
       { label: "todays targets", path: "/api/kindling/todays-targets", method: "GET" },
       { label: "chat list", path: "/api/chats", method: "GET" },
-      { label: "chat create", path: "/api/chats", method: "POST" },
-      { label: "chat messages", path: "/api/chats/chat-1/messages", method: "POST" },
     ];
 
-    for (const route of blockedRoutes) {
-      const response = await api(route.path, { method: route.method, body: route.method === "GET" ? undefined : {} });
-      expect(response.res.status, route.label).toBe(501);
-      expect(response.payload).toMatchObject({
-        error: "unsupported in Tower DB mode",
-        mode: "tower",
-        route: route.path,
-        method: route.method,
-      });
+    for (const route of routes) {
+      const response = await api(route.path, { method: route.method });
+      expect(response.res.status, route.label).not.toBe(501);
+      expect(response.res.status, route.label).toBeLessThan(500);
     }
+
+    const createdChat = await api("/api/chats", { method: "POST", body: {} });
+    expect(createdChat.res.status).toBe(201);
+    const chatId = String(createdChat.payload.chat.id);
+    const message = await api(`/api/chats/${chatId}/messages`, { method: "POST", body: { content: "Hello Tower" } });
+    expect(message.res.status).toBe(201);
+    expect(fake.calls.some((call) => call.op === "create" && call.table === "chats")).toBe(true);
+    expect(fake.calls.some((call) => call.op === "create" && call.table === "messages")).toBe(true);
 
     expect(db.query("SELECT COUNT(*) AS count FROM companies").get()).toEqual(sqliteCountsBefore.companies);
     expect(db.query("SELECT COUNT(*) AS count FROM chats").get()).toEqual(sqliteCountsBefore.chats);
     expect(db.query("SELECT COUNT(*) AS count FROM messages").get()).toEqual(sqliteCountsBefore.messages);
     expect(db.query("SELECT COUNT(*) AS count FROM kindling_pipeline_runs").get()).toEqual(sqliteCountsBefore.kindlingPipelineRuns);
     expect(db.query("SELECT COUNT(*) AS count FROM work_queue").get()).toEqual(sqliteCountsBefore.workQueue);
-    expect(fake.calls.every((call) => !["companies", "chats", "messages", "kindling_pipeline_runs", "work_queue"].includes(String(call.table ?? "")))).toBe(true);
   });
 
   test("Tower mode disables legacy startup automation loops", async () => {
