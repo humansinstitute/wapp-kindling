@@ -423,16 +423,6 @@ CREATE TABLE IF NOT EXISTS work_queue (
   FOREIGN KEY (segment_id) REFERENCES target_segments(id) ON DELETE SET NULL
 );
 
-CREATE TABLE IF NOT EXISTS target_rankings (
-  id TEXT PRIMARY KEY,
-  company_id TEXT NOT NULL,
-  rank INTEGER NOT NULL,
-  reason TEXT NOT NULL,
-  score_json TEXT NOT NULL DEFAULT '{}',
-  created_at INTEGER NOT NULL,
-  FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
-);
-
 CREATE TABLE IF NOT EXISTS ranking_runs (
   id TEXT PRIMARY KEY,
   ranking_type TEXT NOT NULL DEFAULT 'initial' CHECK(ranking_type IN ('initial')),
@@ -1345,7 +1335,7 @@ const defaultPipelineRoles = [
   ["draft_outreach", "Draft outreach", "kindling-draft-outreach", "Draft outreach", "[\"companyId\"]", "outreach_draft"],
   ["resolve_duplicates", "Resolve duplicates", "kindling-stub-resolve-duplicates", "Stub: Resolve duplicates", "[]", "duplicate_updates"],
   ["find_people", "Find people", "kindling-stub-find-people", "Stub: Find people", "[\"companyId\"]", "people"],
-  ["monitor_and_score", "Monitor and score", "kindling-stub-monitor-and-score", "Stub: Monitor and score", "[]", "target_rankings"],
+  ["monitor_and_score", "Monitor and score", "kindling-stub-monitor-and-score", "Stub: Monitor and score", "[]", ""],
 ].map(([roleKey, displayName, slug, label, required, expected]) => ({
   roleKey,
   displayName,

@@ -218,7 +218,6 @@ function exportClientList() {
     excluded: [
       "service_offerings",
       "service_fit_assessments",
-      "target_rankings",
       "ranking_runs",
       "ranking_items",
       "target_list_runs",

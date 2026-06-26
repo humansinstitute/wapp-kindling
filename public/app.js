@@ -312,6 +312,22 @@ async function loadSettings() {
 // Monotonic load token: lets stale (slower) responses be discarded so rapid
 // clicks can't have an earlier request overwrite a newer view.
 let kindlingLoadSeq = 0;
+// When true, the main view content shows a loading placeholder so a tab switch
+// gives instant feedback instead of looking dead until the fetch resolves.
+let kindlingViewLoading = false;
+
+function kindlingViewLabel(view) {
+  const map = {
+    service: "Service Offerings",
+    companies: "Companies",
+    enriched: "Enriched Companies",
+    targets: "Scored",
+    match: "Match",
+    research: "Research Desk",
+    admin: "Pipeline admin",
+  };
+  return map[view] || "view";
+}
 
 function companyPageKeyFor(view) {
   return view === "enriched" ? "enriched" : "companies";
@@ -395,6 +411,7 @@ function applyWorkQueue(workQueue) {
 async function loadKindlingList(listKey) {
   if (!state.kindling) return loadKindlingScreen();
   const view = state.activeKindlingView;
+  kindlingViewLoading = false;
   const seq = ++kindlingLoadSeq;
   setKindlingStatus("Loading page…");
   try {
@@ -443,6 +460,10 @@ async function loadKindlingScreen() {
 
   const seq = ++kindlingLoadSeq;
   setKindlingStatus("Loading…");
+  // Paint the destination view (rail + active tab + loading placeholder) right
+  // away so the click registers visually instead of looking unresponsive.
+  kindlingViewLoading = true;
+  renderKindling();
 
   // Single round of independent requests — no second serial Promise.all round.
   const [summary, targets, enrichmentIndustries, filtered, scheduler, schedulerPreview, workQueue, scoringOfferings, rankingRuns] = await Promise.all([
@@ -488,6 +509,7 @@ async function loadKindlingScreen() {
       state.companyDetail = await api(`/api/kindling/companies/${encodeURIComponent(companyId)}`);
     }
   }
+  kindlingViewLoading = false;
   renderKindling();
   if (state.kindlingStatus === "Loading…") setKindlingStatus("Ready");
 }
@@ -630,6 +652,13 @@ function renderKindling() {
 }
 
 function renderKindlingView(data, company, canEdit) {
+  if (kindlingViewLoading) {
+    return `
+      <section class="kindlingPanel kindlingLoadingPanel">
+        <div class="kindlingLoading"><span class="kindlingSpinner" aria-hidden="true"></span>Loading ${escapeHtml(kindlingViewLabel(state.activeKindlingView))}…</div>
+      </section>
+    `;
+  }
   if (state.activeKindlingView === "research") return renderResearchDeskView(data, canEdit);
 
   if (state.activeKindlingView === "service") return `
@@ -675,7 +704,7 @@ function renderKindlingView(data, company, canEdit) {
   `;
 
   if (state.activeKindlingView === "targets") return `
-    <section class="kindlingGrid two targetReviewLayout">
+    <section class="kindlingGrid targetReviewLayout">
       <div class="kindlingPanel">
         <div class="panelHeader">
           <div>
@@ -687,17 +716,6 @@ function renderKindlingView(data, company, canEdit) {
         ${renderScoredFilters()}
         ${renderTopTargets(data.topTargets || data.targets || [])}
         ${renderPager(data.topTargetList, "targets")}
-      </div>
-      <div class="kindlingPanel">
-        <div class="panelHeader">
-          <div>
-            <h2>Scoring controls</h2>
-            <span>${Number(data.scoringOfferings?.length || 0)} active offerings</span>
-          </div>
-        </div>
-        ${renderScoringControls(data, canEdit)}
-        <h2 class="sectionSubhead">Ranking runs</h2>
-        ${renderRankingRuns(data.rankingRuns || [])}
       </div>
     </section>
   `;
@@ -1077,7 +1095,7 @@ function selectedTarget(data = state.kindling || {}) {
 function renderMatchView(data, canEdit) {
   const target = selectedTarget(data);
   const detail = state.companyDetail;
-  const company = detail?.company || target?.company || selectedCompany();
+  const company = detail?.company || target?.company || selectedCompany() || target;
   if (!target || !company) return `
     <section class="kindlingPanel">
       <h2>Match</h2>
@@ -1098,7 +1116,6 @@ function renderMatchView(data, canEdit) {
             <h2>${escapeHtml(company.name)}</h2>
             <span>${escapeHtml(company.industry || "Unknown")} - ${escapeHtml(company.location || "Unknown")}</span>
           </div>
-          <button type="button" data-select-company="${escapeHtml(company.id)}">Full profile</button>
         </div>
         <dl class="kindlingFacts">
           <div><dt>Website</dt><dd>${company.website ? `<a href="${escapeHtml(company.website)}" target="_blank" rel="noreferrer">${escapeHtml(company.website)}</a>` : "No website"}</dd></div>
@@ -1109,6 +1126,9 @@ function renderMatchView(data, canEdit) {
         <section class="scanDetailSection">
           <h3>Company details</h3>
           ${renderProfileSummary(company.profile || {})}
+          <div class="formActions">
+            <button type="button" data-select-company="${escapeHtml(company.id)}">Show full profile</button>
+          </div>
         </section>
       </div>
       <div class="kindlingPanel">
@@ -1151,38 +1171,6 @@ function renderAssessmentDrivers(assessment) {
       <span>${escapeHtml(driver.reason || "")}</span>
     </div>
   `).join("")}</div>`;
-}
-
-function renderScoringControls(data, canEdit) {
-  const companies = data.companies || [];
-  const selected = selectedCompany();
-  const offerings = data.scoringOfferings || [];
-  return `
-    <form class="kindlingActionForm scoringForm" data-form="score-company">
-      <label>
-        <span>Company</span>
-        <select id="scoreCompanyId">
-          <option value="">Select company</option>
-          ${companies.map((company) => `<option value="${escapeHtml(company.id)}" ${company.id === selected?.id ? "selected" : ""}>${escapeHtml(company.name)}</option>`).join("")}
-        </select>
-      </label>
-      <label>
-        <span>Service offering</span>
-        <select id="scoreOfferingId">
-          <option value="">Select offering</option>
-          ${offerings.map((offering) => `<option value="${escapeHtml(offering.id)}">${escapeHtml(offering.name || offering.key || offering.id)}</option>`).join("")}
-        </select>
-      </label>
-      <label>
-        <span>Reason</span>
-        <input id="scoreReason" value="Manual UI service-fit validation" />
-      </label>
-      <div class="formActions">
-        <button type="submit" ${canEdit && companies.length && offerings.length ? "" : "disabled"}>Score fit</button>
-      </div>
-    </form>
-    ${!offerings.length ? "<p>No active scoring offerings. Update the service profile first.</p>" : ""}
-  `;
 }
 
 function renderRankingRuns(runs) {
@@ -1815,17 +1803,6 @@ async function handleKindlingSubmit(event) {
       await loadKindlingScreen();
       setKindlingStatus("Scheduler settings saved");
     }
-    if (form.dataset.form === "score-company") {
-      setKindlingStatus("Queueing service-fit scoring");
-      await startKindlingPipeline("/api/kindling/service-assessments", {
-        companyId: $("scoreCompanyId").value,
-        serviceOfferingId: $("scoreOfferingId").value,
-        marketProfileVersionId: state.kindling?.marketProfileVersionId || "",
-        reason: $("scoreReason").value.trim(),
-      });
-      await refreshKindlingSoon();
-      setKindlingStatus("Service-fit scoring queued");
-    }
     if (form.dataset.form === "company-profile" && selectedCompany()) {
       setKindlingStatus("Saving profile");
       await api(`/api/kindling/companies/${encodeURIComponent(selectedCompany().id)}`, {
@@ -1961,32 +1938,55 @@ async function handleKindlingClick(event) {
   }
   const matchButton = event.target.closest("[data-open-match]");
   if (matchButton) {
+    const companyId = matchButton.dataset.selectCompany || "";
     state.selectedTargetId = matchButton.dataset.openMatch || "";
-    state.selectedCompanyId = matchButton.dataset.selectCompany || "";
+    state.selectedCompanyId = companyId;
     localStorage.setItem("kindling_target", state.selectedTargetId);
     localStorage.setItem("kindling_company", state.selectedCompanyId);
     state.companyProfileOpen = false;
     state.companyDetail = null;
-    setKindlingStatus("Loading match");
-    if (state.selectedCompanyId) {
-      state.companyDetail = await api(`/api/kindling/companies/${encodeURIComponent(state.selectedCompanyId)}`);
-    }
+    // Switch to the match view immediately using the target data we already
+    // have, then fill in the company detail in the background — no full reload.
     setKindlingView("match");
-    navigate("/match");
-    setKindlingStatus("Match loaded");
+    kindlingViewLoading = false;
+    if (window.location.pathname !== "/match") history.pushState({}, "", "/match");
+    state.route = "/match";
+    renderKindling();
+    setKindlingStatus("Loading match");
+    if (selectedTarget(state.kindling)) {
+      if (companyId) {
+        const detail = await api(`/api/kindling/companies/${encodeURIComponent(companyId)}`);
+        if (state.selectedCompanyId === companyId && state.activeKindlingView === "match") {
+          state.companyDetail = detail;
+          renderKindling();
+        }
+      }
+      setKindlingStatus("Match loaded");
+    } else {
+      // No scored list in memory (e.g. deep link) — fall back to a full load.
+      await loadKindlingScreen();
+    }
     return;
   }
   const selectButton = event.target.closest("[data-select-company]");
   if (selectButton) {
-    state.selectedCompanyId = selectButton.dataset.selectCompany;
-    localStorage.setItem("kindling_company", state.selectedCompanyId);
+    const companyId = selectButton.dataset.selectCompany;
+    state.selectedCompanyId = companyId;
+    localStorage.setItem("kindling_company", companyId);
     state.scanJobDetail = null;
     state.companyProfileOpen = true;
     state.companyDetail = null;
-    setKindlingStatus("Loading company profile");
-    state.companyDetail = await api(`/api/kindling/companies/${encodeURIComponent(state.selectedCompanyId)}`);
+    kindlingViewLoading = false;
+    // Open the modal immediately with the company we already have, then load
+    // the full detail (sources/activity/drafts) in the background.
     renderKindling();
-    setKindlingStatus("Company profile loaded");
+    setKindlingStatus("Loading company profile");
+    const detail = await api(`/api/kindling/companies/${encodeURIComponent(companyId)}`);
+    if (state.selectedCompanyId === companyId && state.companyProfileOpen) {
+      state.companyDetail = detail;
+      renderKindling();
+      setKindlingStatus("Company profile loaded");
+    }
     return;
   }
   const action = event.target.closest("[data-action]")?.dataset.action;

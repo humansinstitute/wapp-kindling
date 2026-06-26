@@ -1468,15 +1468,12 @@ function selectOutreachDryRun(settings = getSchedulerSettings()) {
     }
   }
   const row = db.query(`
-    SELECT c.*, tr.id AS ranking_id, tr.rank AS ranking_rank, tr.reason AS ranking_reason
+    SELECT c.*
     FROM companies c
-    LEFT JOIN target_rankings tr ON tr.company_id = c.id
     WHERE EXISTS (SELECT 1 FROM service_fit_assessments sfa WHERE sfa.company_id = c.id)
       AND c.data_ring NOT IN ('contacted', 'parked')
       AND NOT EXISTS (SELECT 1 FROM outreach_drafts od WHERE od.company_id = c.id)
-    ORDER BY CASE WHEN tr.rank IS NULL THEN 1 ELSE 0 END ASC,
-      tr.rank ASC,
-      c.confidence DESC,
+    ORDER BY c.confidence DESC,
       c.updated_at ASC,
       lower(c.name) ASC
     LIMIT 1
@@ -1486,11 +1483,6 @@ function selectOutreachDryRun(settings = getSchedulerSettings()) {
     item: {
       kind: "company",
       company: mapCompany(row),
-      ranking: row.ranking_id ? {
-        id: String(row.ranking_id),
-        rank: Number(row.ranking_rank ?? 0),
-        reason: String(row.ranking_reason ?? ""),
-      } : null,
     },
     reason: `outreach-ready target is ${counts.outreachReady}/${settings.outreachTargetCount}; company ${String(row.name)} is ready for outreach drafting`,
   };
@@ -2608,14 +2600,6 @@ const KINDLING_IMPORT_TABLES = {
     "created_at",
     "updated_at",
   ],
-  target_rankings: [
-    "id",
-    "company_id",
-    "rank",
-    "reason",
-    "score_json",
-    "created_at",
-  ],
   ranking_runs: [
     "id",
     "ranking_type",
@@ -2845,7 +2829,6 @@ function importKindlingData(body: Record<string, unknown>) {
     "scan_strategy_attempts",
     "work_queue",
     "enrichment_requests",
-    "target_rankings",
     "ranking_runs",
     "ranking_items",
     "target_list_runs",
@@ -3987,7 +3970,7 @@ const INDUSTRY_ENRICHMENT_STRATEGIES = [
   {
     key: "people_team",
     label: "People and team",
-    instruction: "Identify publicly listed employees, partners, team pages, leadership, or hiring signals without collecting private data.",
+    instruction: "Identify named decision-makers and senior leaders (directors, MD/CEO, owners, heads of practice or department). Crawl /our-people/, /team/, /about/ and individual staff profile pages. For each, capture name, title, and publicly-listed business contact details (direct email, phone/mobile, LinkedIn URL), and infer the email pattern (e.g. firstnamelastname@domain). Treat company-published business contact details as public; do not scrape gated or private personal data. Return a structured decisionMakers array on profilePatch plus one signal per decision-maker (signal_type 'decision_maker_contact').",
   },
   {
     key: "fit_signals",
@@ -4685,14 +4668,6 @@ function getDiscoveryJobDetail(jobId: string) {
   };
 }
 
-function upsertTargetRanking(companyId: string, reason: string, score: Record<string, unknown>) {
-  const count = Number((db.query("SELECT COUNT(*) AS count FROM target_rankings").get() as { count: number } | null)?.count ?? 0);
-  db.query(`
-    INSERT INTO target_rankings(id, company_id, rank, reason, score_json, created_at)
-    VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-  `).run(crypto.randomUUID(), companyId, count + 1, reason, JSON.stringify(score), Date.now());
-}
-
 function clampScore(value: number) {
   if (!Number.isFinite(value)) return 0;
   return Math.max(0, Math.min(1, value));
@@ -5035,16 +5010,11 @@ function runInitialRanking(input: { reason?: string; limit?: number | null; crea
       INSERT INTO ranking_items(id, ranking_run_id, company_id, rank, score, reason, score_json, created_at)
       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
     `);
-    const insertTargetRanking = db.query(`
-      INSERT INTO target_rankings(id, company_id, rank, reason, score_json, created_at)
-      VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-    `);
     const rankableCompanyIds: string[] = [];
     scored.forEach((item, index) => {
       const rank = index + 1;
       const scoreJson = { ...item.scoreJson, rankingRunId: runId, rankingType: "initial", rank };
       insertItem.run(crypto.randomUUID(), runId, item.companyId, rank, item.score, item.reason, JSON.stringify(scoreJson), now);
-      insertTargetRanking.run(crypto.randomUUID(), item.companyId, rank, item.reason, JSON.stringify(scoreJson), now);
       rankableCompanyIds.push(item.companyId);
     });
     if (rankableCompanyIds.length) {
@@ -5792,6 +5762,11 @@ function normalizeKindlingCallbackRecords(roleKey: string, body: Record<string, 
     const profilePatch = objectRecord(result.profilePatch);
     const gaps = Array.isArray(result.gaps) ? result.gaps : Array.isArray(profilePatch.gaps) ? profilePatch.gaps : [];
     const fieldsUpdated = Array.isArray(result.fieldsUpdated) ? result.fieldsUpdated : [];
+    const decisionMakers = Array.isArray(result.decisionMakers)
+      ? result.decisionMakers
+      : Array.isArray(profilePatch.decisionMakers)
+        ? profilePatch.decisionMakers
+        : [];
     return {
       company: {
         id: String(result.companyId ?? ""),
@@ -5803,6 +5778,7 @@ function normalizeKindlingCallbackRecords(roleKey: string, body: Record<string, 
           ...profilePatch,
           fieldsUpdated,
           gaps,
+          ...(decisionMakers.length ? { decisionMakers } : {}),
         },
         profilePatch,
         profileVersion: objectRecord(result.profileVersion),
@@ -5951,7 +5927,6 @@ function persistScanRecords(requestId: string, records: Record<string, unknown>,
         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'not_started', ?8, '{}', ?9, ?9)
       `).run(companyId, name, location, industry, website, dataRing, normalizeDuplicateStatus(company.duplicateStatus), confidence, now);
       recordActivity("company", companyId, "pipeline", "company_created", `Created by scan ${requestId}`, { requestId });
-      upsertTargetRanking(companyId, "New scan target with sparse but usable data.", { fit: confidence });
       createdCompanies += 1;
     }
 
@@ -8124,13 +8099,15 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     const drafts = (db.query("SELECT * FROM outreach_drafts WHERE company_id = ?1 ORDER BY updated_at DESC").all(companyId) as Record<string, unknown>[]).map(rowJson);
     const serviceFitAssessments = listServiceFitAssessmentsForCompany(companyId);
     const segments = listCompanySegments(companyId);
+    const companyProfile = jsonParse<Record<string, unknown>>(row.profile_json, {});
+    const people = Array.isArray(companyProfile.decisionMakers) ? companyProfile.decisionMakers : [];
     return json({
       company: mapCompany(row),
       sources,
       signals,
       customerProfileVersions,
       evidence: { sources, signals },
-      people: [],
+      people,
       activities,
       serviceFitAssessments,
       drafts,
@@ -8439,14 +8416,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
       `).all(String(latestRun.id)) as Record<string, unknown>[];
       return json({ targets: rows.map(rowJson), rankingRunId: String(latestRun.id), source: "initial_ranking" });
     }
-    const rows = db.query(`
-      SELECT tr.*, c.name, c.location, c.industry, c.website, c.enrichment_status
-      FROM target_rankings tr
-      JOIN companies c ON c.id = tr.company_id
-      ORDER BY tr.rank ASC, tr.created_at DESC
-      LIMIT 30
-    `).all() as Record<string, unknown>[];
-    return json({ targets: rows.map(rowJson), rankingRunId: null, source: "target_rankings" });
+    return json({ targets: [], rankingRunId: null, source: "none" });
   }
 
   const kindlingStartMatch = pathname.match(/^\/api\/kindling\/pipeline-runs\/([^/]+)\/start$/);

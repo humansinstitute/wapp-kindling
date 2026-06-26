@@ -34,7 +34,7 @@ const INDUSTRY_ENRICHMENT_STRATEGIES = [
   {
     key: "people_team",
     label: "People and team",
-    instruction: "Identify publicly listed employees, partners, team pages, leadership, or hiring signals without collecting private data.",
+    instruction: "Identify named decision-makers and senior leaders (directors, MD/CEO, owners, heads of practice or department). Crawl /our-people/, /team/, /about/ and individual staff profile pages. For each, capture name, title, and publicly-listed business contact details (direct email, phone/mobile, LinkedIn URL), and infer the email pattern (e.g. firstnamelastname@domain). Treat company-published business contact details as public; do not scrape gated or private personal data. Return a structured decisionMakers array on profilePatch plus one signal per decision-maker (signal_type 'decision_maker_contact').",
   },
   {
     key: "fit_signals",

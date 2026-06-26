@@ -391,7 +391,6 @@ try {
     (summary.merged as Row).signals = numberValue((summary.merged as Row).signals) + updateSimpleCompanyRefs(db, "signals", item.canonicalId, item.duplicateIds);
     (summary.merged as Row).enrichmentRequests = numberValue((summary.merged as Row).enrichmentRequests) + updateSimpleCompanyRefs(db, "enrichment_requests", item.canonicalId, item.duplicateIds);
     (summary.merged as Row).outreachDrafts = numberValue((summary.merged as Row).outreachDrafts) + updateSimpleCompanyRefs(db, "outreach_drafts", item.canonicalId, item.duplicateIds);
-    (summary.merged as Row).targetRankings = numberValue((summary.merged as Row).targetRankings) + updateSimpleCompanyRefs(db, "target_rankings", item.canonicalId, item.duplicateIds);
     (summary.merged as Row).activities = numberValue((summary.merged as Row).activities) + updateCompanyActivities(db, item.canonicalId, item.duplicateIds);
     (summary.merged as Row).workQueue = numberValue((summary.merged as Row).workQueue) + updateWorkQueue(db, item.canonicalId, item.duplicateIds);
 

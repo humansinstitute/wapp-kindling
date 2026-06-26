@@ -36,7 +36,6 @@ function resetData() {
     "target_list_runs",
     "ranking_items",
     "ranking_runs",
-    "target_rankings",
     "service_fit_assessments",
     "work_queue",
     "enrichment_requests",
@@ -1908,10 +1907,6 @@ describe("Kindling API contracts", () => {
       INSERT INTO companies(id, name, location, industry, website, data_ring, duplicate_status, enrichment_status, confidence, profile_json, created_at, updated_at)
       VALUES ('ranked-only-company', 'Ranked Only Co', 'Perth', 'Advisory', 'https://ranked.example', 'ranked', 'unique', 'complete', 0.9, '{}', ?1, ?1)
     `).run(now);
-    db.query(`
-      INSERT INTO target_rankings(id, company_id, rank, reason, score_json, created_at)
-      VALUES ('ranked-only-ranking', 'ranked-only-company', 1, 'Initial target ranking only', '{}', ?1)
-    `).run(now);
     await api("/api/kindling/scheduler-settings", {
       method: "PATCH",
       body: {
@@ -3280,13 +3275,11 @@ describe("Kindling API contracts", () => {
       SELECT
         (SELECT COUNT(*) FROM kindling_pipeline_runs) AS pipeline_runs,
         (SELECT COUNT(*) FROM enrichment_requests) AS enrichment_requests,
-        (SELECT COUNT(*) FROM target_rankings) AS target_rankings,
         (SELECT COUNT(*) FROM outreach_drafts) AS outreach_drafts
     `).get() as Record<string, number>;
     expect(workRows).toEqual({
       pipeline_runs: 2,
       enrichment_requests: 0,
-      target_rankings: 0,
       outreach_drafts: 1,
     });
   });
@@ -3744,8 +3737,6 @@ describe("Kindling API contracts", () => {
       created_by: "pipeline",
     });
     expect(JSON.parse(String(profileVersion.source_ids_json))).toEqual(["source-north-site"]);
-
-    expect(db.query("SELECT COUNT(*) AS count FROM target_rankings").get()).toEqual({ count: 0 });
 
     const detail = await api("/api/kindling/companies/company-1");
     expect(detail.payload.customerProfileVersions).toHaveLength(1);

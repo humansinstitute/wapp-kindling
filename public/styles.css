@@ -1787,3 +1787,27 @@ textarea {
   color: var(--muted);
   font-size: 0.9rem;
 }
+
+.kindlingLoadingPanel {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 220px;
+}
+
+.kindlingLoading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.kindlingSpinner {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--muted) 35%, transparent);
+  border-top-color: var(--muted);
+  animation: spin 0.7s linear infinite;
+}
