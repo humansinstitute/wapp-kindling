@@ -255,6 +255,7 @@ CREATE TABLE IF NOT EXISTS scheduler_settings (
   outreach_target_count INTEGER NOT NULL DEFAULT 100,
   per_role_concurrency_json TEXT NOT NULL DEFAULT '{}',
   cooldowns_json TEXT NOT NULL DEFAULT '{}',
+  models_json TEXT NOT NULL DEFAULT '{}',
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
 );
@@ -575,6 +576,7 @@ for (const migration of [
   "ALTER TABLE coverage_slices ADD COLUMN source_family TEXT NOT NULL DEFAULT 'web'",
   "ALTER TABLE coverage_slices ADD COLUMN strategy_type TEXT NOT NULL DEFAULT 'search'",
   "ALTER TABLE scheduler_settings ADD COLUMN outreach_target_count INTEGER NOT NULL DEFAULT 100",
+  "ALTER TABLE scheduler_settings ADD COLUMN models_json TEXT NOT NULL DEFAULT '{}'",
   "ALTER TABLE work_queue ADD COLUMN segment_id TEXT",
   "ALTER TABLE work_queue ADD COLUMN segment TEXT NOT NULL DEFAULT ''",
   "ALTER TABLE work_queue ADD COLUMN next_run_after_at INTEGER",
@@ -797,6 +799,7 @@ export type SchedulerSettings = {
   outreachTargetCount: number;
   perRoleConcurrency: Record<string, number>;
   cooldowns: Record<string, number>;
+  models: Record<string, string>;
   createdAt: number;
   updatedAt: number;
 };
@@ -928,6 +931,9 @@ const defaultSchedulerSettings = {
     outreachMs: 10 * 60 * 1000,
     stalledSliceMs: 7 * 24 * 60 * 60 * 1000,
   },
+  // Per-role model override (roleKey -> model id). Empty = Autopilot default.
+  // Controlled from the Settings page Automation card.
+  models: {},
 } satisfies SchedulerSettingsPatch;
 
 function normalizeBooleanSetting(value: unknown, fallback: boolean) {
@@ -970,9 +976,9 @@ export function ensureDefaultSchedulerSettings(updatedAt = Date.now()) {
     INSERT INTO scheduler_settings(
       id, enabled, acquisition_enabled, enrichment_enabled, scoring_enabled, outreach_enabled,
       target_pool_size, enriched_floor, top_target_count, outreach_target_count, per_role_concurrency_json, cooldowns_json,
-      created_at, updated_at
+      models_json, created_at, updated_at
     )
-    VALUES ('default', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?12)
+    VALUES ('default', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)
     ON CONFLICT(id) DO NOTHING
   `).run(
     defaultSchedulerSettings.enabled ? 1 : 0,
@@ -986,6 +992,7 @@ export function ensureDefaultSchedulerSettings(updatedAt = Date.now()) {
     defaultSchedulerSettings.outreachTargetCount,
     JSON.stringify(defaultSchedulerSettings.perRoleConcurrency),
     JSON.stringify(defaultSchedulerSettings.cooldowns),
+    JSON.stringify(defaultSchedulerSettings.models),
     updatedAt,
   );
 }
@@ -1009,9 +1016,22 @@ function mapSchedulerSettings(row: Record<string, unknown>): SchedulerSettings {
       ...defaultSchedulerSettings.cooldowns,
       ...jsonParse<Record<string, number>>(row.cooldowns_json, {}),
     },
+    models: jsonParse<Record<string, string>>(row.models_json, {}),
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
   };
+}
+
+function normalizeStringRecord(value: unknown, fallback: Record<string, string>) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return fallback;
+  const normalized: Record<string, string> = {};
+  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
+    const cleanKey = key.trim();
+    if (!cleanKey) continue;
+    const next = typeof raw === "string" ? raw.trim() : "";
+    normalized[cleanKey] = next; // empty string clears the override for that role
+  }
+  return normalized;
 }
 
 export function getSchedulerSettings(): SchedulerSettings {
@@ -1036,6 +1056,7 @@ export function updateSchedulerSettings(patch: SchedulerSettingsPatch, updatedAt
     outreachTargetCount: normalizePositiveIntegerSetting(patch.outreachTargetCount, current.outreachTargetCount),
     perRoleConcurrency: normalizeNumberRecord(patch.perRoleConcurrency, current.perRoleConcurrency),
     cooldowns: normalizeNumberRecord(patch.cooldowns, current.cooldowns, true),
+    models: patch.models === undefined ? current.models : normalizeStringRecord(patch.models, current.models),
     updatedAt,
   };
   db.query(`
@@ -1051,7 +1072,8 @@ export function updateSchedulerSettings(patch: SchedulerSettingsPatch, updatedAt
         outreach_target_count = ?9,
         per_role_concurrency_json = ?10,
         cooldowns_json = ?11,
-        updated_at = ?12
+        models_json = ?12,
+        updated_at = ?13
     WHERE id = 'default'
   `).run(
     next.enabled ? 1 : 0,
@@ -1065,6 +1087,7 @@ export function updateSchedulerSettings(patch: SchedulerSettingsPatch, updatedAt
     next.outreachTargetCount,
     JSON.stringify(next.perRoleConcurrency),
     JSON.stringify(next.cooldowns),
+    JSON.stringify(next.models),
     updatedAt,
   );
   return getSchedulerSettings();

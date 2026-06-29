@@ -2017,17 +2017,105 @@ async function loadChats() {
 }
 
 async function loadSettings() {
-  const [payload, roles] = await Promise.all([
+  const [payload, roles, scheduler] = await Promise.all([
     api("/api/settings"),
     api("/api/kindling/pipeline-roles"),
+    api("/api/kindling/scheduler-settings").catch(() => ({ settings: null })),
   ]);
   state.settings = payload.settings;
   state.accessRules = payload.accessRules || [];
   state.pipelineRoles = roles.pipelineRoles || [];
+  state.schedulerSettings = scheduler.settings || null;
   renderSettings();
   renderPipelineOptions();
   renderSettingsRoleMappings();
   renderAccessRules();
+  renderAutomationCard();
+}
+
+// Single source of truth for scheduling, surfaced on the Settings page.
+const AUTOMATION_ACTIONS = [
+  { key: "acquisition", label: "Acquisition (find companies)", flag: "acquisitionEnabled", role: "scan_target_list", roles: ["scan_target_list"], cooldown: "acquisitionMs" },
+  { key: "enrichment", label: "Enrichment (incl. people & contacts)", flag: "enrichmentEnabled", role: "enrich_company", roles: ["enrich_company", "enrich_industry_segment"], cooldown: "enrichmentMs" },
+  { key: "scoring", label: "Scoring (service-fit)", flag: "scoringEnabled", role: "score_company_service_fit", roles: ["score_company_service_fit"], cooldown: "scoringMs" },
+  { key: "outreach", label: "Outreach drafting", flag: "outreachEnabled", role: "draft_outreach", roles: ["draft_outreach"], cooldown: "outreachMs" },
+];
+const AUTOMATION_MODELS = [
+  { value: "", label: "Default (Autopilot)" },
+  { value: "claude-haiku-4-5-20251001", label: "Haiku (cheap/fast)" },
+  { value: "claude-sonnet-4-6", label: "Sonnet" },
+  { value: "claude-opus-4-8", label: "Opus" },
+];
+
+function renderAutomationCard() {
+  const body = $("automationBody");
+  if (!body) return;
+  const s = state.schedulerSettings;
+  const canEdit = Boolean(state.me?.access?.edit);
+  if (!s) { body.innerHTML = "<p>Scheduler settings unavailable.</p>"; return; }
+  const conc = s.perRoleConcurrency || {};
+  const models = s.models || {};
+  const cooldowns = s.cooldowns || {};
+  const modelOpts = (sel) => AUTOMATION_MODELS
+    .map((o) => `<option value="${o.value}" ${(sel || "") === o.value ? "selected" : ""}>${o.label}</option>`).join("");
+  const rows = AUTOMATION_ACTIONS.map((a) => `
+    <div class="automationRow">
+      <label class="automationToggle"><input type="checkbox" id="auto_${a.key}" ${s[a.flag] ? "checked" : ""}/> <strong>${a.label}</strong></label>
+      <div class="automationFields">
+        <label><span>Concurrency</span><input type="number" min="1" max="20" id="auto_conc_${a.key}" value="${Number(conc[a.role] || 1)}"/></label>
+        <label><span>Every (min)</span><input type="number" min="0" id="auto_cd_${a.key}" value="${Math.round(Number(cooldowns[a.cooldown] || 0) / 60000)}"/></label>
+        <label><span>Model</span><select id="auto_model_${a.key}">${modelOpts(models[a.role])}</select></label>
+      </div>
+    </div>`).join("");
+  body.innerHTML = `
+    <label class="automationMaster"><input type="checkbox" id="auto_enabled" ${s.enabled ? "checked" : ""}/> <strong>Automation enabled (master switch)</strong></label>
+    ${rows}
+    <div class="automationTargets">
+      <label><span>Target pool</span><input type="number" min="1" id="auto_pool" value="${Number(s.targetPoolSize || 0)}"/></label>
+      <label><span>Enriched floor</span><input type="number" min="1" id="auto_floor" value="${Number(s.enrichedFloor || 0)}"/></label>
+      <label><span>Top targets</span><input type="number" min="1" id="auto_toptarget" value="${Number(s.topTargetCount || 0)}"/></label>
+      <label><span>Outreach target</span><input type="number" min="1" id="auto_outreachtarget" value="${Number(s.outreachTargetCount || 0)}"/></label>
+    </div>`;
+  for (const el of body.querySelectorAll("input,select")) el.disabled = !canEdit;
+  const btn = $("saveAutomationButton"); if (btn) btn.disabled = !canEdit;
+  const st = $("automationStatus"); if (st) st.textContent = s.enabled ? "Running" : "Paused";
+}
+
+async function saveAutomation() {
+  const s = state.schedulerSettings || {};
+  const conc = { ...(s.perRoleConcurrency || {}) };
+  const models = { ...(s.models || {}) };
+  const cooldowns = { ...(s.cooldowns || {}) };
+  for (const a of AUTOMATION_ACTIONS) {
+    conc[a.role] = Math.max(1, Number($(`auto_conc_${a.key}`).value || 1));
+    cooldowns[a.cooldown] = Math.max(0, Number($(`auto_cd_${a.key}`).value || 0)) * 60000;
+    const m = $(`auto_model_${a.key}`).value;
+    for (const r of a.roles) models[r] = m;
+  }
+  try {
+    const res = await api("/api/kindling/scheduler-settings", {
+      method: "PATCH",
+      body: JSON.stringify({
+        enabled: $("auto_enabled").checked,
+        acquisitionEnabled: $("auto_acquisition").checked,
+        enrichmentEnabled: $("auto_enrichment").checked,
+        scoringEnabled: $("auto_scoring").checked,
+        outreachEnabled: $("auto_outreach").checked,
+        targetPoolSize: Number($("auto_pool").value || 0),
+        enrichedFloor: Number($("auto_floor").value || 0),
+        topTargetCount: Number($("auto_toptarget").value || 0),
+        outreachTargetCount: Number($("auto_outreachtarget").value || 0),
+        perRoleConcurrency: conc,
+        cooldowns,
+        models,
+      }),
+    });
+    state.schedulerSettings = res.settings || state.schedulerSettings;
+    renderAutomationCard();
+    setStatus("Automation saved");
+  } catch (error) {
+    setStatus(error.message);
+  }
 }
 
 // Monotonic load token: lets stale (slower) responses be discarded so rapid
@@ -4883,6 +4971,10 @@ $("researchDeskButton").addEventListener("click", () => {
 $("saveSettingsButton").addEventListener("click", (event) => {
   setBusyElement(event.currentTarget, true);
   void saveSettings().finally(() => setBusyElement(event.currentTarget, false));
+});
+$("saveAutomationButton")?.addEventListener("click", (event) => {
+  setBusyElement(event.currentTarget, true);
+  void saveAutomation().finally(() => setBusyElement(event.currentTarget, false));
 });
 $("loadPipelinesButton").addEventListener("click", (event) => {
   setBusyElement(event.currentTarget, true);

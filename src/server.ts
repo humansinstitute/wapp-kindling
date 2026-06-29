@@ -38,6 +38,7 @@ import {
   type AccessRole,
   type AppSettings,
   type Message,
+  type SchedulerSettings,
   type SchedulerSettingsPatch,
 } from "./db.ts";
 import { buildPipelineTriggerRequest, startPreparedChatPipeline, type PipelineTriggerRequest } from "./pipeline.ts";
@@ -680,6 +681,9 @@ function schedulerSettingsPatchFromBody(body: Record<string, unknown>): Schedule
   if (body.cooldowns !== undefined || body.cooldowns_json !== undefined) {
     patch.cooldowns = parseJsonObjectField(body.cooldowns ?? body.cooldowns_json, {}) as Record<string, number>;
   }
+  if (body.models !== undefined || body.models_json !== undefined) {
+    patch.models = parseJsonObjectField(body.models ?? body.models_json, {}) as Record<string, string>;
+  }
   return patch;
 }
 
@@ -710,8 +714,33 @@ type SchedulerRoleEvaluation = {
 };
 
 function scheduledPipelineModelForRole(roleKey: string) {
+  // Settings-page Automation card wins; fall back to env for backwards compat.
+  const configured = getSchedulerSettings().models?.[roleKey];
+  if (configured) return configured;
   if (roleKey === "draft_outreach") return SCHEDULED_OUTREACH_PIPELINE_MODEL;
   return SCHEDULED_PIPELINE_MODEL;
+}
+
+// Which pipeline roles each scheduler action drives. Toggling an action in the
+// Automation card also enables/disables these roles, so there is one switch.
+const SCHEDULER_ACTION_ROLES: Record<string, string[]> = {
+  acquisition: ["scan_target_list"],
+  enrichment: ["enrich_company", "enrich_industry_segment"],
+  scoring: ["score_company_service_fit"],
+  outreach: ["draft_outreach"],
+};
+
+function syncPipelineRolesToScheduler(settings: SchedulerSettings, now = Date.now()) {
+  const actionEnabled: Record<string, boolean> = {
+    acquisition: settings.acquisitionEnabled,
+    enrichment: settings.enrichmentEnabled,
+    scoring: settings.scoringEnabled,
+    outreach: settings.outreachEnabled,
+  };
+  const setRole = db.query("UPDATE pipeline_roles SET enabled = ?1, updated_at = ?2 WHERE role_key = ?3");
+  for (const [action, roleKeys] of Object.entries(SCHEDULER_ACTION_ROLES)) {
+    for (const roleKey of roleKeys) setRole.run(actionEnabled[action] ? 1 : 0, now, roleKey);
+  }
 }
 
 type SchedulerDryRunDecision = {
@@ -7751,6 +7780,9 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     if (!session) return json({ error: "edit access required" }, 403);
     const body = await readJson(req);
     const settings = updateSchedulerSettings(schedulerSettingsPatchFromBody(body));
+    // One switch: keep each pipeline role's enabled flag in lockstep with its
+    // scheduler action so automation can't be silently blocked by a disabled role.
+    syncPipelineRolesToScheduler(settings);
     recordActivity("scheduler", "default", "user", "scheduler_settings_updated", "Scheduler settings updated", { pubkey: session.pubkey });
     return json({
       settings,
