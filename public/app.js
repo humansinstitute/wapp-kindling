@@ -712,24 +712,33 @@ function renderCompanyModal() {
     : (Array.isArray(profile.signals) ? profile.signals : []);
   const loading = modal.loading;
 
-  const hasAssessment = !!target;
-  const offering = target?.bestOffering?.name || target?.bestOfferingName || "";
-  const score = Math.round(Number(target?.assessmentScore || target?.score || 0));
+  // Prefer the deck's scored target. When the modal is opened from the Company
+  // List there's no target, so fall back to the company's best stored service-fit
+  // assessment (from the detail payload) — same "why this fit", offering, score,
+  // caveats and next action the deck shows, instead of a bare facts card.
+  const assessments = Array.isArray(detail?.serviceFitAssessments) ? detail.serviceFitAssessments : [];
+  const bestAssessment = assessments.reduce((best, a) => (!best || Number(a.score || 0) > Number(best.score || 0)) ? a : best, null);
+  const hasAssessment = !!target || !!bestAssessment;
+  const offering = target?.bestOffering?.name || target?.bestOfferingName || bestAssessment?.serviceOffering?.name || "";
+  const score = Math.round(Number(target?.assessmentScore || target?.score || bestAssessment?.score || 0));
   // Best fit score to surface in the header — from the deck assessment when we
   // have one, else the company's best service-fit assessment (detail payload),
   // else the score carried on the list-row record.
-  const assessments = Array.isArray(detail?.serviceFitAssessments) ? detail.serviceFitAssessments : [];
-  const bestAssessmentScore = assessments.reduce((max, a) => Math.max(max, Number(a.score || 0)), 0);
-  const headerFitRaw = hasAssessment
+  const bestAssessmentScore = bestAssessment ? Number(bestAssessment.score || 0) : 0;
+  const headerFitRaw = target
     ? score
     : (bestAssessmentScore || (modal.company?.fitScore != null ? Number(modal.company.fitScore) : 0));
   const headerFit = headerFitRaw ? Math.round(headerFitRaw) : null;
   const headerFitBand = headerFit == null ? "" : (headerFit >= 75 ? "high" : headerFit >= 50 ? "medium" : "low");
-  const confidence = Math.round(Number(target?.confidence ?? company.confidence ?? 0) * 100);
-  const reason = target?.reason || target?.whyNow || "No reasoning captured yet.";
-  const caveats = Array.isArray(target?.caveats) ? target.caveats : [];
-  const people = Array.isArray(target?.decisionMakers) && target.decisionMakers.length
-    ? target.decisionMakers
+  const confidence = Math.round(Number(target?.confidence ?? bestAssessment?.confidence ?? company.confidence ?? 0) * 100);
+  const reason = target?.reason || target?.whyNow || bestAssessment?.fitExplanation || "No reasoning captured yet.";
+  const nextAction = target?.nextAction || bestAssessment?.recommendedAction || "";
+  const caveats = (Array.isArray(target?.caveats) && target.caveats.length) ? target.caveats
+    : (Array.isArray(bestAssessment?.caveats) ? bestAssessment.caveats : []);
+  // Decision makers: the deck target carries a mapped list; opening from the list
+  // we use the detail payload's people (the company profile's decisionMakers).
+  const people = (Array.isArray(target?.decisionMakers) && target.decisionMakers.length) ? target.decisionMakers
+    : (Array.isArray(detail?.people) && detail.people.length) ? detail.people
     : (Array.isArray(company.decisionMakers) ? company.decisionMakers : []);
   const services = Array.isArray(profile.services) ? profile.services
     : (Array.isArray(profile.servicesOffered) ? profile.servicesOffered : []);
@@ -741,7 +750,7 @@ function renderCompanyModal() {
     <section class="focusDetailCard">
       <h3>Why this fit</h3>
       <p class="focusReason">${escapeHtml(reason)}</p>
-      ${target.nextAction ? `<p class="focusNext"><strong>Next:</strong> ${escapeHtml(target.nextAction)}</p>` : ""}
+      ${nextAction ? `<p class="focusNext"><strong>Next:</strong> ${escapeHtml(nextAction)}</p>` : ""}
       ${caveats.length ? `<p class="focusCaveats"><strong>Caveats:</strong> ${escapeHtml(caveats.join("; "))}</p>` : ""}
       <dl class="focusDetailFacts">
         ${offering ? `<div><dt>Best offering</dt><dd>${escapeHtml(offering)}</dd></div>` : ""}
@@ -776,8 +785,6 @@ function renderCompanyModal() {
         </header>
 
         <div class="focusDetailBody">
-          ${renderFocusDrafts(drafts, loading)}
-
           <div class="focusDetailColumns">
             ${whyCard}
             <section class="focusDetailCard">
@@ -785,6 +792,8 @@ function renderCompanyModal() {
               ${people.length ? renderDecisionMakers(people) : `<p class="focusDetailEmpty">${loading ? "Loading contacts…" : "No named contacts captured yet."}</p>`}
             </section>
           </div>
+
+          ${renderFocusDrafts(drafts, loading)}
 
           ${modal.companyId ? renderCompanyFeedback(detail) : ""}
 
