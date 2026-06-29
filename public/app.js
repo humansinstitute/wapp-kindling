@@ -4968,21 +4968,28 @@ $("researchDeskButton").addEventListener("click", () => {
   setKindlingView("research");
   navigate("/researchdesk");
 });
+// NOTE: capture the button element synchronously — event.currentTarget is null
+// inside the async .finally (after dispatch ends), which previously left the
+// button stuck disabled on "Working".
 $("saveSettingsButton").addEventListener("click", (event) => {
-  setBusyElement(event.currentTarget, true);
-  void saveSettings().finally(() => setBusyElement(event.currentTarget, false));
+  const btn = event.currentTarget;
+  setBusyElement(btn, true);
+  void saveSettings().finally(() => setBusyElement(btn, false));
 });
 $("saveAutomationButton")?.addEventListener("click", (event) => {
-  setBusyElement(event.currentTarget, true);
-  void saveAutomation().finally(() => setBusyElement(event.currentTarget, false));
+  const btn = event.currentTarget;
+  setBusyElement(btn, true);
+  void saveAutomation().finally(() => setBusyElement(btn, false));
 });
 $("loadPipelinesButton").addEventListener("click", (event) => {
-  setBusyElement(event.currentTarget, true);
-  void loadPipelines().finally(() => setBusyElement(event.currentTarget, false));
+  const btn = event.currentTarget;
+  setBusyElement(btn, true);
+  void loadPipelines().finally(() => setBusyElement(btn, false));
 });
 $("addAccessButton").addEventListener("click", (event) => {
-  setBusyElement(event.currentTarget, true);
-  void addAccess().finally(() => setBusyElement(event.currentTarget, false));
+  const btn = event.currentTarget;
+  setBusyElement(btn, true);
+  void addAccess().finally(() => setBusyElement(btn, false));
 });
 $("pipelineSelect").addEventListener("change", () => {
   if ($("pipelineSelect").value) $("pipelineInput").value = $("pipelineSelect").value;
