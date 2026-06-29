@@ -309,91 +309,178 @@ async function loadSettings() {
   renderAccessRules();
 }
 
-async function loadKindlingScreen() {
-  if (["scheduler", "targets", "today"].includes(state.activeKindlingView)) {
-    setKindlingView(state.activeKindlingView === "scheduler" ? "research" : "targets");
-  }
+let kindlingLoadSeq = 0;
+let kindlingViewLoading = false;
+
+function kindlingViewLabel(view) {
+  const labels = {
+    service: "Service Offerings",
+    companies: "Companies",
+    enriched: "Enriched Companies",
+    targets: "Scored",
+    match: "Match",
+    research: "Research Desk",
+    admin: "Pipeline admin",
+  };
+  return labels[view] || "view";
+}
+
+function companyPageKeyFor(view) {
+  return view === "enriched" ? "enriched" : "companies";
+}
+
+function buildCompanyQuery(view) {
   const companyQuery = new URLSearchParams();
   for (const [key, value] of Object.entries(state.kindlingFilters)) {
     if (value) companyQuery.set(key, value);
   }
-  if (state.activeKindlingView === "enriched") companyQuery.set("enrichmentStatus", "complete");
-  const needsCompanyList = state.activeKindlingView === "companies" || state.activeKindlingView === "enriched";
-  const companyPageKey = state.activeKindlingView === "enriched" ? "enriched" : "companies";
-  const companyLimit = 20;
-  const companyOffset = needsCompanyList ? Number(state.kindlingPaging[companyPageKey] || 0) : 0;
-  if (needsCompanyList) {
-    companyQuery.set("limit", String(companyLimit));
-    companyQuery.set("offset", String(companyOffset));
-  }
-  const targetLimit = 20;
-  const targetOffset = Number(state.kindlingPaging.targets || 0);
-  const industryOffset = Number(state.kindlingPaging.industries || 0);
-  const workQueueOffset = Number(state.kindlingPaging.workQueue || 0);
+  if (view === "enriched") companyQuery.set("enrichmentStatus", "complete");
+  companyQuery.set("limit", "20");
+  companyQuery.set("offset", String(Math.max(0, Number(state.kindlingPaging[companyPageKeyFor(view)] || 0))));
+  return companyQuery;
+}
+
+function buildTargetQuery() {
   const targetQuery = new URLSearchParams({
-    limit: String(targetLimit),
-    offset: String(targetOffset),
+    limit: "20",
+    offset: String(Math.max(0, Number(state.kindlingPaging.targets || 0))),
   });
   if (state.kindlingFilters.hasOutreachDraft === "yes") targetQuery.set("hasOutreachDraft", "true");
-  const [summary, targets] = await Promise.all([
+  targetQuery.set("band", state.kindlingFilters.band || "high");
+  return targetQuery;
+}
+
+function applyCompanyList(filtered) {
+  const k = state.kindling;
+  k.companies = filtered.companies || [];
+  k.companyList = {
+    total: Number(filtered.total ?? k.counts?.companies ?? 0),
+    returned: Number(filtered.returned ?? filtered.companies?.length ?? 0),
+    limit: Number(filtered.limit ?? 20),
+    offset: Number(filtered.offset ?? Number(state.kindlingPaging[companyPageKeyFor(state.activeKindlingView)] || 0)),
+  };
+}
+
+function applyTargets(targets) {
+  const k = state.kindling;
+  k.targets = targets.targets || [];
+  k.targetListRunId = targets.targetListRunId || "";
+  k.topTargets = targets.targets || [];
+  k.topTargetList = {
+    total: Number(targets.total ?? targets.run?.rankedCount ?? targets.targets?.length ?? 0),
+    returned: Number(targets.returned ?? targets.targets?.length ?? 0),
+    limit: Number(targets.limit ?? 20),
+    offset: Number(targets.offset ?? Number(state.kindlingPaging.targets || 0)),
+  };
+  k.topTargetRun = targets.run || null;
+  k.topTargetsRebuilt = Boolean(targets.rebuilt);
+  k.scoredBandCounts = targets.bandCounts || k.scoredBandCounts || { high: 0, medium: 0, low: 0 };
+  k.scoredBand = targets.band || state.kindlingFilters.band || "high";
+}
+
+function applyIndustries(enrichmentIndustries) {
+  const k = state.kindling;
+  k.enrichmentIndustries = enrichmentIndustries.industries || [];
+  k.enrichmentIndustryList = {
+    total: Number(enrichmentIndustries.total ?? enrichmentIndustries.industries?.length ?? 0),
+    returned: Number(enrichmentIndustries.returned ?? enrichmentIndustries.industries?.length ?? 0),
+    limit: Number(enrichmentIndustries.limit ?? 20),
+    offset: Number(enrichmentIndustries.offset ?? Number(state.kindlingPaging.industries || 0)),
+  };
+  k.enrichmentBatchLimit = enrichmentIndustries.batchLimit || 21;
+  k.enrichmentStrategies = enrichmentIndustries.strategies || [];
+}
+
+function applyWorkQueue(workQueue) {
+  const k = state.kindling;
+  k.workQueueItems = workQueue.items || [];
+  k.workQueueList = {
+    total: Number(workQueue.total ?? workQueue.items?.length ?? 0),
+    returned: Number(workQueue.returned ?? workQueue.items?.length ?? 0),
+    limit: Number(workQueue.limit ?? 20),
+    offset: Number(workQueue.offset ?? Number(state.kindlingPaging.workQueue || 0)),
+  };
+}
+
+async function loadKindlingList(listKey) {
+  if (!state.kindling) return loadKindlingScreen();
+  const view = state.activeKindlingView;
+  kindlingViewLoading = false;
+  const seq = ++kindlingLoadSeq;
+  setKindlingStatus("Loading page...");
+  try {
+    if (listKey === "companies" || listKey === "enriched") {
+      const filtered = await api(`/api/kindling/companies?${buildCompanyQuery(view)}`);
+      if (seq !== kindlingLoadSeq) return;
+      applyCompanyList(filtered);
+    } else if (listKey === "targets") {
+      const targets = await api(`/api/kindling/top-targets?${buildTargetQuery()}`);
+      if (seq !== kindlingLoadSeq) return;
+      applyTargets(targets);
+    } else if (listKey === "industries") {
+      const offset = Math.max(0, Number(state.kindlingPaging.industries || 0));
+      const industries = await api(`/api/kindling/enrichment-industries?limit=20&offset=${offset}`);
+      if (seq !== kindlingLoadSeq) return;
+      applyIndustries(industries);
+    } else if (listKey === "workQueue") {
+      const offset = Math.max(0, Number(state.kindlingPaging.workQueue || 0));
+      const workQueue = await api(`/api/kindling/work-queue?limit=20&offset=${offset}`);
+      if (seq !== kindlingLoadSeq) return;
+      applyWorkQueue(workQueue);
+    } else {
+      return loadKindlingScreen();
+    }
+    renderKindling();
+    setKindlingStatus("Page loaded");
+  } catch (err) {
+    if (seq === kindlingLoadSeq) setKindlingStatus(`Error: ${err?.message || err}`);
+  }
+}
+
+async function loadKindlingScreen() {
+  if (["scheduler", "targets", "today"].includes(state.activeKindlingView)) {
+    setKindlingView(state.activeKindlingView === "scheduler" ? "research" : "targets");
+  }
+  const view = state.activeKindlingView;
+  const needsCompanyList = view === "companies" || view === "enriched";
+  const needsResearch = view === "research";
+  const needsScoring = view === "targets" || view === "match";
+  const needsTargets = view === "targets" || view === "match";
+  const companyQuery = buildCompanyQuery(view);
+  const targetQuery = buildTargetQuery();
+  const industryOffset = Math.max(0, Number(state.kindlingPaging.industries || 0));
+  const workQueueOffset = Math.max(0, Number(state.kindlingPaging.workQueue || 0));
+  const seq = ++kindlingLoadSeq;
+  setKindlingStatus("Loading...");
+  kindlingViewLoading = true;
+  renderKindling();
+  const [summary, targets, enrichmentIndustries, filtered, scheduler, schedulerPreview, workQueue, scoringOfferings, rankingRuns] = await Promise.all([
     api("/api/kindling/summary?compact=1"),
-    state.activeKindlingView === "targets" || state.activeKindlingView === "match" ? api(`/api/kindling/top-targets?${targetQuery}`) : Promise.resolve({ targets: [], total: 0, returned: 0, limit: targetLimit, offset: targetOffset }),
-  ]);
-  const needsResearch = state.activeKindlingView === "research";
-  const needsScoring = state.activeKindlingView === "targets" || state.activeKindlingView === "match";
-  const [enrichmentIndustries, filtered, scheduler, schedulerPreview, workQueue, scoringOfferings, rankingRuns] = await Promise.all([
+    needsTargets ? api(`/api/kindling/top-targets?${targetQuery}`) : Promise.resolve({ targets: [], total: 0, returned: 0, limit: 20, offset: Number(targetQuery.get("offset") || 0) }),
     needsResearch ? api(`/api/kindling/enrichment-industries?limit=20&offset=${industryOffset}`) : Promise.resolve({ industries: [], batchLimit: 21, strategies: [], total: 0, returned: 0, limit: 20, offset: 0 }),
-    needsCompanyList ? api(`/api/kindling/companies${companyQuery.toString() ? `?${companyQuery}` : ""}`) : Promise.resolve({ companies: [], total: summary.counts?.companies || 0, returned: 0, limit: summary.companyList?.limit || 500 }),
+    needsCompanyList ? api(`/api/kindling/companies?${companyQuery}`) : Promise.resolve({ companies: [], total: 0, returned: 0, limit: 500 }),
     needsResearch ? api("/api/kindling/scheduler-settings") : Promise.resolve({ settings: null, recentRuns: [], activeLock: null }),
     needsResearch ? api("/api/kindling/scheduler/preview") : Promise.resolve({ decision: null }),
     needsResearch ? api(`/api/kindling/work-queue?limit=20&offset=${workQueueOffset}`) : Promise.resolve({ items: [], total: 0, returned: 0, limit: 20, offset: 0 }),
     needsScoring ? api("/api/kindling/scoring/offerings") : Promise.resolve({ profile: null, offerings: [], marketProfileVersionId: "" }),
     needsResearch || needsScoring ? api("/api/kindling/initial-ranking/runs?limit=10") : Promise.resolve({ runs: [] }),
   ]);
+  if (seq !== kindlingLoadSeq) return;
   state.kindling = {
     ...summary,
-    companies: filtered.companies || [],
-    companyList: {
-      total: Number(filtered.total ?? summary.counts?.companies ?? 0),
-      returned: Number(filtered.returned ?? filtered.companies?.length ?? 0),
-      limit: Number(filtered.limit ?? summary.companyList?.limit ?? 500),
-    },
-    targets: targets.targets || [],
-    targetListRunId: targets.targetListRunId || "",
-    topTargets: targets.targets || [],
-    topTargetList: {
-      total: Number(targets.total ?? targets.run?.rankedCount ?? targets.targets?.length ?? 0),
-      returned: Number(targets.returned ?? targets.targets?.length ?? 0),
-      limit: Number(targets.limit ?? targetLimit),
-      offset: Number(targets.offset ?? targetOffset),
-    },
-    topTargetRun: targets.run || null,
-    topTargetsRebuilt: Boolean(targets.rebuilt),
-    enrichmentIndustries: enrichmentIndustries.industries || [],
-    enrichmentIndustryList: {
-      total: Number(enrichmentIndustries.total ?? enrichmentIndustries.industries?.length ?? 0),
-      returned: Number(enrichmentIndustries.returned ?? enrichmentIndustries.industries?.length ?? 0),
-      limit: Number(enrichmentIndustries.limit ?? 20),
-      offset: Number(enrichmentIndustries.offset ?? 0),
-    },
-    enrichmentBatchLimit: enrichmentIndustries.batchLimit || 21,
-    enrichmentStrategies: enrichmentIndustries.strategies || [],
     scheduler: scheduler.settings || null,
     schedulerRecentRuns: scheduler.recentRuns || [],
     schedulerActiveLock: scheduler.activeLock || null,
     schedulerPreview: schedulerPreview.decision || null,
-    workQueueItems: workQueue.items || [],
-    workQueueList: {
-      total: Number(workQueue.total ?? workQueue.items?.length ?? 0),
-      returned: Number(workQueue.returned ?? workQueue.items?.length ?? 0),
-      limit: Number(workQueue.limit ?? 20),
-      offset: Number(workQueue.offset ?? 0),
-    },
     scoringProfile: scoringOfferings.profile || null,
     scoringOfferings: scoringOfferings.offerings || [],
     marketProfileVersionId: scoringOfferings.marketProfileVersionId || "",
     rankingRuns: rankingRuns.runs || [],
   };
+  applyCompanyList(filtered);
+  applyTargets(targets);
+  applyIndustries(enrichmentIndustries);
+  applyWorkQueue(workQueue);
   if (needsCompanyList && state.selectedCompanyId && !state.kindling.companies?.some((company) => company.id === state.selectedCompanyId)) {
     if (state.activeKindlingView !== "match") state.selectedCompanyId = "";
   }
@@ -406,7 +493,9 @@ async function loadKindlingScreen() {
       state.companyDetail = await api(`/api/kindling/companies/${encodeURIComponent(companyId)}`);
     }
   }
+  kindlingViewLoading = false;
   renderKindling();
+  if (state.kindlingStatus === "Loading...") setKindlingStatus("Ready");
 }
 
 function escapeHtml(value) {
@@ -547,6 +636,14 @@ function renderKindling() {
 }
 
 function renderKindlingView(data, company, canEdit) {
+  if (kindlingViewLoading) {
+    return `
+      <section class="kindlingPanel kindlingLoadingPanel">
+        <div class="kindlingLoading"><span class="kindlingSpinner" aria-hidden="true"></span>Loading ${escapeHtml(kindlingViewLabel(state.activeKindlingView))}...</div>
+      </section>
+    `;
+  }
+
   if (state.activeKindlingView === "research") return renderResearchDeskView(data, canEdit);
 
   if (state.activeKindlingView === "service") return `
@@ -937,7 +1034,7 @@ function renderTopTargets(targets) {
       const name = company.name || target.name || "Unknown company";
       const offering = target.bestOffering?.name || target.bestOfferingName || "No offering selected";
       const caveats = Array.isArray(target.caveats) ? target.caveats : [];
-      const score = Number(target.score || 0);
+      const score = Number(target.assessmentScore || target.score || 0);
       const confidence = Number(target.confidence || 0);
       return `
         <button type="button" data-open-match="${escapeHtml(target.id || "")}" data-select-company="${escapeHtml(target.companyId || company.id || "")}">
@@ -955,14 +1052,27 @@ function renderTopTargets(targets) {
 }
 
 function renderScoredFilters() {
-  const current = state.kindlingFilters.hasOutreachDraft || "";
-  const option = (value, label) => `<option value="${value}" ${current === value ? "selected" : ""}>${label}</option>`;
+  const band = state.kindlingFilters.band || "high";
+  const counts = (state.kindling && state.kindling.scoredBandCounts) || { high: 0, medium: 0, low: 0 };
+  const draftOnly = state.kindlingFilters.hasOutreachDraft === "yes";
+  const tab = (key, label) => `
+    <button type="button" class="scoredTab ${band === key ? "active" : ""}" data-scored-band="${key}">
+      ${label} <span class="scoredTabCount">${Number(counts[key] || 0)}</span>
+    </button>`;
+  const blurb = band === "high"
+    ? "Your call list. Work these top-down."
+    : band === "medium"
+      ? "There is an angle. Reach out by email first and see if they respond."
+      : "Parked for now. Low fit.";
   return `
+    <div class="scoredTabs" role="tablist">
+      ${tab("high", "High fit")}
+      ${tab("medium", "Medium fit")}
+      ${tab("low", "Low fit")}
+    </div>
+    <p class="scoredBandBlurb">${escapeHtml(blurb)}</p>
     <form class="companyFilters scoredFilters" data-form="scored-filters">
-      <select id="filterHasOutreachDraft">
-        ${option("", "All scored companies")}
-        ${option("yes", "Drafted outreach only")}
-      </select>
+      <label class="checkboxLabel"><input id="filterHasOutreachDraft" type="checkbox" ${draftOnly ? "checked" : ""} /> Drafted outreach only</label>
       <div class="filterActions">
         <button type="submit">Apply</button>
       </div>
@@ -981,7 +1091,7 @@ function selectedTarget(data = state.kindling || {}) {
 function renderMatchView(data, canEdit) {
   const target = selectedTarget(data);
   const detail = state.companyDetail;
-  const company = detail?.company || target?.company || selectedCompany();
+  const company = detail?.company || target?.company || selectedCompany() || target;
   if (!target || !company) return `
     <section class="kindlingPanel">
       <h2>Match</h2>
@@ -1002,7 +1112,7 @@ function renderMatchView(data, canEdit) {
             <h2>${escapeHtml(company.name)}</h2>
             <span>${escapeHtml(company.industry || "Unknown")} - ${escapeHtml(company.location || "Unknown")}</span>
           </div>
-          <button type="button" data-select-company="${escapeHtml(company.id)}">Full profile</button>
+          ${company.id ? `<button type="button" data-select-company="${escapeHtml(company.id)}">Full profile</button>` : ""}
         </div>
         <dl class="kindlingFacts">
           <div><dt>Website</dt><dd>${company.website ? `<a href="${escapeHtml(company.website)}" target="_blank" rel="noreferrer">${escapeHtml(company.website)}</a>` : "No website"}</dd></div>
@@ -1024,7 +1134,7 @@ function renderMatchView(data, canEdit) {
         </div>
         <dl class="kindlingFacts">
           <div><dt>Rank</dt><dd>#${Number(target.rank || 0)}</dd></div>
-          <div><dt>Score</dt><dd>${Number(target.score || assessment?.score || 0).toFixed(1)}</dd></div>
+          <div><dt>Score</dt><dd>${Number(target.assessmentScore || assessment?.score || target.score || 0).toFixed(1)}</dd></div>
           <div><dt>Band</dt><dd>${escapeHtml(assessment?.band || "")}</dd></div>
           <div><dt>Confidence</dt><dd>${Math.round(Number(target.confidence || assessment?.confidence || 0) * 100)}%</dd></div>
         </dl>
@@ -1691,12 +1801,12 @@ async function handleKindlingSubmit(event) {
     if (form.dataset.form === "scored-filters") {
       state.kindlingFilters = {
         ...state.kindlingFilters,
-        hasOutreachDraft: $("filterHasOutreachDraft").value,
+        hasOutreachDraft: $("filterHasOutreachDraft").checked ? "yes" : "",
       };
       state.kindlingPaging.targets = 0;
       saveKindlingFilters();
-      await loadKindlingScreen();
-      setKindlingStatus(state.kindlingFilters.hasOutreachDraft === "yes" ? "Showing drafted outreach" : "Showing all scored companies");
+      await loadKindlingList("targets");
+      setKindlingStatus(state.kindlingFilters.hasOutreachDraft === "yes" ? "Showing drafted outreach" : "Showing all in this band");
     }
     if (form.dataset.form === "scheduler-settings") {
       setKindlingStatus("Saving scheduler settings");
@@ -1803,8 +1913,7 @@ async function handleKindlingClick(event) {
     const listKey = pageButton.dataset.pageList;
     if (Object.prototype.hasOwnProperty.call(state.kindlingPaging, listKey)) {
       state.kindlingPaging[listKey] = Math.max(0, Number(pageButton.dataset.pageOffset || 0));
-      await loadKindlingScreen();
-      setKindlingStatus("Page loaded");
+      await loadKindlingList(listKey);
     }
     return;
   }
@@ -1850,34 +1959,59 @@ async function handleKindlingClick(event) {
     setKindlingStatus(state.kindlingFilters.enrichmentStatus ? `${stageLabel(state.kindlingFilters.enrichmentStatus)} companies` : "All companies");
     return;
   }
+  const scoredBandButton = event.target.closest("[data-scored-band]");
+  if (scoredBandButton) {
+    state.kindlingFilters = {
+      ...state.kindlingFilters,
+      band: scoredBandButton.dataset.scoredBand || "high",
+    };
+    state.kindlingPaging.targets = 0;
+    saveKindlingFilters();
+    setKindlingStatus("Loading...");
+    await loadKindlingList("targets");
+    const labels = { high: "High-fit call list", medium: "Medium-fit list", low: "Low-fit parked list" };
+    setKindlingStatus(labels[state.kindlingFilters.band] || "Scored");
+    return;
+  }
   const matchButton = event.target.closest("[data-open-match]");
   if (matchButton) {
+    const companyId = matchButton.dataset.selectCompany || "";
     state.selectedTargetId = matchButton.dataset.openMatch || "";
-    state.selectedCompanyId = matchButton.dataset.selectCompany || "";
+    state.selectedCompanyId = companyId;
     localStorage.setItem("kindling_target", state.selectedTargetId);
     localStorage.setItem("kindling_company", state.selectedCompanyId);
     state.companyProfileOpen = false;
     state.companyDetail = null;
-    setKindlingStatus("Loading match");
-    if (state.selectedCompanyId) {
-      state.companyDetail = await api(`/api/kindling/companies/${encodeURIComponent(state.selectedCompanyId)}`);
-    }
     setKindlingView("match");
-    navigate("/match");
+    kindlingViewLoading = false;
+    if (window.location.pathname !== "/match") history.pushState({}, "", "/match");
+    state.route = "/match";
+    renderKindling();
+    setKindlingStatus("Loading match");
+    if (companyId) {
+      state.companyDetail = await api(`/api/kindling/companies/${encodeURIComponent(companyId)}`);
+      if (state.selectedCompanyId === companyId) renderKindling();
+    }
     setKindlingStatus("Match loaded");
     return;
   }
   const selectButton = event.target.closest("[data-select-company]");
   if (selectButton) {
-    state.selectedCompanyId = selectButton.dataset.selectCompany;
+    const companyId = selectButton.dataset.selectCompany;
+    state.selectedCompanyId = companyId;
     localStorage.setItem("kindling_company", state.selectedCompanyId);
     state.scanJobDetail = null;
     state.companyProfileOpen = true;
     state.companyDetail = null;
-    setKindlingStatus("Loading company profile");
-    state.companyDetail = await api(`/api/kindling/companies/${encodeURIComponent(state.selectedCompanyId)}`);
+    kindlingViewLoading = false;
     renderKindling();
-    setKindlingStatus("Company profile loaded");
+    setKindlingStatus("Loading company profile");
+    const detail = await api(`/api/kindling/companies/${encodeURIComponent(companyId)}`);
+    if (state.selectedCompanyId === companyId && state.companyProfileOpen) {
+      state.companyDetail = detail;
+      renderKindling();
+      setKindlingStatus("Company profile loaded");
+    }
     return;
   }
   const action = event.target.closest("[data-action]")?.dataset.action;

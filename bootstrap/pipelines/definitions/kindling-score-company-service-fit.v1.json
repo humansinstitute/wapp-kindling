@@ -18,8 +18,8 @@
     "companyName": "",
     "serviceOfferingId": "",
     "marketProfileVersionId": "",
-    "agent": "codex",
-    "workingDirectory": "/Users/mini/wingmen/wingman21",
+    "agent": "claude",
+    "workingDirectory": "/workspace/athena-kindling",
     "localContext": {
       "company": {},
       "customerProfileVersions": [],

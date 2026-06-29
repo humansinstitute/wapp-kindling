@@ -1,7 +1,7 @@
 {
   "name": "kindling-enrich-industry-segment",
   "description": "Kindling WApp industry-segment enrichment pipeline. Processes up to 21 queued companies sequentially, checks fixed strategy coverage, and writes each company back to the WApp as soon as it completes.",
-  "version": 1,
+  "version": 2,
   "tags": [
     "kindling",
     "wapp",
@@ -57,6 +57,26 @@
         "companyId": "$.currentCompany.company.id",
         "delivery": "$.companyDelivery"
       },
+      "display": {
+        "in": [
+          {
+            "label": "Industry",
+            "path": "$.industry",
+            "format": "text"
+          },
+          {
+            "label": "Companies",
+            "path": "$.localContext.companies",
+            "format": "count"
+          }
+        ],
+        "out": [
+          {
+            "label": "Iterations",
+            "path": "$.iterations"
+          }
+        ]
+      },
       "steps": [
         {
           "id": "select-company",
@@ -76,7 +96,36 @@
               "loop": "$.batchLoop"
             }
           },
-          "assign": "$.currentCompany"
+          "assign": "$.currentCompany",
+          "display": {
+            "in": [
+              {
+                "label": "Industry",
+                "path": "$.industry",
+                "format": "text"
+              },
+              {
+                "label": "Companies",
+                "path": "$.companies",
+                "format": "count"
+              }
+            ],
+            "out": [
+              {
+                "label": "Company",
+                "path": "$.company.name",
+                "format": "text"
+              },
+              {
+                "label": "Company Number",
+                "path": "$.companyNumber"
+              },
+              {
+                "label": "Skipped",
+                "path": "$.skipped"
+              }
+            ]
+          }
         },
         {
           "id": "discover-company-enrichment",
@@ -96,6 +145,46 @@
           },
           "prompt": "You are the Kindling industry enrichment worker.\n\nGoal:\nEnrich exactly one company using the selected company record and the fixed enrichment strategy checklist. This is company-level enrichment only. Do not draft outreach.\n\nRequired strategy checklist:\n- official_website: Find or verify the company's official website, services, operating areas, and public contact paths.\n- search_results: Check independent search results/directories for corroborating summaries and alternative public URLs.\n- blog_news_resources: Look for blogs, news, publications, case studies, resources, or updates that indicate active practice areas and business signals.\n- people_team: Identify publicly listed employees, partners, team pages, leadership, or hiring signals without collecting private data.\n- fit_signals: Summarise service-fit signals, operating complexity, visible gaps, and caveats for downstream scoring/outreach.\n\nRules:\n- Treat selected.company as the current WApp record.\n- Use selected.company.knownSources first, then available web/search tools.\n- Do not fabricate public facts. Put unverifiable fields in gaps or warnings.\n- Keep source summaries concise and source-backed.\n- Do not call Kindling yourself; deterministic code writes the company update.\n- Do not read or write Kindling SQLite directly.\n\nReturn compact JSON only with this exact shape:\n{\n  \"response\": \"short enrichment summary\",\n  \"companyId\": \"same company id\",\n  \"companyName\": \"company name\",\n  \"profilePatch\": {\n    \"website\": \"https://...\",\n    \"industry\": \"industry label\",\n    \"location\": \"location label\",\n    \"summary\": \"source-backed company summary\",\n    \"services\": [\"service names\"],\n    \"operatingAreas\": [\"locations\"],\n    \"contact\": {\"phone\": \"\", \"email\": \"\", \"contactUrl\": \"\"},\n    \"peopleSignals\": [\"public team/role signals\"],\n    \"contentSignals\": [\"blog/news/resource signals\"],\n    \"fitSignals\": [\"Kindling fit signals\"],\n    \"confidenceNotes\": [\"field-level caveats\"]\n  },\n  \"strategyCoverage\": [\n    {\"key\": \"official_website\", \"status\": \"done|blocked\", \"summary\": \"what happened\", \"sources\": [\"https://...\"]}\n  ],\n  \"fieldsUpdated\": [\n    {\"field\": \"website\", \"value\": \"https://...\", \"previousValue\": \"\", \"confidence\": 0.0, \"sourceUrl\": \"https://...\", \"reason\": \"why update is supported\"}\n  ],\n  \"sources\": [\n    {\"type\": \"web\", \"url\": \"https://...\", \"title\": \"source title\", \"summary\": \"what the source supports\", \"confidence\": 0.0}\n  ],\n  \"activities\": [\n    {\"action\": \"enrich\", \"summary\": \"what was checked\"}\n  ],\n  \"gaps\": [\"fields attempted but not found\"],\n  \"warnings\": [\"caveats\"],\n  \"confidence\": 0.0\n}",
           "assign": "$.enrichmentDraft",
+          "display": {
+            "in": [
+              {
+                "label": "Company",
+                "path": "$.selected.company.name",
+                "format": "text"
+              },
+              {
+                "label": "Industry",
+                "path": "$.industry",
+                "format": "text"
+              }
+            ],
+            "out": [
+              {
+                "label": "Company",
+                "path": "$.companyName",
+                "format": "text"
+              },
+              {
+                "label": "Summary",
+                "path": "$.response",
+                "format": "text"
+              },
+              {
+                "label": "Fields Updated",
+                "path": "$.fieldsUpdated",
+                "format": "count"
+              },
+              {
+                "label": "Sources",
+                "path": "$.sources",
+                "format": "count"
+              },
+              {
+                "label": "Confidence",
+                "path": "$.confidence"
+              }
+            ]
+          },
           "model": "$.model"
         },
         {
@@ -114,6 +203,42 @@
           },
           "prompt": "You are the Kindling enrichment manager.\n\nGoal:\nCheck whether the worker attempted every fixed enrichment strategy for the selected company. You are not doing new research. Verify coverage from enrichmentDraft.strategyCoverage, sources, fieldsUpdated, gaps, and warnings.\n\nRequired strategies:\n- official_website\n- search_results\n- blog_news_resources\n- people_team\n- fit_signals\n\nApproval rules:\n- approved=true only if each strategy is represented as done or blocked with a concrete reason.\n- If a strategy is missing or vague, approved=false and list it in missingStrategies.\n- Do not require every field to be found; blocked with a source-backed or explicit no-result reason is acceptable.\n\nReturn compact JSON only:\n{\n  \"approved\": true,\n  \"summary\": \"manager outcome\",\n  \"strategyCoverage\": [\n    {\"key\": \"official_website\", \"status\": \"done|blocked|missing\", \"reason\": \"short reason\"}\n  ],\n  \"missingStrategies\": [\"strategy keys\"],\n  \"warnings\": [\"manager caveats\"]\n}",
           "assign": "$.managerReview",
+          "display": {
+            "in": [
+              {
+                "label": "Company",
+                "path": "$.selected.company.name",
+                "format": "text"
+              },
+              {
+                "label": "Draft Summary",
+                "path": "$.enrichmentDraft.response",
+                "format": "text"
+              }
+            ],
+            "out": [
+              {
+                "label": "Approved",
+                "path": "$.approved"
+              },
+              {
+                "label": "Summary",
+                "path": "$.summary",
+                "format": "text"
+              },
+              {
+                "label": "Missing Strategies",
+                "path": "$.missingStrategies",
+                "format": "list",
+                "empty": "None"
+              },
+              {
+                "label": "Warnings",
+                "path": "$.warnings",
+                "format": "count"
+              }
+            ]
+          },
           "model": "$.model"
         },
         {
@@ -130,7 +255,50 @@
               "managerReview": "$.managerReview"
             }
           },
-          "assign": "$.companyDelivery"
+          "assign": "$.companyDelivery",
+          "display": {
+            "in": [
+              {
+                "label": "Company",
+                "path": "$.selected.company.name",
+                "format": "text"
+              },
+              {
+                "label": "Approved",
+                "path": "$.managerReview.approved"
+              },
+              {
+                "label": "Summary",
+                "path": "$.enrichmentDraft.response",
+                "format": "text"
+              }
+            ],
+            "out": [
+              {
+                "label": "Company",
+                "path": "$.companyName",
+                "format": "text"
+              },
+              {
+                "label": "Status",
+                "path": "$.status",
+                "format": "text"
+              },
+              {
+                "label": "Approved",
+                "path": "$.approved"
+              },
+              {
+                "label": "Response",
+                "path": "$.response",
+                "format": "text"
+              },
+              {
+                "label": "Sources Written",
+                "path": "$.sourcesWritten"
+              }
+            ]
+          }
         }
       ]
     },
@@ -149,7 +317,50 @@
           "webhook": "$.webhook"
         }
       },
-      "assign": "$.finalDelivery"
+      "assign": "$.finalDelivery",
+      "display": {
+        "in": [
+          {
+            "label": "Industry",
+            "path": "$.industry",
+            "format": "text"
+          },
+          {
+            "label": "Companies",
+            "path": "$.companies",
+            "format": "count"
+          },
+          {
+            "label": "Completed Items",
+            "path": "$.batchHistory.items",
+            "format": "count"
+          }
+        ],
+        "out": [
+          {
+            "label": "Status",
+            "path": "$.status",
+            "format": "text"
+          },
+          {
+            "label": "Summary",
+            "path": "$.response",
+            "format": "text"
+          },
+          {
+            "label": "Completed",
+            "path": "$.result.completed"
+          },
+          {
+            "label": "Failed",
+            "path": "$.result.failed"
+          },
+          {
+            "label": "Webhook Delivered",
+            "path": "$.webhookDelivered"
+          }
+        ]
+      }
     }
   ]
 }

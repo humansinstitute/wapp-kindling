@@ -1108,8 +1108,11 @@ describe("Kindling API contracts", () => {
       scoreVersion: "top-target-v1",
     });
     expect(rebuilt.payload.targets.map((target: { companyId: string }) => target.companyId)).toEqual(["top-high", "top-low"]);
+    expect(rebuilt.payload.bandCounts).toEqual({ high: 2, medium: 0, low: 0 });
     expect(rebuilt.payload.targets[0]).toMatchObject({
       reason: "Strong owner-led advisory fit for AI consulting.",
+      assessmentScore: 82,
+      band: "high",
       bestOffering: {
         id: "service-high",
         name: "AI consulting",
@@ -1124,11 +1127,13 @@ describe("Kindling API contracts", () => {
     expect(rebuilt.payload.targets[1].flags).toContain("high_caveat");
     expect(rebuilt.payload.targets[1].score).toBeLessThan(rebuilt.payload.targets[0].score);
 
-    const latest = await api("/api/kindling/top-targets");
+    const latest = await api("/api/kindling/top-targets?band=high");
     expect(latest.payload).toMatchObject({
       source: "top_targets",
       rebuilt: false,
       targetListRunId: rebuilt.payload.targetListRunId,
+      band: "high",
+      bandCounts: { high: 2, medium: 0, low: 0 },
     });
     expect(latest.payload.targets).toHaveLength(2);
     expect(latest.payload.targets[0]).toMatchObject({
@@ -1145,6 +1150,14 @@ describe("Kindling API contracts", () => {
     expect(draftedOnly.payload.targets[0]).toMatchObject({
       companyId: "top-high",
       hasOutreachDraft: true,
+    });
+
+    const lowBand = await api("/api/kindling/top-targets?band=low");
+    expect(lowBand.payload).toMatchObject({
+      total: 0,
+      returned: 0,
+      band: "low",
+      bandCounts: { high: 2, medium: 0, low: 0 },
     });
 
     const today = await api("/api/kindling/todays-targets");
@@ -1709,7 +1722,7 @@ describe("Kindling API contracts", () => {
       duplicate: 1,
       weakSource: 1,
       enriched: 3,
-      scored: 2,
+      scored: 0,
       outreachReady: 1,
       parked: 1,
       stale: 1,

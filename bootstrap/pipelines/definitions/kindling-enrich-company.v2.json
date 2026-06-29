@@ -1,13 +1,13 @@
 {
   "name": "kindling-enrich-company",
   "description": "Kindling WApp company-enrichment pipeline. Enriches one selected company from supplied context and public sources, then posts a company patch to the WApp webhook.",
-  "version": 1,
+  "version": 2,
   "tags": [
+    "company-enrichment",
+    "http-trigger",
     "kindling",
     "wapp",
-    "http-trigger",
-    "webhook",
-    "company-enrichment"
+    "webhook"
   ],
   "input": {
     "source": "kindling-wapp",
@@ -71,5 +71,7 @@
       },
       "assign": "$.delivery"
     }
-  ]
+  ],
+  "supersedes": "kindling-enrich-company.v1.json",
+  "default": false
 }

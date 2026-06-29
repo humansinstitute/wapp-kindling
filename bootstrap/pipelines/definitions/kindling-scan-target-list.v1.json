@@ -21,8 +21,8 @@
     "industry": "",
     "location": "",
     "targetCount": 100,
-    "agent": "codex",
-    "workingDirectory": "/Users/mini/wingmen/wingman21",
+    "agent": "claude",
+    "workingDirectory": "/workspace/athena-kindling",
     "localContext": {
       "marketProfileId": "",
       "activeProfileVersionId": "",

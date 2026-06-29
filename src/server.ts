@@ -785,9 +785,25 @@ async function handleTowerApi(req: Request, url: URL): Promise<Response | null> 
     const session = await requireTowerSession(req);
     if (!session) return json({ error: "unauthorized" }, 401);
     const { limit, offset } = pagingFromParams(url.searchParams);
+    const hasOutreachDraft = ["1", "true", "yes"].includes(String(url.searchParams.get("hasOutreachDraft") || "").toLowerCase());
+    const band = normalizeTopTargetBand(url.searchParams.get("band"));
     const run = (await towerRows("target_list_runs", { where: { status: { eq: "complete" } }, order: [{ field: "completed_at", dir: "desc" }, { field: "created_at", dir: "desc" }], limit: 1 }))[0] ?? null;
-    const items = run ? await towerRows("target_list_items", { where: { target_list_run_id: { eq: String(run.id) } }, order: [{ field: "rank", dir: "asc" }], limit, offset }) : [];
-    return json({ targetListRunId: run ? String(run.id) : null, source: "top_targets", rebuilt: false, run: run ? rowJson(run) : null, targets: items.map(rowJson), total: run ? Number(run.ranked_count ?? items.length) : 0, returned: items.length, limit, offset });
+    const detail = run
+      ? await towerTopTargetRunDetail(run, limit, offset, { hasOutreachDraft, band })
+      : { run: null, items: [], total: 0, limit, offset, band, bandCounts: { high: 0, medium: 0, low: 0 } };
+    return json({
+      targetListRunId: run ? String(run.id) : null,
+      source: "top_targets",
+      rebuilt: false,
+      run: detail.run,
+      targets: detail.items,
+      total: detail.total,
+      returned: detail.items.length,
+      limit: detail.limit,
+      offset: detail.offset,
+      band: detail.band,
+      bandCounts: detail.bandCounts,
+    });
   }
 
   if (pathname === "/api/kindling/todays-targets" && req.method === "GET") {
@@ -962,7 +978,11 @@ async function handleTowerApi(req: Request, url: URL): Promise<Response | null> 
       await towerStore.create("target_list_items", { id, target_list_run_id: runId, company_id: String(company.id), service_fit_assessment_id: "", market_profile_version_id: "", rank, score: Number(company.confidence ?? 0), reason: "Migrated Tower target ranking", best_offering_id: "", best_offering_key: "", best_offering_name: "", best_variant_key: "", why_now: "", evidence_quality: 0, confidence: Number(company.confidence ?? 0), caveats_json: "[]", next_action: "", flags_json: "[]", score_json: "{}", created_at: now }, id);
       rank++;
     }
-    return json({ targetListRunId: runId, source: "top_targets", rebuilt: true, run: rowJson(await towerRow("target_list_runs", runId)), targets: (await towerRows("target_list_items", { where: { target_list_run_id: { eq: runId } }, order: [{ field: "rank", dir: "asc" }], limit: 500 })).map(rowJson) }, 201);
+    const run = await towerRow("target_list_runs", runId);
+    const detail = run
+      ? await towerTopTargetRunDetail(run, 500, 0)
+      : { run: null, items: [], total: 0, limit: 500, offset: 0, band: "", bandCounts: { high: 0, medium: 0, low: 0 } };
+    return json({ targetListRunId: runId, source: "top_targets", rebuilt: true, run: detail.run, targets: detail.items, total: detail.total, returned: detail.items.length, limit: detail.limit, offset: detail.offset, band: detail.band, bandCounts: detail.bandCounts }, 201);
   }
 
   const kindlingStartMatch = pathname.match(/^\/api\/kindling\/pipeline-runs\/([^/]+)\/start$/);
@@ -1193,6 +1213,25 @@ function jsonParse<T>(value: unknown, fallback: T): T {
 
 function rowJson(row: Record<string, unknown> | null) {
   return row ? Object.fromEntries(Object.entries(row).map(([key, value]) => [key.replace(/_([a-z])/g, (_, c) => c.toUpperCase()), value])) : null;
+}
+
+type TopTargetBand = "high" | "medium" | "low";
+
+function normalizeTopTargetBand(value: unknown): TopTargetBand | "" {
+  const band = String(value ?? "").trim().toLowerCase();
+  return band === "high" || band === "medium" || band === "low" ? band : "";
+}
+
+function topTargetScoreBand(score: number): TopTargetBand {
+  if (score >= 75) return "high";
+  if (score >= 50) return "medium";
+  return "low";
+}
+
+function topTargetBandCounts(scores: number[]) {
+  const counts = { high: 0, medium: 0, low: 0 };
+  for (const score of scores) counts[topTargetScoreBand(score)] += 1;
+  return counts;
 }
 
 function mapPipelineRole(row: Record<string, unknown>) {
@@ -1709,9 +1748,10 @@ const ROLE_STALE_ACTIVE_PIPELINE_RUN_MS: Record<string, number> = {
 const ACQUISITION_PARTIAL_STALE_PIPELINE_RUN_MS = 90 * 60 * 1000;
 const SCHEDULED_ACQUISITION_TARGET_COUNT = 50;
 const SCHEDULED_SCORING_BATCH_LIMIT = 1;
-const SCHEDULED_PIPELINE_AGENT = "codex";
-const SCHEDULED_PIPELINE_MODEL = "gpt-5.4-mini";
-const SCHEDULED_PIPELINE_WORKING_DIRECTORY = "/Users/mini/wingmen/wingman21";
+const SCHEDULED_PIPELINE_AGENT = process.env.KINDLING_SCHEDULED_PIPELINE_AGENT || "claude";
+const SCHEDULED_PIPELINE_MODEL = process.env.KINDLING_SCHEDULED_PIPELINE_MODEL || "";
+const SCHEDULED_OUTREACH_PIPELINE_MODEL = process.env.KINDLING_OUTREACH_PIPELINE_MODEL || "";
+const SCHEDULED_PIPELINE_WORKING_DIRECTORY = process.env.KINDLING_PIPELINE_WORKING_DIRECTORY || "/workspace/athena-kindling";
 
 type SchedulerRoleEvaluation = {
   action: SchedulerActionKey;
@@ -1721,6 +1761,11 @@ type SchedulerRoleEvaluation = {
   activeCount: number;
   concurrencyLimit: number;
 };
+
+function scheduledPipelineModelForRole(roleKey: string) {
+  if (roleKey === "draft_outreach") return SCHEDULED_OUTREACH_PIPELINE_MODEL;
+  return SCHEDULED_PIPELINE_MODEL;
+}
 
 type SchedulerDryRunDecision = {
   dryRun: boolean;
@@ -1952,9 +1997,6 @@ function reconcileSchedulerState(now = Date.now()) {
 }
 
 function schedulerCompanyCounts() {
-  const activeScoring = listActiveScoringOfferings();
-  const marketProfileVersionId = activeScoring.profile?.currentVersionId ?? "";
-  const offeringCount = activeScoring.offerings.length;
   const row = db.query(`
     SELECT
       COUNT(*) AS total_count,
@@ -1964,24 +2006,14 @@ function schedulerCompanyCounts() {
           OR data_ring IN ('enhanced', 'ranked', 'scored', 'outreach_ready', 'outreach', 'contacted')
         THEN 1 ELSE 0 END) AS enriched_count,
       SUM(CASE
-        WHEN data_ring IN ('scored', 'outreach_ready', 'outreach', 'contacted')
-          OR (
-            ?1 != ''
-            AND ?2 > 0
-            AND (
-              SELECT COUNT(DISTINCT sfa.service_offering_id)
-              FROM service_fit_assessments sfa
-              WHERE sfa.company_id = companies.id
-                AND sfa.market_profile_version_id = ?1
-            ) >= ?2
-          )
+        WHEN EXISTS (SELECT 1 FROM service_fit_assessments sfa WHERE sfa.company_id = companies.id)
         THEN 1 ELSE 0 END) AS scored_count,
       SUM(CASE
         WHEN data_ring IN ('outreach_ready', 'outreach', 'contacted')
           OR EXISTS (SELECT 1 FROM outreach_drafts od WHERE od.company_id = companies.id)
         THEN 1 ELSE 0 END) AS outreach_ready_count
     FROM companies
-  `).get(marketProfileVersionId, offeringCount) as Record<string, unknown> | null;
+  `).get() as Record<string, unknown> | null;
   return {
     total: Number(row?.total_count ?? 0),
     activePool: Number(row?.active_pool_count ?? 0),
@@ -2075,7 +2107,10 @@ function countAcquisitionCoverageCompanies(filters: { segmentId?: string | null;
           OR c.data_ring IN ('enhanced', 'agent', 'enriched', 'ranked', 'scored', 'outreach_ready', 'outreach', 'contacted')
         THEN 1 ELSE 0
       END) AS enriched_count,
-      SUM(CASE WHEN c.data_ring IN ('scored', 'outreach_ready', 'outreach', 'contacted') THEN 1 ELSE 0 END) AS scored_count,
+      SUM(CASE
+        WHEN EXISTS (SELECT 1 FROM service_fit_assessments sfa WHERE sfa.company_id = c.id)
+        THEN 1 ELSE 0
+      END) AS scored_count,
       SUM(CASE
         WHEN c.data_ring IN ('outreach_ready', 'outreach', 'contacted')
           OR EXISTS (SELECT 1 FROM outreach_drafts od WHERE od.company_id = c.id)
@@ -2518,10 +2553,7 @@ function selectOutreachDryRun(settings = getSchedulerSettings()) {
     SELECT c.*, tr.id AS ranking_id, tr.rank AS ranking_rank, tr.reason AS ranking_reason
     FROM companies c
     LEFT JOIN target_rankings tr ON tr.company_id = c.id
-    WHERE (
-        c.data_ring IN ('scored', 'outreach_ready')
-        OR EXISTS (SELECT 1 FROM service_fit_assessments sfa WHERE sfa.company_id = c.id)
-      )
+    WHERE EXISTS (SELECT 1 FROM service_fit_assessments sfa WHERE sfa.company_id = c.id)
       AND c.data_ring NOT IN ('contacted', 'parked')
       AND NOT EXISTS (SELECT 1 FROM outreach_drafts od WHERE od.company_id = c.id)
     ORDER BY CASE WHEN tr.rank IS NULL THEN 1 ELSE 0 END ASC,
@@ -4614,7 +4646,10 @@ function countCoverageCompanies(filters: { segmentId?: string | null; geographyT
           OR c.data_ring IN ('enhanced', 'agent', 'enriched', 'ranked', 'scored', 'outreach_ready', 'outreach', 'contacted')
         THEN 1 ELSE 0
       END) AS enriched_count,
-      SUM(CASE WHEN c.data_ring IN ('scored', 'outreach_ready', 'outreach', 'contacted') THEN 1 ELSE 0 END) AS scored_count,
+      SUM(CASE
+        WHEN EXISTS (SELECT 1 FROM service_fit_assessments sfa WHERE sfa.company_id = c.id)
+        THEN 1 ELSE 0
+      END) AS scored_count,
       SUM(CASE
         WHEN c.data_ring IN ('outreach_ready', 'outreach', 'contacted')
           OR EXISTS (SELECT 1 FROM outreach_drafts od WHERE od.company_id = c.id)
@@ -5050,7 +5085,7 @@ function buildKindlingTriggerRequestWithSettings(input: {
         userNpub: input.userNpub,
         message: input.message,
         agent: SCHEDULED_PIPELINE_AGENT,
-        model: SCHEDULED_PIPELINE_MODEL,
+        model: scheduledPipelineModelForRole(input.roleKey),
         workingDirectory: SCHEDULED_PIPELINE_WORKING_DIRECTORY,
         localContext: input.context,
         ...buildKindlingRoleFields(input.roleKey, input.context),
@@ -5142,10 +5177,8 @@ function countServiceFitAssessments() {
 
 function countScoredCompanies() {
   const row = db.query(`
-    SELECT COUNT(*) AS count
-    FROM companies c
-    WHERE c.data_ring IN ('scored', 'outreach_ready', 'outreach', 'contacted')
-      OR EXISTS (SELECT 1 FROM service_fit_assessments sfa WHERE sfa.company_id = c.id)
+    SELECT COUNT(DISTINCT company_id) AS count
+    FROM service_fit_assessments
   `).get() as { count: number } | null;
   return Number(row?.count ?? 0);
 }
@@ -5285,6 +5318,87 @@ async function towerCountServiceFitScoredCompanies() {
     if (rows.length < pageSize) break;
   }
   return scoredCompanyIds.size;
+}
+
+async function towerAllRows(table: string, input: Record<string, unknown> = {}, maxRows = 10000) {
+  const rows: Record<string, unknown>[] = [];
+  const pageSize = 500;
+  for (let offset = 0; rows.length < maxRows; offset += pageSize) {
+    const page = await getTowerStore().query(table, {
+      ...input,
+      limit: Math.min(pageSize, maxRows - rows.length),
+      offset,
+    });
+    rows.push(...page);
+    if (page.length < pageSize) break;
+  }
+  return rows;
+}
+
+async function towerRowsByIds(table: string, ids: string[]) {
+  const out: Record<string, unknown>[] = [];
+  const uniqueIds = [...new Set(ids.filter(Boolean))];
+  for (let index = 0; index < uniqueIds.length; index += 100) {
+    const chunk = uniqueIds.slice(index, index + 100);
+    out.push(...await getTowerStore().query(table, { where: { id: { in: chunk } }, limit: chunk.length }));
+  }
+  return out;
+}
+
+async function towerTopTargetRunDetail(run: Record<string, unknown>, limit: number, offset: number, options: { hasOutreachDraft?: boolean; band?: string } = {}) {
+  const safeLimit = Math.max(1, Math.min(500, Math.floor(limit)));
+  const safeOffset = Math.max(0, Math.floor(offset));
+  const runId = String(run.id);
+  const band = normalizeTopTargetBand(options.band);
+  const items = await towerAllRows("target_list_items", {
+    where: { target_list_run_id: { eq: runId } },
+    order: [{ field: "rank", dir: "asc" }],
+  });
+  const assessmentRows = await towerRowsByIds("service_fit_assessments", items.map((item) => String(item.service_fit_assessment_id ?? "")));
+  const assessments = new Map(assessmentRows.map((row) => [String(row.id), row]));
+  const companyIds = [...new Set(items.map((item) => String(item.company_id ?? "")).filter(Boolean))];
+  const companyRows = await towerRowsByIds("companies", companyIds);
+  const companies = new Map(companyRows.map((row) => [String(row.id), row]));
+  const draftRows: Record<string, unknown>[] = [];
+  for (let index = 0; index < companyIds.length; index += 100) {
+    const chunk = companyIds.slice(index, index + 100);
+    draftRows.push(...await getTowerStore().query("outreach_drafts", { where: { company_id: { in: chunk } }, limit: 500 }));
+  }
+  const draftCounts = new Map<string, number>();
+  for (const draft of draftRows) {
+    const companyId = String(draft.company_id ?? "");
+    if (companyId) draftCounts.set(companyId, (draftCounts.get(companyId) ?? 0) + 1);
+  }
+  const mapped = items.map((item) => {
+    const assessment = assessments.get(String(item.service_fit_assessment_id ?? ""));
+    const assessmentScore = Number(assessment?.score ?? 0);
+    const companyId = String(item.company_id ?? "");
+    const company = companies.get(companyId);
+    const outreachDraftCount = draftCounts.get(companyId) ?? 0;
+    return {
+      ...rowJson(item),
+      assessmentScore,
+      band: String(assessment?.band ?? "") || topTargetScoreBand(assessmentScore),
+      hasOutreachDraft: outreachDraftCount > 0,
+      outreachDraftCount,
+      company: company ? mapCompany(company) : undefined,
+    };
+  });
+  const bandCounts = topTargetBandCounts(mapped.map((item) => Number(item.assessmentScore ?? 0)));
+  const filtered = mapped.filter((item) => {
+    if (options.hasOutreachDraft && !item.hasOutreachDraft) return false;
+    if (band && item.band !== band) return false;
+    return true;
+  });
+  return {
+    run: rowJson(run),
+    items: filtered.slice(safeOffset, safeOffset + safeLimit),
+    total: filtered.length,
+    limit: safeLimit,
+    offset: safeOffset,
+    band,
+    bandCounts,
+  };
 }
 
 function towerEmptyCoverageSummary() {
@@ -7442,6 +7556,8 @@ function mapTopTargetRun(row: Record<string, unknown>) {
 
 function mapTopTargetItem(row: Record<string, unknown>) {
   const outreachDraftCount = Number(row.outreach_draft_count ?? 0);
+  const scoreJson = jsonParse<Record<string, unknown>>(row.score_json, {});
+  const assessmentScore = Number(row.assessment_score ?? scoreJson.assessmentScore ?? row.score ?? 0);
   return {
     id: String(row.id),
     targetListRunId: String(row.target_list_run_id),
@@ -7450,6 +7566,8 @@ function mapTopTargetItem(row: Record<string, unknown>) {
     marketProfileVersionId: String(row.market_profile_version_id),
     rank: Number(row.rank ?? 0),
     score: Number(row.score ?? 0),
+    assessmentScore,
+    band: String(row.assessment_band ?? "") || topTargetScoreBand(assessmentScore),
     reason: String(row.reason ?? ""),
     bestOffering: {
       id: String(row.best_offering_id),
@@ -7465,7 +7583,7 @@ function mapTopTargetItem(row: Record<string, unknown>) {
     caveats: jsonParse<unknown[]>(row.caveats_json, []),
     nextAction: String(row.next_action ?? ""),
     flags: jsonParse<string[]>(row.flags_json, []),
-    scoreJson: jsonParse<Record<string, unknown>>(row.score_json, {}),
+    scoreJson,
     hasOutreachDraft: outreachDraftCount > 0,
     outreachDraftCount,
     createdAt: Number(row.created_at ?? 0),
@@ -7481,23 +7599,44 @@ function mapTopTargetItem(row: Record<string, unknown>) {
   };
 }
 
-function getTopTargetRunDetail(runId: string, limit = 100, offset = 0, options: { hasOutreachDraft?: boolean } = {}) {
+function topTargetBandSqlClause(band: string | undefined, scoreExpr = "sfa.score") {
+  if (band === "high") return `AND ${scoreExpr} >= 75`;
+  if (band === "medium") return `AND ${scoreExpr} >= 50 AND ${scoreExpr} < 75`;
+  if (band === "low") return `AND ${scoreExpr} < 50`;
+  return "";
+}
+
+function getTopTargetRunDetail(runId: string, limit = 100, offset = 0, options: { hasOutreachDraft?: boolean; band?: string } = {}) {
   const run = db.query("SELECT * FROM target_list_runs WHERE id = ?1").get(runId) as Record<string, unknown> | null;
   if (!run) return null;
   const safeLimit = Math.max(1, Math.min(500, Math.floor(limit)));
   const safeOffset = Math.max(0, Math.floor(offset));
-  const filters = options.hasOutreachDraft
+  const band = normalizeTopTargetBand(options.band);
+  const draftFilter = options.hasOutreachDraft
     ? "AND EXISTS (SELECT 1 FROM outreach_drafts od WHERE od.company_id = tli.company_id)"
     : "";
+  const filters = `${draftFilter} ${topTargetBandSqlClause(band)}`;
+  const bandRow = db.query(`
+    SELECT
+      SUM(CASE WHEN sfa.score >= 75 THEN 1 ELSE 0 END) AS high,
+      SUM(CASE WHEN sfa.score >= 50 AND sfa.score < 75 THEN 1 ELSE 0 END) AS medium,
+      SUM(CASE WHEN sfa.score < 50 THEN 1 ELSE 0 END) AS low
+    FROM target_list_items tli
+    JOIN service_fit_assessments sfa ON sfa.id = tli.service_fit_assessment_id
+    WHERE tli.target_list_run_id = ?1
+  `).get(runId) as { high: number; medium: number; low: number } | null;
   const total = db.query(`
     SELECT COUNT(*) AS count
     FROM target_list_items tli
+    LEFT JOIN service_fit_assessments sfa ON sfa.id = tli.service_fit_assessment_id
     WHERE tli.target_list_run_id = ?1
       ${filters}
   `).get(runId) as { count: number } | null;
   const items = db.query(`
     SELECT
       tli.*,
+      sfa.score AS assessment_score,
+      sfa.band AS assessment_band,
       c.name,
       c.location,
       c.industry,
@@ -7506,6 +7645,7 @@ function getTopTargetRunDetail(runId: string, limit = 100, offset = 0, options: 
       c.enrichment_status,
       (SELECT COUNT(*) FROM outreach_drafts od WHERE od.company_id = tli.company_id) AS outreach_draft_count
     FROM target_list_items tli
+    LEFT JOIN service_fit_assessments sfa ON sfa.id = tli.service_fit_assessment_id
     JOIN companies c ON c.id = tli.company_id
     WHERE tli.target_list_run_id = ?1
       ${filters}
@@ -7513,7 +7653,19 @@ function getTopTargetRunDetail(runId: string, limit = 100, offset = 0, options: 
     LIMIT ?2
     OFFSET ?3
   `).all(runId, safeLimit, safeOffset) as Record<string, unknown>[];
-  return { run: mapTopTargetRun(run), items: items.map(mapTopTargetItem), total: Number(total?.count ?? 0), limit: safeLimit, offset: safeOffset };
+  return {
+    run: mapTopTargetRun(run),
+    items: items.map(mapTopTargetItem),
+    total: Number(total?.count ?? 0),
+    limit: safeLimit,
+    offset: safeOffset,
+    band,
+    bandCounts: {
+      high: Number(bandRow?.high ?? 0),
+      medium: Number(bandRow?.medium ?? 0),
+      low: Number(bandRow?.low ?? 0),
+    },
+  };
 }
 
 function latestTopTargetRunId() {
@@ -10458,13 +10610,10 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     if (!session) return json({ error: "unauthorized" }, 401);
     const { limit, offset } = pagingFromParams(url.searchParams);
     const hasOutreachDraft = ["1", "true", "yes"].includes(String(url.searchParams.get("hasOutreachDraft") || "").toLowerCase());
+    const band = normalizeTopTargetBand(url.searchParams.get("band"));
     const baseDetail = getOrBuildTopTargetDetail(limit, 0);
     const rebuilt = Boolean(baseDetail.rebuilt);
-    const detail = hasOutreachDraft
-      ? getTopTargetRunDetail(baseDetail.run.id, limit, offset, { hasOutreachDraft })!
-      : offset === 0
-        ? baseDetail
-        : getTopTargetRunDetail(baseDetail.run.id, limit, offset)!;
+    const detail = getTopTargetRunDetail(baseDetail.run.id, limit, offset, { hasOutreachDraft, band })!;
     return json({
       targetListRunId: detail.run.id,
       source: "top_targets",
@@ -10475,6 +10624,8 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
       returned: detail.items.length,
       limit: detail.limit ?? limit,
       offset: detail.offset ?? offset,
+      band: detail.band,
+      bandCounts: detail.bandCounts,
     });
   }
 
@@ -10497,6 +10648,12 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
       rebuilt: true,
       run: detail.run,
       targets: detail.items,
+      total: detail.total,
+      returned: detail.items.length,
+      limit: detail.limit,
+      offset: detail.offset,
+      band: detail.band,
+      bandCounts: detail.bandCounts,
     }, 201);
   }
 
