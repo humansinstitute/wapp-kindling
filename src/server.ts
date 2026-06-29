@@ -4072,8 +4072,38 @@ function buildCompanyFilterQuery(filters: URLSearchParams | null = null) {
   }
   if (filters?.get("hasWebsite") === "yes") clauses.push("website IS NOT NULL AND website != ''");
   if (filters?.get("hasWebsite") === "no") clauses.push("(website IS NULL OR website = '')");
+  // Fit band, derived from a company's BEST service-fit assessment score.
+  // "not_scored" = no assessment row at all.
+  const band = String(filters?.get("band") || "").toLowerCase();
+  const maxScoreExpr = "(SELECT MAX(sfa.score) FROM service_fit_assessments sfa WHERE sfa.company_id = companies.id)";
+  if (band === "high") clauses.push(`${maxScoreExpr} >= 75`);
+  else if (band === "medium") clauses.push(`${maxScoreExpr} >= 50 AND ${maxScoreExpr} < 75`);
+  else if (band === "low") clauses.push(`${maxScoreExpr} IS NOT NULL AND ${maxScoreExpr} < 50`);
+  else if (band === "not_scored" || band === "unscored") clauses.push(`${maxScoreExpr} IS NULL`);
   const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
   return { where, values };
+}
+
+function companyBandCounts() {
+  const row = db.query(`
+    SELECT
+      SUM(CASE WHEN m.maxscore >= 75 THEN 1 ELSE 0 END) AS high,
+      SUM(CASE WHEN m.maxscore >= 50 AND m.maxscore < 75 THEN 1 ELSE 0 END) AS medium,
+      SUM(CASE WHEN m.maxscore IS NOT NULL AND m.maxscore < 50 THEN 1 ELSE 0 END) AS low,
+      SUM(CASE WHEN m.maxscore IS NULL THEN 1 ELSE 0 END) AS not_scored
+    FROM companies c
+    LEFT JOIN (
+      SELECT company_id, MAX(score) AS maxscore
+      FROM service_fit_assessments
+      GROUP BY company_id
+    ) m ON m.company_id = c.id
+  `).get() as { high: number; medium: number; low: number; not_scored: number } | null;
+  return {
+    high: Number(row?.high ?? 0),
+    medium: Number(row?.medium ?? 0),
+    low: Number(row?.low ?? 0),
+    notScored: Number(row?.not_scored ?? 0),
+  };
 }
 
 function countCompanies(filters: URLSearchParams | null = null) {
@@ -5336,8 +5366,24 @@ function bandScoreClause(band: string | undefined, scoreExpr = "tli.score"): str
   return "";
 }
 
+function mapDecisionMaker(person: Record<string, unknown>) {
+  return {
+    name: String(person.name ?? "").trim(),
+    title: String(person.title ?? person.role ?? "").trim(),
+    phone: String(person.phone ?? person.mobile ?? "").trim(),
+    email: String(person.email ?? "").trim(),
+    linkedinUrl: String(person.linkedinUrl ?? person.linkedin ?? "").trim(),
+    sourceUrl: String(person.sourceUrl ?? person.source_url ?? "").trim(),
+    notes: String(person.notes ?? "").trim(),
+  };
+}
+
 function mapTopTargetItem(row: Record<string, unknown>) {
   const outreachDraftCount = Number(row.outreach_draft_count ?? 0);
+  const companyProfile = row.profile_json ? jsonParse<Record<string, unknown>>(row.profile_json, {}) : {};
+  const decisionMakers = Array.isArray(companyProfile.decisionMakers)
+    ? (companyProfile.decisionMakers as Record<string, unknown>[]).map(mapDecisionMaker).filter((person) => person.name)
+    : [];
   return {
     id: String(row.id),
     targetListRunId: String(row.target_list_run_id),
@@ -5366,6 +5412,7 @@ function mapTopTargetItem(row: Record<string, unknown>) {
     scoreJson: jsonParse<Record<string, unknown>>(row.score_json, {}),
     hasOutreachDraft: outreachDraftCount > 0,
     outreachDraftCount,
+    decisionMakers,
     createdAt: Number(row.created_at ?? 0),
     company: row.name ? {
       id: String(row.company_id),
@@ -5375,11 +5422,12 @@ function mapTopTargetItem(row: Record<string, unknown>) {
       website: String(row.website ?? ""),
       dataRing: normalizeCompanyDataRing(row.data_ring),
       enrichmentStatus: normalizeCompanyExecutionStatus(row.enrichment_status),
+      decisionMakers,
     } : undefined,
   };
 }
 
-function getTopTargetRunDetail(runId: string, limit = 100, offset = 0, options: { hasOutreachDraft?: boolean; band?: string } = {}) {
+function getTopTargetRunDetail(runId: string, limit = 100, offset = 0, options: { hasOutreachDraft?: boolean; band?: string; excludeOutreach?: boolean } = {}) {
   const run = db.query("SELECT * FROM target_list_runs WHERE id = ?1").get(runId) as Record<string, unknown> | null;
   if (!run) return null;
   const safeLimit = Math.max(1, Math.min(500, Math.floor(limit)));
@@ -5387,9 +5435,13 @@ function getTopTargetRunDetail(runId: string, limit = 100, offset = 0, options: 
   const draftFilter = options.hasOutreachDraft
     ? "AND EXISTS (SELECT 1 FROM outreach_drafts od WHERE od.company_id = tli.company_id)"
     : "";
+  // The On Deck call list hides companies already acted on (sent/dismissed).
+  const outreachFilter = options.excludeOutreach
+    ? "AND NOT EXISTS (SELECT 1 FROM outreach_results r WHERE r.company_id = tli.company_id)"
+    : "";
   // Band is derived from the service-fit assessment score (0-100), not the
   // composite ranking score on target_list_items.
-  const filters = `${draftFilter} ${bandScoreClause(options.band, "sfa.score")}`;
+  const filters = `${draftFilter} ${outreachFilter} ${bandScoreClause(options.band, "sfa.score")}`;
   // Per-band counts over the whole run (ignore the draft sub-filter so tab
   // labels stay stable as the draft toggle changes).
   const bandRow = db.query(`
@@ -5419,6 +5471,7 @@ function getTopTargetRunDetail(runId: string, limit = 100, offset = 0, options: 
       c.website,
       c.data_ring,
       c.enrichment_status,
+      c.profile_json,
       (SELECT COUNT(*) FROM outreach_drafts od WHERE od.company_id = tli.company_id) AS outreach_draft_count
     FROM target_list_items tli
     JOIN service_fit_assessments sfa ON sfa.id = tli.service_fit_assessment_id
@@ -5452,6 +5505,161 @@ function latestTopTargetRunId() {
     LIMIT 1
   `).get() as Record<string, unknown> | null;
   return run ? String(run.id) : null;
+}
+
+// ---- Outreach result tracking --------------------------------------------
+
+// Waiting rows older than this with no response surface under "No Response".
+const OUTREACH_NO_RESPONSE_MS = 7 * 24 * 60 * 60 * 1000;
+
+const OUTREACH_REASON_CATEGORIES = [
+  "not_appropriate", // dismissed from call list — not worth contacting
+  "poor_record",     // record quality too low — candidate to re-queue
+  "poor_feedback",   // negative feedback after we reached out
+  "said_no",         // they declined
+  "no_response",     // never replied
+  "other",
+] as const;
+
+function normalizeReasonCategory(value: unknown): string {
+  const v = String(value ?? "").trim().toLowerCase();
+  return (OUTREACH_REASON_CATEGORIES as readonly string[]).includes(v) ? v : "other";
+}
+
+// Best fit band/score for a company, used to tag the outreach record so the
+// Results view can group/filter by fit without re-joining assessments.
+function companyFit(companyId: string): { band: string; score: number } {
+  const row = db.query(
+    "SELECT MAX(score) AS score FROM service_fit_assessments WHERE company_id = ?1",
+  ).get(companyId) as { score: number | null } | null;
+  const score = row?.score == null ? 0 : Number(row.score);
+  return { band: row?.score == null ? "unscored" : scoreBand(score), score };
+}
+
+function mapOutreachResult(row: Record<string, unknown>) {
+  const state = String(row.state ?? "");
+  const outreachAt = row.outreach_at == null ? null : Number(row.outreach_at);
+  // Derive the No-Response view: waiting + aged past the SLA window.
+  const aged = state === "waiting" && outreachAt != null && Date.now() - outreachAt > OUTREACH_NO_RESPONSE_MS;
+  const displayState = aged ? "no_response" : state;
+  return {
+    id: String(row.id),
+    companyId: String(row.company_id),
+    state,
+    displayState,
+    channel: String(row.channel ?? ""),
+    outreachAt,
+    responseAt: row.response_at == null ? null : Number(row.response_at),
+    outcome: String(row.outcome ?? ""),
+    reason: String(row.reason ?? ""),
+    reasonCategory: String(row.reason_category ?? ""),
+    dismissedFrom: String(row.dismissed_from ?? ""),
+    fitBand: String(row.fit_band ?? ""),
+    fitScore: row.fit_score == null ? null : Number(row.fit_score),
+    createdAt: Number(row.created_at ?? 0),
+    updatedAt: Number(row.updated_at ?? 0),
+    company: row.name ? {
+      id: String(row.company_id),
+      name: String(row.name),
+      location: String(row.location ?? ""),
+      industry: String(row.industry ?? ""),
+      website: String(row.website ?? ""),
+    } : undefined,
+  };
+}
+
+function upsertOutreachResult(companyId: string, patch: Record<string, unknown>) {
+  const now = Date.now();
+  const existing = db.query("SELECT * FROM outreach_results WHERE company_id = ?1").get(companyId) as Record<string, unknown> | null;
+  const fit = companyFit(companyId);
+  const merged = {
+    state: String(patch.state ?? existing?.state ?? "waiting"),
+    channel: patch.channel ?? existing?.channel ?? null,
+    outreach_at: patch.outreach_at ?? existing?.outreach_at ?? null,
+    response_at: patch.response_at ?? existing?.response_at ?? null,
+    outcome: patch.outcome ?? existing?.outcome ?? null,
+    reason: patch.reason ?? existing?.reason ?? null,
+    reason_category: patch.reason_category ?? existing?.reason_category ?? null,
+    dismissed_from: patch.dismissed_from ?? existing?.dismissed_from ?? null,
+    fit_band: existing?.fit_band ?? fit.band,
+    fit_score: existing?.fit_score ?? fit.score,
+  };
+  if (existing) {
+    db.query(`
+      UPDATE outreach_results
+      SET state = ?2, channel = ?3, outreach_at = ?4, response_at = ?5, outcome = ?6,
+          reason = ?7, reason_category = ?8, dismissed_from = ?9, fit_band = ?10, fit_score = ?11, updated_at = ?12
+      WHERE company_id = ?1
+    `).run(companyId, merged.state, merged.channel, merged.outreach_at, merged.response_at, merged.outcome,
+      merged.reason, merged.reason_category, merged.dismissed_from, merged.fit_band, merged.fit_score, now);
+  } else {
+    db.query(`
+      INSERT INTO outreach_results (id, company_id, state, channel, outreach_at, response_at, outcome, reason, reason_category, dismissed_from, fit_band, fit_score, created_at, updated_at)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)
+    `).run(crypto.randomUUID(), companyId, merged.state, merged.channel, merged.outreach_at, merged.response_at, merged.outcome,
+      merged.reason, merged.reason_category, merged.dismissed_from, merged.fit_band, merged.fit_score, now);
+  }
+  return db.query(`
+    SELECT r.*, c.name, c.location, c.industry, c.website
+    FROM outreach_results r JOIN companies c ON c.id = r.company_id
+    WHERE r.company_id = ?1
+  `).get(companyId) as Record<string, unknown>;
+}
+
+function outreachResultCounts() {
+  const rows = db.query("SELECT state, outreach_at FROM outreach_results").all() as Record<string, unknown>[];
+  const counts = { waiting: 0, no_response: 0, meeting: 0, rejected: 0 };
+  const cutoff = Date.now() - OUTREACH_NO_RESPONSE_MS;
+  for (const row of rows) {
+    const state = String(row.state);
+    if (state === "waiting") {
+      if (row.outreach_at != null && Number(row.outreach_at) < cutoff) counts.no_response += 1;
+      else counts.waiting += 1;
+    } else if (state === "meeting") counts.meeting += 1;
+    else if (state === "rejected") counts.rejected += 1;
+  }
+  return counts;
+}
+
+function listOutreachResults(params: URLSearchParams) {
+  const tab = String(params.get("tab") || "waiting").toLowerCase();
+  const q = String(params.get("q") || "").trim().toLowerCase();
+  const { limit, offset } = pagingFromParams(params, { limit: 25, max: 100 });
+  const cutoff = Date.now() - OUTREACH_NO_RESPONSE_MS;
+  const clauses: string[] = [];
+  const values: unknown[] = [];
+  if (tab === "waiting") {
+    clauses.push("r.state = 'waiting' AND (r.outreach_at IS NULL OR r.outreach_at >= ?" + (values.push(cutoff)) + ")");
+  } else if (tab === "no_response") {
+    clauses.push("r.state = 'waiting' AND r.outreach_at IS NOT NULL AND r.outreach_at < ?" + (values.push(cutoff)));
+  } else if (tab === "meeting") {
+    clauses.push("r.state = 'meeting'");
+  } else if (tab === "rejected") {
+    clauses.push("r.state = 'rejected'");
+  }
+  if (q) {
+    const p1 = values.push(`%${q}%`);
+    const p2 = values.push(`%${q}%`);
+    clauses.push(`(lower(c.name) LIKE ?${p1} OR lower(r.reason) LIKE ?${p2})`);
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  const total = db.query(`SELECT COUNT(*) AS count FROM outreach_results r JOIN companies c ON c.id = r.company_id ${where}`).get(...values) as { count: number } | null;
+  const rows = db.query(`
+    SELECT r.*, c.name, c.location, c.industry, c.website
+    FROM outreach_results r JOIN companies c ON c.id = r.company_id
+    ${where}
+    ORDER BY COALESCE(r.response_at, r.outreach_at, r.updated_at) DESC
+    LIMIT ?${values.length + 1} OFFSET ?${values.length + 2}
+  `).all(...values, limit, offset) as Record<string, unknown>[];
+  return {
+    tab,
+    items: rows.map(mapOutreachResult),
+    total: Number(total?.count ?? 0),
+    returned: rows.length,
+    limit,
+    offset,
+    counts: outreachResultCounts(),
+  };
 }
 
 function runTopTargetAggregation(input: { reason?: string; limit?: number | null; createdBy?: string } = {}) {
@@ -6086,6 +6294,17 @@ function persistCompanyEnrichment(input: {
     ...(gaps.length ? { gaps } : {}),
   };
   const companyConfidence = clampConfidence(company?.confidence, 0.75);
+  // Park companies that still have no website after enrichment. Gabe's rule: a
+  // business with no website is not sufficiently enriched for this campaign.
+  // Parking (not deleting) keeps them out of the active pool, enrichment and
+  // scoring selectors (all of which skip data_ring = 'parked') while remaining
+  // queryable so we can revisit them later.
+  const effectiveWebsite = String(company?.website ?? "").trim() || String(existing?.website ?? "").trim();
+  if (!effectiveWebsite) profile.parkedReason = "no_website";
+  else if ("parkedReason" in profile && profile.parkedReason === "no_website") delete profile.parkedReason;
+  const enrichedDataRing = effectiveWebsite
+    ? normalizeCompanyDataRing(company?.dataRing ?? "enhanced")
+    : "parked";
   db.query(`
     UPDATE companies
     SET website = COALESCE(NULLIF(?1, ''), website),
@@ -6097,7 +6316,7 @@ function persistCompanyEnrichment(input: {
     WHERE id = ?7
   `).run(
     String(company?.website ?? ""),
-    normalizeCompanyDataRing(company?.dataRing ?? "enhanced"),
+    enrichedDataRing,
     normalizeCompanyExecutionStatus(company?.enrichmentStatus ?? "complete"),
     companyConfidence,
     JSON.stringify(profile),
@@ -7164,6 +7383,12 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     });
   }
 
+  if (pathname === "/api/kindling/profile" && req.method === "GET") {
+    const session = requireSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    return json({ profile: getCurrentMarketProfile() });
+  }
+
   if (pathname === "/api/kindling/enrichment-industries" && req.method === "GET") {
     const session = requireSession(req);
     if (!session) return json({ error: "unauthorized" }, 401);
@@ -8036,12 +8261,14 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     if (!session) return json({ error: "unauthorized" }, 401);
     const { limit, offset } = pagingFromParams(url.searchParams);
     const companies = listCompanies(url.searchParams, { limit, offset, compact: true });
+    const withBandCounts = url.searchParams.get("withBandCounts") === "1" || url.searchParams.get("withBandCounts") === "true";
     return json({
       companies,
       total: countCompanies(url.searchParams),
       returned: companies.length,
       limit,
       offset,
+      ...(withBandCounts ? { bandCounts: companyBandCounts() } : {}),
     });
   }
 
@@ -8319,6 +8546,75 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     return json(detail);
   }
 
+  if (pathname === "/api/kindling/outreach/results" && req.method === "GET") {
+    const session = requireSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    return json(listOutreachResults(url.searchParams));
+  }
+
+  // Outreach sent from the call list → company moves to the Waiting list.
+  if (pathname === "/api/kindling/outreach/sent" && req.method === "POST") {
+    const session = requireEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const body = await readJson(req);
+    const companyId = String(body.companyId ?? "").trim();
+    if (!companyId) return json({ error: "companyId is required" }, 400);
+    const company = db.query("SELECT id, name FROM companies WHERE id = ?1").get(companyId) as Record<string, unknown> | null;
+    if (!company) return json({ error: "company not found" }, 404);
+    const channel = String(body.channel ?? "email").trim() || "email";
+    const now = Date.now();
+    const row = upsertOutreachResult(companyId, { state: "waiting", channel, outreach_at: now, response_at: null, outcome: null });
+    db.query("UPDATE companies SET data_ring = 'contacted', updated_at = ?2 WHERE id = ?1").run(companyId, now);
+    recordActivity("company", companyId, `user:${session.pubkey.slice(0, 16)}`, "outreach_sent", `Outreach sent via ${channel}; awaiting response`, { channel });
+    return json({ result: mapOutreachResult(row) });
+  }
+
+  // Dismiss from the call list → Rejected, with a categorized reason.
+  if (pathname === "/api/kindling/outreach/dismiss" && req.method === "POST") {
+    const session = requireEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const body = await readJson(req);
+    const companyId = String(body.companyId ?? "").trim();
+    if (!companyId) return json({ error: "companyId is required" }, 400);
+    const company = db.query("SELECT id, name FROM companies WHERE id = ?1").get(companyId) as Record<string, unknown> | null;
+    if (!company) return json({ error: "company not found" }, 404);
+    const reason = String(body.reason ?? "").trim();
+    const reasonCategory = normalizeReasonCategory(body.reasonCategory);
+    const row = upsertOutreachResult(companyId, {
+      state: "rejected", reason, reason_category: reasonCategory, dismissed_from: "call_list",
+    });
+    recordActivity("company", companyId, `user:${session.pubkey.slice(0, 16)}`, "outreach_dismissed", `Dismissed from call list (${reasonCategory})`, { reason, reasonCategory });
+    return json({ result: mapOutreachResult(row) });
+  }
+
+  // Register a response on a Waiting/No-Response item: meeting or dropped.
+  if (pathname === "/api/kindling/outreach/respond" && req.method === "POST") {
+    const session = requireEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const body = await readJson(req);
+    const companyId = String(body.companyId ?? "").trim();
+    if (!companyId) return json({ error: "companyId is required" }, 400);
+    const company = db.query("SELECT id, name FROM companies WHERE id = ?1").get(companyId) as Record<string, unknown> | null;
+    if (!company) return json({ error: "company not found" }, 404);
+    const outcome = String(body.outcome ?? "").trim().toLowerCase();
+    const now = Date.now();
+    if (outcome === "meeting") {
+      const row = upsertOutreachResult(companyId, { state: "meeting", outcome: "meeting", response_at: now });
+      recordActivity("company", companyId, `user:${session.pubkey.slice(0, 16)}`, "outreach_meeting", "Response received: follow-up meeting", {});
+      return json({ result: mapOutreachResult(row) });
+    }
+    if (outcome === "dropped") {
+      const reason = String(body.reason ?? "").trim();
+      const reasonCategory = normalizeReasonCategory(body.reasonCategory);
+      const row = upsertOutreachResult(companyId, {
+        state: "rejected", outcome: "dropped", response_at: now, reason, reason_category: reasonCategory, dismissed_from: "waiting",
+      });
+      recordActivity("company", companyId, `user:${session.pubkey.slice(0, 16)}`, "outreach_dropped", `Dropped after outreach (${reasonCategory})`, { reason, reasonCategory });
+      return json({ result: mapOutreachResult(row) });
+    }
+    return json({ error: "outcome must be 'meeting' or 'dropped'" }, 400);
+  }
+
   if (pathname === "/api/kindling/top-targets" && req.method === "GET") {
     const session = requireSession(req);
     if (!session) return json({ error: "unauthorized" }, 401);
@@ -8326,9 +8622,10 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     const hasOutreachDraft = ["1", "true", "yes"].includes(String(url.searchParams.get("hasOutreachDraft") || "").toLowerCase());
     const bandParam = String(url.searchParams.get("band") || "").toLowerCase();
     const band = ["high", "medium", "low"].includes(bandParam) ? bandParam : "";
+    const excludeOutreach = ["1", "true", "yes"].includes(String(url.searchParams.get("excludeOutreach") || "").toLowerCase());
     const baseDetail = getOrBuildTopTargetDetail(limit, 0);
     const rebuilt = Boolean(baseDetail.rebuilt);
-    const detail = getTopTargetRunDetail(baseDetail.run.id, limit, offset, { hasOutreachDraft, band })!;
+    const detail = getTopTargetRunDetail(baseDetail.run.id, limit, offset, { hasOutreachDraft, band, excludeOutreach })!;
     return json({
       targetListRunId: detail.run.id,
       source: "top_targets",

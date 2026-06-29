@@ -35,6 +35,11 @@ const state = {
   pollTimer: null,
   route: window.location.pathname,
   profiles: loadProfileCache(),
+  focus: { items: [], index: 0, loaded: false, loading: false, error: "" },
+  servicePage: { profile: null, loaded: false, loading: false, error: "" },
+  companyListPage: { companies: [], total: 0, offset: 0, band: "high", bandCounts: null, loaded: false, loading: false, error: "" },
+  navCollapsed: localStorage.getItem("kindling_nav_collapsed") === "1",
+  userProfile: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -161,8 +166,11 @@ function setKindlingView(view) {
 
 function appRoute() {
   const pathname = normalizedPath();
-  if (["/chat", "/settings"].includes(pathname)) return pathname;
-  if (kindlingViewForPath(pathname)) return "/act";
+  if (["/chat", "/settings", "/menu"].includes(pathname)) return pathname;
+  const view = kindlingViewForPath(pathname);
+  if (view === "service") return "/service";
+  if (view === "companies") return "/companies-list";
+  if (view) return "/act";
   return "/";
 }
 
@@ -172,10 +180,37 @@ function navigate(path) {
   void renderRoute();
 }
 
+// Which sidebar nav item each content section belongs to (null = no sidebar).
+const SECTION_NAV = {
+  focus: "deck",
+  servicePage: "service",
+  companyListPage: "companies",
+  settingsPage: "settings",
+};
+
 function showOnly(id) {
-  for (const sectionId of ["login", "home", "actPage", "settingsPage", "shell"]) {
+  for (const sectionId of ["login", "focus", "servicePage", "companyListPage", "home", "actPage", "settingsPage", "shell"]) {
     $(sectionId).classList.toggle("hidden", sectionId !== id);
   }
+  const navKey = SECTION_NAV[id] || null;
+  setChrome(navKey);
+}
+
+// Persistent left drawer shown on the primary app screens. Hidden on login,
+// chat, the old menu hub, and the scored/match drilldown (which has its own chrome).
+function setChrome(activeNav) {
+  const nav = $("appNav");
+  const app = $("app");
+  if (!activeNav) {
+    nav.classList.add("hidden");
+    app.classList.remove("withNav");
+    return;
+  }
+  nav.classList.remove("hidden");
+  app.classList.add("withNav");
+  app.classList.toggle("navCollapsed", state.navCollapsed);
+  nav.classList.toggle("collapsed", state.navCollapsed);
+  renderAppNav(activeNav);
 }
 
 function stopPolling() {
@@ -205,6 +240,18 @@ async function renderRoute() {
     return;
   }
 
+  if (state.route === "/service") {
+    showOnly("servicePage");
+    await loadServicePage();
+    return;
+  }
+
+  if (state.route === "/companies-list") {
+    showOnly("companyListPage");
+    await loadCompanyListPage();
+    return;
+  }
+
   if (state.route === "/act") {
     const view = kindlingViewForPath(window.location.pathname);
     if (view) setKindlingView(view);
@@ -213,7 +260,459 @@ async function renderRoute() {
     return;
   }
 
-  showOnly("home");
+  if (state.route === "/menu") {
+    showOnly("home");
+    return;
+  }
+
+  // Default landing after login: the On Deck call list.
+  showOnly("focus");
+  await loadFocusScreen();
+}
+
+// The first screen after login: the top-ranked, not-yet-contacted companies
+// shown one at a time so the user can flick through their call list.
+let focusLoadSeq = 0;
+async function loadFocusScreen({ force = false } = {}) {
+  if (state.focus.loaded && !force) {
+    renderFocus();
+    return;
+  }
+  const seq = ++focusLoadSeq;
+  state.focus.loading = true;
+  state.focus.error = "";
+  renderFocus();
+  try {
+    // Pull a few extra so we can drop already-contacted companies and still
+    // land on a full top-10 call list.
+    const data = await api("/api/kindling/top-targets?band=high&limit=25");
+    if (seq !== focusLoadSeq) return;
+    const items = (data.targets || [])
+      .filter((target) => (target.company?.dataRing || "") !== "contacted")
+      .slice(0, 10);
+    state.focus.items = items;
+    state.focus.index = 0;
+    state.focus.loaded = true;
+    state.focus.loading = false;
+    renderFocus();
+    if (!$("appNav").classList.contains("hidden")) renderAppNav("deck");
+  } catch (err) {
+    if (seq !== focusLoadSeq) return;
+    state.focus.loading = false;
+    state.focus.error = err?.message || String(err);
+    renderFocus();
+  }
+}
+
+function focusStep(delta) {
+  const total = state.focus.items.length;
+  if (!total) return;
+  const next = state.focus.index + delta;
+  if (next < 0 || next >= total) return;
+  state.focus.index = next;
+  renderFocus();
+}
+
+function focusOpenCurrent() {
+  const item = state.focus.items[state.focus.index];
+  if (!item) return;
+  state.selectedTargetId = item.id || "";
+  state.selectedCompanyId = item.companyId || item.company?.id || "";
+  localStorage.setItem("kindling_target", state.selectedTargetId);
+  localStorage.setItem("kindling_company", state.selectedCompanyId);
+  state.companyProfileOpen = false;
+  state.companyDetail = null;
+  setKindlingView("match");
+  navigate("/match");
+}
+
+function renderWebsiteLink(website) {
+  const href = /^https?:\/\//i.test(website) ? website : `https://${website}`;
+  const label = website.replace(/^https?:\/\//i, "").replace(/\/$/, "");
+  return `<a class="focusLink" href="${escapeHtml(href)}" target="_blank" rel="noopener">${escapeHtml(label)}</a>`;
+}
+
+function renderDecisionMakers(people) {
+  if (!Array.isArray(people) || !people.length) return "";
+  return `
+    <section class="focusContacts">
+      <h3 class="focusContactsTitle">Decision makers</h3>
+      <div class="focusContactList">
+        ${people.map((person) => {
+          const name = person.name || "Unknown";
+          const title = person.title || person.role || "";
+          const phone = person.phone || person.mobile || "";
+          const email = person.email || "";
+          const initials = name.split(/\s+/).map((part) => part[0] || "").slice(0, 2).join("").toUpperCase() || "?";
+          const lines = [];
+          if (phone) lines.push(`<a class="focusContactChip" href="tel:${escapeHtml(phone.replace(/\s+/g, ""))}">📞 ${escapeHtml(phone)}</a>`);
+          if (email) lines.push(`<a class="focusContactChip" href="mailto:${escapeHtml(email)}">✉️ ${escapeHtml(email)}</a>`);
+          if (person.linkedinUrl) lines.push(`<a class="focusContactChip" href="${escapeHtml(person.linkedinUrl)}" target="_blank" rel="noopener">in</a>`);
+          return `
+            <div class="focusContact">
+              <span class="focusContactAvatar">${escapeHtml(initials)}</span>
+              <div class="focusContactBody">
+                <div class="focusContactName">${escapeHtml(name)}${title ? ` <span class="focusContactRole">${escapeHtml(title)}</span>` : ""}</div>
+                ${lines.length ? `<div class="focusContactLinks">${lines.join("")}</div>` : `<div class="focusContactLinks focusContactMuted">No direct contact captured</div>`}
+              </div>
+            </div>`;
+        }).join("")}
+      </div>
+    </section>`;
+}
+
+function renderFocusCard(target, index, total) {
+  const company = target.company || target;
+  const name = company.name || target.name || "Unknown company";
+  const offering = target.bestOffering?.name || target.bestOfferingName || "No offering selected";
+  const score = Math.round(Number(target.assessmentScore || target.score || 0));
+  const confidence = Math.round(Number(target.confidence || 0) * 100);
+  const meta = [company.industry, company.location].filter(Boolean).join(" · ");
+  const caveats = Array.isArray(target.caveats) ? target.caveats : [];
+  const reason = target.reason || target.whyNow || "No reasoning captured yet.";
+  const website = company.website || "";
+  const people = Array.isArray(target.decisionMakers) && target.decisionMakers.length
+    ? target.decisionMakers
+    : (Array.isArray(company.decisionMakers) ? company.decisionMakers : []);
+  // Number of cards still behind this one — drives how many ghost "stack"
+  // layers show (capped at 2). Purely decorative, no real card underneath.
+  const depth = Math.min(2, Math.max(0, total - index - 1));
+  return `
+    <div class="focusCardStack" data-depth="${depth}">
+    <article class="focusCard">
+      <div class="focusCardTop">
+        <span class="focusRank">#${index + 1}</span>
+        <span class="focusScore">${score} fit</span>
+        ${confidence ? `<span class="focusConfidence">confidence ${confidence}%</span>` : ""}
+      </div>
+      <h2 class="focusName">${escapeHtml(name)}</h2>
+      ${meta ? `<p class="focusMeta">${escapeHtml(meta)}</p>` : ""}
+      ${website ? `<p class="focusWebsite">${renderWebsiteLink(website)}</p>` : ""}
+      <p class="focusOffering">${escapeHtml(offering)}</p>
+      <p class="focusReason">${escapeHtml(reason)}</p>
+      ${target.nextAction ? `<p class="focusNext"><strong>Next:</strong> ${escapeHtml(target.nextAction)}</p>` : ""}
+      ${caveats.length ? `<p class="focusCaveats"><strong>Caveats:</strong> ${escapeHtml(caveats.slice(0, 2).join("; "))}</p>` : ""}
+      ${renderDecisionMakers(people)}
+      <button type="button" class="focusOpen" data-focus-action="open">Open in Scored →</button>
+    </article>
+    </div>
+    <nav class="focusNav" aria-label="Browse call list">
+      <button type="button" class="focusArrow" data-focus-action="prev" ${index <= 0 ? "disabled" : ""} aria-label="Previous company">‹</button>
+      <span class="focusPosition">${index + 1} of ${total}</span>
+      <button type="button" class="focusArrow" data-focus-action="next" ${index >= total - 1 ? "disabled" : ""} aria-label="Next company">›</button>
+    </nav>
+    <p class="focusHint">Use ← / → or the arrows to flick through your top ${total}.</p>
+  `;
+}
+
+function focusGreetingName() {
+  const name = state.userProfile?.displayName || state.userProfile?.name || "";
+  const first = name.trim().split(/\s+/)[0];
+  return first || "there";
+}
+
+function focusGreetingTime() {
+  const hour = new Date().getHours();
+  if (hour < 12) return "Morning";
+  if (hour < 18) return "Afternoon";
+  return "Evening";
+}
+
+function renderFocus() {
+  const body = $("focusBody");
+  if (!body) return;
+  const total = state.focus.items.length;
+  if (state.focus.index >= total) state.focus.index = Math.max(0, total - 1);
+
+  let lead;
+  if (state.focus.loading && !state.focus.loaded) {
+    lead = `<p class="focusLead">Loading your deck…</p>`;
+  } else if (state.focus.error) {
+    lead = `<p class="focusLead">Couldn't load the deck.</p>`;
+  } else if (!total) {
+    lead = `<p class="focusLead">No fresh cards. You're all caught up.</p>`;
+  } else {
+    lead = `<p class="focusLead"><strong>${total} fresh.</strong> Best fit first.</p>
+      <p class="focusDeckCount">Today's deck — ${state.focus.index + 1} of ${total}</p>`;
+  }
+
+  let stage;
+  if (state.focus.loading && !state.focus.loaded) {
+    stage = `<div class="focusStage"><div class="focusCard focusCardSkeleton" aria-busy="true"></div></div>`;
+  } else if (state.focus.error) {
+    stage = `<div class="focusStage">
+      <p class="focusEmpty">Couldn't load the deck: ${escapeHtml(state.focus.error)}</p>
+      <button type="button" class="focusOpen" data-focus-action="retry">Retry</button>
+    </div>`;
+  } else if (!total) {
+    stage = `<div class="focusStage"><p class="focusEmpty">No ranked companies waiting for outreach. Run scoring or check the Scored view.</p></div>`;
+  } else {
+    stage = `<div class="focusStage">${renderFocusCard(state.focus.items[state.focus.index], state.focus.index, total)}</div>`;
+  }
+
+  body.innerHTML = `
+    <header class="focusGreeting">
+      <h1>${focusGreetingTime()}, ${escapeHtml(focusGreetingName())}</h1>
+      ${lead}
+    </header>
+    ${stage}
+  `;
+}
+
+// ---- Sidebar drawer -------------------------------------------------------
+
+const APP_NAV_ITEMS = [
+  { key: "deck", label: "On Deck", route: "/", icon: "deck" },
+  { key: "service", label: "Service Offering", route: "/service-offerings", icon: "offering" },
+  { key: "companies", label: "Company List", route: "/companies", icon: "companies" },
+  { key: "settings", label: "Settings", route: "/settings", icon: "settings" },
+];
+
+const NAV_ICONS = {
+  deck: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 3 8l9 5 9-5-9-5Z"/><path d="m3 13 9 5 9-5"/></svg>',
+  offering: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h10M4 17h7"/></svg>',
+  companies: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="8" height="16" rx="1"/><rect x="13" y="9" width="8" height="11" rx="1"/></svg>',
+  settings: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.5-2.4 1a7 7 0 0 0-1.7-1L14.5 3h-5l-.3 2.5a7 7 0 0 0-1.7 1l-2.4-1-2 3.5L3 11a7 7 0 0 0 0 2l-2 1.5 2 3.5 2.4-1a7 7 0 0 0 1.7 1l.3 2.5h5l.3-2.5a7 7 0 0 0 1.7-1l2.4 1 2-3.5-2-1.5a7 7 0 0 0 .1-1Z"/></svg>',
+};
+
+function navCountFor(key) {
+  if (key === "deck") return state.focus.loaded ? state.focus.items.length : null;
+  if (key === "companies") {
+    const counts = state.companyListPage.bandCounts;
+    if (!counts) return null;
+    return Number(counts.high || 0) + Number(counts.medium || 0) + Number(counts.low || 0) + Number(counts.notScored || 0);
+  }
+  if (key === "service") {
+    const services = state.servicePage.profile?.version?.structured?.services;
+    return Array.isArray(services) ? services.length : null;
+  }
+  return null;
+}
+
+function renderAppNav(activeKey) {
+  const list = $("appNavList");
+  if (list) {
+    list.innerHTML = APP_NAV_ITEMS.map((item) => {
+      const count = navCountFor(item.key);
+      return `
+        <button type="button" class="appNavItem ${item.key === activeKey ? "active" : ""}" data-nav="${item.route}" title="${escapeHtml(item.label)}">
+          <span class="appNavIcon">${NAV_ICONS[item.icon] || ""}</span>
+          <span class="appNavLabel">${escapeHtml(item.label)}</span>
+          ${count != null ? `<span class="appNavCount">${count}</span>` : ""}
+        </button>`;
+    }).join("");
+  }
+  renderAppNavUser();
+  const collapse = $("appNavCollapse");
+  if (collapse) {
+    collapse.textContent = state.navCollapsed ? "⟩" : "⟨";
+    collapse.title = state.navCollapsed ? "Expand" : "Collapse";
+  }
+}
+
+function renderAppNavUser() {
+  const el = $("appNavUser");
+  if (!el || !state.me) return;
+  const profile = state.userProfile;
+  const name = profile?.displayName || profile?.name || "Signed in";
+  const npub = state.me.npub || "";
+  const npubShort = npub ? `${npub.slice(0, 10)}…${npub.slice(-4)}` : "";
+  const avatar = profile?.picture
+    ? `<img class="appNavAvatarImg" src="${escapeHtml(profile.picture)}" alt="" />`
+    : `<span class="appNavAvatarInitial">${escapeHtml((name[0] || "?").toUpperCase())}</span>`;
+  el.innerHTML = `
+    <div class="appNavUserInner">
+      <span class="appNavAvatar">${avatar}</span>
+      <span class="appNavUserText">
+        <span class="appNavUserName">${escapeHtml(name)}</span>
+        <span class="appNavUserNpub">${escapeHtml(npubShort)}</span>
+      </span>
+      <button type="button" class="appNavLogout" id="appNavLogout" title="Sign out" aria-label="Sign out">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/></svg>
+      </button>
+    </div>`;
+}
+
+async function ensureUserProfile() {
+  if (!state.me?.pubkey || state.userProfile) return;
+  try {
+    const profile = await resolveProfile({ pubkey: state.me.pubkey });
+    state.userProfile = profile;
+    renderAppNavUser();
+    if (!$("focus").classList.contains("hidden")) renderFocus();
+  } catch {}
+}
+
+function toggleNavCollapsed() {
+  state.navCollapsed = !state.navCollapsed;
+  localStorage.setItem("kindling_nav_collapsed", state.navCollapsed ? "1" : "0");
+  $("app").classList.toggle("navCollapsed", state.navCollapsed);
+  $("appNav").classList.toggle("collapsed", state.navCollapsed);
+  const collapse = $("appNavCollapse");
+  if (collapse) {
+    collapse.textContent = state.navCollapsed ? "⟩" : "⟨";
+    collapse.title = state.navCollapsed ? "Expand" : "Collapse";
+  }
+}
+
+// ---- Service Offering page (read-only profile) ----------------------------
+
+let servicePageSeq = 0;
+async function loadServicePage({ force = false } = {}) {
+  if (state.servicePage.loaded && !force) {
+    renderServicePage();
+    return;
+  }
+  const seq = ++servicePageSeq;
+  state.servicePage.loading = true;
+  state.servicePage.error = "";
+  renderServicePage();
+  try {
+    const data = await api("/api/kindling/profile");
+    if (seq !== servicePageSeq) return;
+    state.servicePage.profile = data.profile || null;
+    state.servicePage.loaded = true;
+    state.servicePage.loading = false;
+    renderServicePage();
+    if (!$("appNav").classList.contains("hidden")) renderAppNav("service");
+  } catch (err) {
+    if (seq !== servicePageSeq) return;
+    state.servicePage.loading = false;
+    state.servicePage.error = err?.message || String(err);
+    renderServicePage();
+  }
+}
+
+function renderServicePage() {
+  const el = $("servicePage");
+  if (!el) return;
+  let body;
+  if (state.servicePage.loading && !state.servicePage.loaded) {
+    body = `<div class="pageLoading"><span class="kindlingSpinner" aria-hidden="true"></span>Loading service offering…</div>`;
+  } else if (state.servicePage.error) {
+    body = `<p class="pageError">Couldn't load the service offering: ${escapeHtml(state.servicePage.error)}</p>
+      <button type="button" data-page-action="retry-service">Retry</button>`;
+  } else {
+    body = `<div class="kindlingPanel serviceProfilePanel">${renderServiceProfile(state.servicePage.profile?.version)}</div>`;
+  }
+  el.innerHTML = `<div class="pageInner serviceOfferingInner">
+    <header class="pageTopHeader"><h1>Service Offering</h1></header>
+    ${body}
+  </div>`;
+}
+
+// ---- Company List page (fast full list) -----------------------------------
+
+const COMPANY_PAGE_SIZE = 25;
+const COMPANY_BANDS = [
+  { key: "high", label: "High Fit", countKey: "high" },
+  { key: "medium", label: "Medium Fit", countKey: "medium" },
+  { key: "low", label: "Low Fit", countKey: "low" },
+  { key: "not_scored", label: "Not Scored", countKey: "notScored" },
+];
+
+let companyListSeq = 0;
+async function loadCompanyListPage({ force = false } = {}) {
+  if (state.companyListPage.loaded && !force) {
+    renderCompanyListPage();
+    return;
+  }
+  const seq = ++companyListSeq;
+  const page = state.companyListPage;
+  page.loading = true;
+  page.error = "";
+  renderCompanyListPage();
+  try {
+    const query = new URLSearchParams({
+      band: page.band,
+      limit: String(COMPANY_PAGE_SIZE),
+      offset: String(Math.max(0, Number(page.offset) || 0)),
+      withBandCounts: "1",
+    });
+    const data = await api(`/api/kindling/companies?${query}`);
+    if (seq !== companyListSeq) return;
+    page.companies = data.companies || [];
+    page.total = Number(data.total ?? data.companies?.length ?? 0);
+    page.offset = Number(data.offset ?? page.offset ?? 0);
+    if (data.bandCounts) page.bandCounts = data.bandCounts;
+    page.loaded = true;
+    page.loading = false;
+    renderCompanyListPage();
+    if (!$("appNav").classList.contains("hidden")) renderAppNav("companies");
+  } catch (err) {
+    if (seq !== companyListSeq) return;
+    page.loading = false;
+    page.error = err?.message || String(err);
+    renderCompanyListPage();
+  }
+}
+
+function setCompanyBand(band) {
+  if (state.companyListPage.band === band) return;
+  state.companyListPage.band = band;
+  state.companyListPage.offset = 0;
+  void loadCompanyListPage({ force: true });
+}
+
+function stepCompanyPage(delta) {
+  const page = state.companyListPage;
+  const next = Math.max(0, (Number(page.offset) || 0) + delta * COMPANY_PAGE_SIZE);
+  if (next === page.offset) return;
+  if (next >= page.total) return;
+  page.offset = next;
+  void loadCompanyListPage({ force: true });
+}
+
+function renderCompanyBandTabs() {
+  const counts = state.companyListPage.bandCounts;
+  const active = state.companyListPage.band;
+  return `<div class="scoredTabs companyBandTabs" role="tablist">
+    ${COMPANY_BANDS.map((band) => {
+      const count = counts ? Number(counts[band.countKey] || 0) : null;
+      return `<button type="button" class="scoredTab ${band.key === active ? "active" : ""}" data-company-band="${band.key}">
+        ${escapeHtml(band.label)}${count != null ? ` <span class="scoredTabCount">${count}</span>` : ""}
+      </button>`;
+    }).join("")}
+  </div>`;
+}
+
+function renderCompanyListPage() {
+  const el = $("companyListPage");
+  if (!el) return;
+  const { companies, total, offset, loading, loaded, error } = state.companyListPage;
+  let body;
+  if (loading && !loaded) {
+    body = `<div class="pageLoading"><span class="kindlingSpinner" aria-hidden="true"></span>Loading companies…</div>`;
+  } else if (error) {
+    body = `<p class="pageError">Couldn't load companies: ${escapeHtml(error)}</p>
+      <button type="button" data-page-action="retry-companies">Retry</button>`;
+  } else if (!companies.length) {
+    body = `<p class="pageEmpty">No companies in this list.</p>`;
+  } else {
+    body = `<div class="kindlingPanel companyTablePanel">${renderCompanyListRows(companies)}</div>`;
+  }
+
+  // Pager (25 per page).
+  let pager = "";
+  if (loaded && total > 0) {
+    const start = companies.length ? offset + 1 : 0;
+    const end = Math.min(total, offset + companies.length);
+    pager = `<div class="pager companyListPager">
+      <span>${start}-${end} of ${total}</span>
+      <div>
+        <button type="button" data-company-page="prev" ${offset <= 0 ? "disabled" : ""}>Previous</button>
+        <button type="button" data-company-page="next" ${offset + companies.length >= total ? "disabled" : ""}>Next</button>
+      </div>
+    </div>`;
+  }
+
+  const count = loaded ? `${total} ${total === 1 ? "company" : "companies"}` : "";
+  el.innerHTML = `<div class="pageInner companyListInner">
+    <header class="pageTopHeader"><h1>Company List</h1>${count ? `<span class="pageCount">${escapeHtml(count)}</span>` : ""}</header>
+    ${renderCompanyBandTabs()}
+    ${pager}
+    ${body}
+  </div>`;
 }
 
 async function login() {
@@ -252,6 +751,7 @@ async function bootApp() {
     state.me = await api("/api/me");
     $("npub").textContent = state.me.npub;
     syncAccessUi();
+    void ensureUserProfile();
     await renderRoute();
   } catch {
     logout();
@@ -1032,8 +1532,12 @@ function renderWorkQueue(items, canEdit) {
 
 function renderTopTargets(targets) {
   if (!targets.length) return "<p>No ranked targets yet. Run scoring and rebuild the top-target list.</p>";
+  // The "#" is the company's position in this call list (1-based within the
+  // current band + page), not its global composite rank — so removing one
+  // reindexes the rest. Offset keeps numbering continuous across pages.
+  const base = Math.max(0, Number(state.kindling?.topTargetList?.offset || 0));
   return `<div class="targetList topTargetList">
-    ${targets.map((target) => {
+    ${targets.map((target, index) => {
       const company = target.company || target;
       const name = company.name || target.name || "Unknown company";
       const offering = target.bestOffering?.name || target.bestOfferingName || "No offering selected";
@@ -1042,7 +1546,7 @@ function renderTopTargets(targets) {
       const confidence = Number(target.confidence || 0);
       return `
         <button type="button" data-open-match="${escapeHtml(target.id || "")}" data-select-company="${escapeHtml(target.companyId || company.id || "")}">
-          <span class="targetRank">#${Number(target.rank || 0)} - ${Math.round(score)}</span>
+          <span class="targetRank">#${base + index + 1} - ${Math.round(score)}</span>
           <strong>${escapeHtml(name)}</strong>
           <span>${escapeHtml(offering)} - confidence ${Math.round(confidence * 100)}%</span>
           ${target.hasOutreachDraft ? `<small>${Number(target.outreachDraftCount || 1)} outreach draft${Number(target.outreachDraftCount || 1) === 1 ? "" : "s"} ready</small>` : ""}
@@ -1483,7 +1987,7 @@ function renderCompanyFilters(enrichedOnly = false) {
       <input id="filterLocation" value="${escapeHtml(filters.location || "")}" placeholder="Location" />
       <select id="filterDataRing">
         ${option("", "Any data ring", filters.dataRing || "")}
-        ${["found", "enhanced", "ranked", "scored", "outreach_ready", "contacted"].map((value) => option(value, value, filters.dataRing || "")).join("")}
+        ${["found", "enhanced", "ranked", "scored", "outreach_ready", "contacted", "parked"].map((value) => option(value, value, filters.dataRing || "")).join("")}
       </select>
       <select id="filterDuplicate">
         ${option("", "Any duplicate status", filters.duplicateStatus || "")}
@@ -1504,6 +2008,27 @@ function renderCompanyFilters(enrichedOnly = false) {
       </div>
     </form>
   `;
+}
+
+function renderCompanyListRows(companies) {
+  if (!companies.length) return "<p>No companies yet.</p>";
+  return `<div class="companyTable companyListRows">
+    ${companies.map((company) => {
+      const meta = [company.industry, company.location].filter(Boolean).join(" · ") || "No details yet";
+      const site = company.website
+        ? `<a class="companyRowSite" href="${escapeHtml(/^https?:\/\//i.test(company.website) ? company.website : `https://${company.website}`)}" target="_blank" rel="noopener">${escapeHtml(company.website)}</a>`
+        : "";
+      return `
+        <div class="companyListRow">
+          <span class="companyRowMain">
+            <strong>${escapeHtml(company.name)}</strong>
+            <small>${escapeHtml(stageLabel(company.enrichmentStatus))}</small>
+          </span>
+          <span class="companyRowMeta">${escapeHtml(meta)}</span>
+          ${site}
+        </div>`;
+    }).join("")}
+  </div>`;
 }
 
 function renderCompanyTable(companies) {
@@ -1534,7 +2059,7 @@ function renderCompanyEditor(company, canEdit) {
     <input id="editCompanyLocation" value="${escapeHtml(company.location)}" placeholder="Location" />
     <input id="editCompanyWebsite" value="${escapeHtml(company.website)}" placeholder="Website" />
     <select id="editCompanyDataRing">
-      ${["seed", "manual", "enriched", "outreach_ready"].map((value) => `<option value="${value}" ${company.dataRing === value ? "selected" : ""}>${value}</option>`).join("")}
+      ${["found", "enhanced", "ranked", "scored", "outreach_ready", "contacted", "parked"].map((value) => `<option value="${value}" ${company.dataRing === value ? "selected" : ""}>${value}</option>`).join("")}
     </select>
     <select id="editCompanyDuplicate">
       ${["unknown", "unique", "possible_duplicate", "duplicate"].map((value) => `<option value="${value}" ${company.duplicateStatus === value ? "selected" : ""}>${value}</option>`).join("")}
@@ -2571,6 +3096,71 @@ $("homeResearchButton").addEventListener("click", () => {
 $("homeChatButton").addEventListener("click", () => navigate("/chat"));
 $("homeSettingsButton").addEventListener("click", () => navigate("/settings"));
 $("settingsHomeButton").addEventListener("click", () => navigate("/"));
+$("homeFocusButton").addEventListener("click", () => navigate("/"));
+
+// Sidebar drawer interactions
+$("appNavList").addEventListener("click", (event) => {
+  const route = event.target.closest("[data-nav]")?.dataset.nav;
+  if (route) navigate(route);
+});
+$("appNavCollapse").addEventListener("click", (event) => {
+  event.stopPropagation();
+  toggleNavCollapsed();
+});
+$("appNavUser").addEventListener("click", (event) => {
+  if (event.target.closest("#appNavLogout")) logout();
+});
+// Clicking the logo toggles the drawer; clicking empty space in a collapsed
+// drawer re-expands it (the collapse button is hidden while collapsed).
+$("appNav").addEventListener("click", (event) => {
+  if (event.target.closest("#appNavCollapse, [data-nav], #appNavUser")) return;
+  if (event.target.closest(".appNavBrand")) {
+    toggleNavCollapsed();
+  } else if (state.navCollapsed) {
+    toggleNavCollapsed();
+  }
+});
+
+// Lightweight page retry buttons
+$("servicePage").addEventListener("click", (event) => {
+  if (event.target.closest('[data-page-action="retry-service"]')) void loadServicePage({ force: true });
+});
+$("companyListPage").addEventListener("click", (event) => {
+  if (event.target.closest('[data-page-action="retry-companies"]')) {
+    void loadCompanyListPage({ force: true });
+    return;
+  }
+  const band = event.target.closest("[data-company-band]")?.dataset.companyBand;
+  if (band) {
+    setCompanyBand(band);
+    return;
+  }
+  const page = event.target.closest("[data-company-page]")?.dataset.companyPage;
+  if (page) stepCompanyPage(page === "next" ? 1 : -1);
+});
+
+$("focus").addEventListener("click", (event) => {
+  const action = event.target.closest("[data-focus-action]")?.dataset.focusAction;
+  if (!action) return;
+  if (action === "prev") focusStep(-1);
+  else if (action === "next") focusStep(1);
+  else if (action === "open") focusOpenCurrent();
+  else if (action === "retry") void loadFocusScreen({ force: true });
+});
+document.addEventListener("keydown", (event) => {
+  if ($("focus").classList.contains("hidden")) return;
+  if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
+  if (event.key === "ArrowLeft") {
+    event.preventDefault();
+    focusStep(-1);
+  } else if (event.key === "ArrowRight") {
+    event.preventDefault();
+    focusStep(1);
+  } else if (event.key === "Enter") {
+    event.preventDefault();
+    focusOpenCurrent();
+  }
+});
 $("researchDeskButton").addEventListener("click", () => {
   setKindlingView("research");
   navigate("/researchdesk");

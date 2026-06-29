@@ -508,6 +508,30 @@ CREATE TABLE IF NOT EXISTS outreach_drafts (
   FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
 );
 
+-- Outreach result tracking: one current record per company once it leaves the
+-- call list. state: 'waiting' (sent, awaiting reply) | 'meeting' (positive
+-- response) | 'rejected' (dismissed from call list, or dropped after reply).
+-- 'no_response' is a derived view of waiting rows older than the SLA window.
+CREATE TABLE IF NOT EXISTS outreach_results (
+  id TEXT PRIMARY KEY,
+  company_id TEXT NOT NULL UNIQUE,
+  state TEXT NOT NULL,
+  channel TEXT,
+  outreach_at INTEGER,
+  response_at INTEGER,
+  outcome TEXT,
+  reason TEXT,
+  reason_category TEXT,
+  dismissed_from TEXT,
+  fit_band TEXT,
+  fit_score INTEGER,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_outreach_results_state ON outreach_results(state);
+
 `);
 
 for (const migration of [

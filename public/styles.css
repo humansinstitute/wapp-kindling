@@ -227,6 +227,323 @@ button[aria-busy="true"]::after {
   background: rgba(255, 255, 255, 0.86);
 }
 
+.focus {
+  min-height: 100vh;
+  padding: 48px clamp(24px, 6vw, 72px) 48px;
+  background: linear-gradient(180deg, #fcfbf7 0%, var(--bg) 100%);
+}
+
+.focusInner {
+  display: grid;
+  gap: 28px;
+  width: 100%;
+  max-width: 980px;
+  margin: 0 auto;
+}
+
+.focusGreeting {
+  display: grid;
+  gap: 4px;
+}
+
+.focusGreeting h1 {
+  margin: 0;
+  font-size: 44px;
+  line-height: 1.02;
+}
+
+.focusLead {
+  margin: 0;
+  font-size: 22px;
+  color: var(--muted);
+}
+
+.focusLead strong {
+  color: var(--ink);
+}
+
+.focusDeckCount {
+  margin: 6px 0 0;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--muted);
+}
+
+.focusStage {
+  display: grid;
+  gap: 18px;
+  width: min(640px, 100%);
+  margin: 0 auto;
+}
+
+.focusCardSkeleton {
+  min-height: 360px;
+  background: linear-gradient(110deg, #f2efe9 8%, #faf8f4 18%, #f2efe9 33%);
+  background-size: 220% 100%;
+  animation: focusShimmer 1.2s linear infinite;
+  border: 1px solid rgba(200, 195, 184, 0.6);
+}
+
+@keyframes focusShimmer {
+  to { background-position: -220% 0; }
+}
+
+.focusCardStack {
+  position: relative;
+}
+
+/* Decorative shadowed layers behind the front card to imply a deck. */
+.focusCardStack::before,
+.focusCardStack::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 14px;
+  background: var(--panel);
+  border: 1px solid rgba(200, 195, 184, 0.7);
+  box-shadow: var(--shadow-soft);
+  transform-origin: center bottom;
+}
+
+.focusCardStack::after {
+  transform: translate(7px, -9px) rotate(2.2deg);
+  opacity: 0.92;
+  z-index: 1;
+}
+
+.focusCardStack::before {
+  transform: translate(-5px, -17px) rotate(-2.6deg);
+  opacity: 0.8;
+  z-index: 0;
+}
+
+.focusCardStack[data-depth="0"]::before,
+.focusCardStack[data-depth="0"]::after,
+.focusCardStack[data-depth="1"]::before {
+  display: none;
+}
+
+.focusCard {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  gap: 12px;
+  padding: 28px;
+  background: var(--panel);
+  border: 1px solid rgba(200, 195, 184, 0.9);
+  border-radius: 14px;
+  box-shadow: var(--shadow-soft);
+}
+
+.focusCardTop {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.focusRank {
+  font-weight: 800;
+  color: var(--accent-dark);
+}
+
+.focusScore {
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: #eef6f3;
+  color: var(--accent-dark);
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.focusConfidence {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.focusName {
+  margin: 0;
+  font-size: 34px;
+  line-height: 1.05;
+}
+
+.focusMeta {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.focusOffering {
+  margin: 0;
+  font-weight: 650;
+  color: var(--accent-2);
+}
+
+.focusWebsite {
+  margin: 0;
+  font-size: 14px;
+}
+
+.focusLink {
+  color: var(--accent);
+  font-weight: 600;
+  word-break: break-all;
+}
+
+.focusContacts {
+  margin-top: 4px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 10px;
+}
+
+.focusContactsTitle {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.focusContactList {
+  display: grid;
+  gap: 10px;
+}
+
+.focusContact {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.focusContactAvatar {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: #eef6f3;
+  color: var(--accent-dark);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.focusContactBody {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.focusContactName {
+  font-weight: 650;
+  font-size: 15px;
+}
+
+.focusContactRole {
+  font-weight: 500;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.focusContactLinks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.focusContactChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.focusContactChip:hover {
+  border-color: var(--accent);
+  color: var(--accent-dark);
+}
+
+.focusContactMuted {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.focusReason,
+.focusNext,
+.focusCaveats {
+  margin: 0;
+  color: var(--ink);
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+.focusCaveats {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.focusOpen {
+  justify-self: start;
+  margin-top: 6px;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.focusNav {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+}
+
+.focusArrow {
+  width: 52px;
+  height: 52px;
+  border-radius: 999px;
+  font-size: 26px;
+  line-height: 1;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  background: var(--panel);
+}
+
+.focusArrow:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.focusPosition {
+  min-width: 84px;
+  text-align: center;
+  color: var(--muted);
+  font-weight: 650;
+}
+
+.focusHint,
+.focusEmpty {
+  margin: 0;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.focusEmpty {
+  padding: 32px 8px;
+  font-size: 15px;
+}
+
 .actPage {
   min-height: 100vh;
   background:
@@ -1810,4 +2127,373 @@ textarea {
   border: 2px solid color-mix(in srgb, var(--muted) 35%, transparent);
   border-top-color: var(--muted);
   animation: spin 0.7s linear infinite;
+}
+
+/* ===== Persistent left drawer (app sidebar) ===== */
+:root {
+  --nav-w: 248px;
+  --nav-w-collapsed: 68px;
+}
+
+#app.withNav > section:not(.hidden) {
+  margin-left: var(--nav-w);
+  transition: margin-left 0.18s ease;
+}
+
+#app.withNav.navCollapsed > section:not(.hidden) {
+  margin-left: var(--nav-w-collapsed);
+}
+
+.appNav {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: var(--nav-w);
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 18px 14px 14px;
+  background: #fbfaf6;
+  border-right: 1px solid rgba(200, 195, 184, 0.7);
+  transition: width 0.18s ease;
+}
+
+.appNav.collapsed {
+  width: var(--nav-w-collapsed);
+  padding: 18px 10px 14px;
+}
+
+.appNavTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 6px 10px;
+}
+
+.appNavBrand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  font-weight: 760;
+  color: var(--accent-2);
+  font-size: 20px;
+  cursor: pointer;
+}
+
+.appNav.collapsed {
+  cursor: pointer;
+}
+
+.appNavMark {
+  width: 34px;
+  height: 34px;
+  flex: none;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid rgba(17, 107, 93, 0.2);
+  background: #fff8ea;
+}
+
+.appNav.collapsed .appNavBrandName,
+.appNav.collapsed .appNavLabel,
+.appNav.collapsed .appNavCount,
+.appNav.collapsed .appNavUserText {
+  display: none;
+}
+
+.appNav.collapsed .appNavTop {
+  justify-content: center;
+}
+
+.appNav.collapsed .appNavCollapse {
+  display: none;
+}
+
+.appNavCollapse {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+  font-size: 15px;
+}
+
+.appNavCollapse:hover {
+  background: rgba(23, 33, 31, 0.06);
+}
+
+.appNavList {
+  display: grid;
+  gap: 3px;
+  align-content: start;
+  flex: 1;
+}
+
+.appNavItem {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 12px;
+  text-align: left;
+  background: transparent;
+  border-color: transparent;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 600;
+  border-radius: 10px;
+}
+
+.appNav.collapsed .appNavItem {
+  justify-content: center;
+  padding: 10px;
+}
+
+.appNavItem:hover {
+  background: rgba(23, 33, 31, 0.05);
+}
+
+.appNavItem.active {
+  background: #eef6f3;
+  color: var(--accent-dark);
+}
+
+.appNavIcon {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  color: var(--accent);
+}
+
+.appNavItem.active .appNavIcon {
+  color: var(--accent-dark);
+}
+
+.appNavIcon svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.appNavLabel {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.appNavCount {
+  flex: none;
+  min-width: 22px;
+  padding: 1px 7px;
+  text-align: center;
+  border-radius: 999px;
+  background: var(--accent-2);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.appNavItem.active .appNavCount {
+  background: var(--accent);
+}
+
+.appNavUser {
+  margin-top: auto;
+  border-top: 1px solid rgba(200, 195, 184, 0.7);
+  padding-top: 12px;
+}
+
+.appNavUserInner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px;
+  border-radius: 12px;
+}
+
+.appNav.collapsed .appNavUserInner {
+  justify-content: center;
+  padding: 6px 0;
+}
+
+.appNavAvatar {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  background: var(--ink);
+  color: #fff;
+  font-weight: 700;
+}
+
+.appNavAvatarImg {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.appNavUserText {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+}
+
+.appNavUserName {
+  font-weight: 650;
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.appNavUserNpub {
+  font-size: 12px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.appNavLogout {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+}
+
+.appNavLogout:hover {
+  background: rgba(186, 85, 55, 0.12);
+  color: var(--accent-2);
+}
+
+.appNavLogout svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.appNav.collapsed .appNavLogout {
+  display: none;
+}
+
+/* ===== Lightweight pages (Service Offering, Company List) ===== */
+.servicePage,
+.companyListPage {
+  min-height: 100vh;
+  background: var(--bg);
+}
+
+.pageInner {
+  width: 100%;
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 40px clamp(24px, 5vw, 56px) 56px;
+  display: grid;
+  gap: 20px;
+  align-content: start;
+}
+
+.pageTopHeader {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+}
+
+.pageTopHeader h1 {
+  margin: 0;
+  font-size: 34px;
+}
+
+.pageCount {
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.pageLoading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 40px 8px;
+  color: var(--muted);
+}
+
+.pageError,
+.pageEmpty {
+  padding: 24px 8px;
+  color: var(--muted);
+}
+
+.companyListRows {
+  display: grid;
+  gap: 6px;
+}
+
+.companyListRow {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  background: var(--panel-soft);
+  border: 1px solid rgba(200, 195, 184, 0.7);
+  border-radius: 10px;
+}
+
+.companyRowMeta {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.companyRowSite {
+  font-size: 13px;
+  color: var(--accent);
+  word-break: break-all;
+}
+
+@media (max-width: 640px) {
+  :root { --nav-w: 220px; }
+  .appNav:not(.collapsed) { box-shadow: var(--shadow-soft); }
+}
+
+/* Company List band tabs sit in the page grid (gap handles spacing). */
+.companyBandTabs {
+  margin-bottom: 0;
+  flex-wrap: wrap;
+}
+/* Pager sits above the list — flip the divider to the bottom edge. */
+.companyListPager {
+  margin-top: 0;
+  padding-top: 0;
+  padding-bottom: 12px;
+  border-top: none;
+  border-bottom: 1px solid var(--line);
 }

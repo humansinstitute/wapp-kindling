@@ -8,6 +8,18 @@
   </head>
   <body>
     <main id="app">
+      <aside class="appNav hidden" id="appNav">
+        <div class="appNavTop">
+          <div class="appNavBrand">
+            <img class="appNavMark" src="/assets/kindling-campfire-logo.png" alt="" />
+            <span class="appNavBrandName">Kindling</span>
+          </div>
+          <button class="appNavCollapse" id="appNavCollapse" type="button" title="Collapse" aria-label="Collapse sidebar">⟨</button>
+        </div>
+        <nav class="appNavList" id="appNavList"></nav>
+        <div class="appNavUser" id="appNavUser"></div>
+      </aside>
+
       <section class="login" id="login">
         <div>
           <h1>Kindling</h1>
@@ -35,11 +47,20 @@
             <button id="homeResearchButton" type="button"><span>06</span><strong>Research Desk</strong></button>
           </div>
           <div class="homeUtilities">
+            <button id="homeFocusButton" type="button">Call list</button>
             <button id="homeSettingsButton" type="button">Settings</button>
             <button id="homeChatButton" type="button">Chat</button>
           </div>
         </div>
       </section>
+
+      <section class="focus hidden" id="focus">
+        <div class="focusInner" id="focusBody"></div>
+      </section>
+
+      <section class="servicePage hidden" id="servicePage"></section>
+
+      <section class="companyListPage hidden" id="companyListPage"></section>
 
       <section class="actPage hidden" id="actPage"></section>
 
