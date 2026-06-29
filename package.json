@@ -7,6 +7,7 @@
     "start": "bun src/server.ts",
     "dev": "bun --watch src/server.ts",
     "export:pipelines": "bun scripts/export-kindling-pipelines.ts",
+    "build:signer": "bun scripts/build-nostr-signer.ts",
     "check": "tsc --noEmit",
     "test": "bun test"
   },

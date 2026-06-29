@@ -1,3 +1,5 @@
+import { nip19, getPublicKey, finalizeEvent } from "/vendor/nostr-signer.js";
+
 const PROFILE_CACHE_KEY = "chat_wapp_profiles_v1";
 const PIPELINES_CACHE_KEY = "chat_wapp_pipelines_v1";
 const PROFILE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -33,13 +35,25 @@ const state = {
   companyCreateOpen: false,
   kindlingStatus: "Ready",
   pollTimer: null,
+  athena: { open: false, pinned: localStorage.getItem("athena_pinned") === "1" },
+  athenaPollTimer: null,
   route: window.location.pathname,
   profiles: loadProfileCache(),
-  focus: { items: [], index: 0, loaded: false, loading: false, error: "" },
+  focus: { items: [], index: 0, loaded: false, loading: false, error: "", contactPage: 0 },
+  // Shared company-details overlay, openable from the On Deck deck or the
+  // Companies list. `target` carries the scored-assessment context when we have
+  // it (On Deck); from the plain Companies list it stays null.
+  companyModal: { open: false, companyId: "", company: null, target: null, detail: null, loading: false, draftIndex: 0 },
   servicePage: { profile: null, loaded: false, loading: false, error: "" },
   companyListPage: { companies: [], total: 0, offset: 0, band: "high", bandCounts: null, loaded: false, loading: false, error: "" },
+  resultsPage: { tab: "waiting", items: [], total: 0, offset: 0, q: "", counts: null, loaded: false, loading: false, error: "" },
+  reasonModal: null,
   navCollapsed: localStorage.getItem("kindling_nav_collapsed") === "1",
   userProfile: null,
+  // In-memory Nostr signer for the current page session. Either an extension
+  // signer or an nsec signer; never persisted. Re-derived lazily for the
+  // extension, but a pasted-nsec signer is lost on reload by design.
+  signer: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -166,7 +180,7 @@ function setKindlingView(view) {
 
 function appRoute() {
   const pathname = normalizedPath();
-  if (["/chat", "/settings", "/menu"].includes(pathname)) return pathname;
+  if (["/chat", "/settings", "/menu", "/results"].includes(pathname)) return pathname;
   const view = kindlingViewForPath(pathname);
   if (view === "service") return "/service";
   if (view === "companies") return "/companies-list";
@@ -185,15 +199,18 @@ const SECTION_NAV = {
   focus: "deck",
   servicePage: "service",
   companyListPage: "companies",
+  resultsPage: "results",
+  shell: "chats",
   settingsPage: "settings",
 };
 
 function showOnly(id) {
-  for (const sectionId of ["login", "focus", "servicePage", "companyListPage", "home", "actPage", "settingsPage", "shell"]) {
+  for (const sectionId of ["login", "focus", "servicePage", "companyListPage", "resultsPage", "home", "actPage", "settingsPage", "shell"]) {
     $(sectionId).classList.toggle("hidden", sectionId !== id);
   }
   const navKey = SECTION_NAV[id] || null;
   setChrome(navKey);
+  syncAthenaLauncher();
 }
 
 // Persistent left drawer shown on the primary app screens. Hidden on login,
@@ -252,6 +269,12 @@ async function renderRoute() {
     return;
   }
 
+  if (state.route === "/results") {
+    showOnly("resultsPage");
+    await loadResultsPage();
+    return;
+  }
+
   if (state.route === "/act") {
     const view = kindlingViewForPath(window.location.pathname);
     if (view) setKindlingView(view);
@@ -284,12 +307,12 @@ async function loadFocusScreen({ force = false } = {}) {
   renderFocus();
   try {
     // Pull a few extra so we can drop already-contacted companies and still
-    // land on a full top-10 call list.
-    const data = await api("/api/kindling/top-targets?band=high&limit=25");
+    // land on a full top-21 call list.
+    const data = await api("/api/kindling/top-targets?band=high&limit=40&excludeOutreach=1");
     if (seq !== focusLoadSeq) return;
     const items = (data.targets || [])
       .filter((target) => (target.company?.dataRing || "") !== "contacted")
-      .slice(0, 10);
+      .slice(0, 21);
     state.focus.items = items;
     state.focus.index = 0;
     state.focus.loaded = true;
@@ -310,20 +333,133 @@ function focusStep(delta) {
   const next = state.focus.index + delta;
   if (next < 0 || next >= total) return;
   state.focus.index = next;
+  state.focus.contactPage = 0; // reset contact pager when the card changes
+  renderFocus();
+}
+
+// Page through a long decision-maker list within the current card (3 at a time).
+function focusContactStep(delta) {
+  state.focus.contactPage = Math.max(0, state.focus.contactPage + delta);
   renderFocus();
 }
 
 function focusOpenCurrent() {
   const item = state.focus.items[state.focus.index];
   if (!item) return;
+  const companyId = item.companyId || item.company?.id || "";
   state.selectedTargetId = item.id || "";
-  state.selectedCompanyId = item.companyId || item.company?.id || "";
+  state.selectedCompanyId = companyId;
   localStorage.setItem("kindling_target", state.selectedTargetId);
   localStorage.setItem("kindling_company", state.selectedCompanyId);
-  state.companyProfileOpen = false;
-  state.companyDetail = null;
-  setKindlingView("match");
-  navigate("/match");
+  openCompanyModal({ companyId, target: item, company: item.company || item });
+}
+
+// Open the shared company-details overlay. `target` is the scored assessment
+// (On Deck) when available; `company` is whatever summary record we already
+// have so the modal paints instantly, then we hydrate the full record in the
+// background.
+function openCompanyModal({ companyId, target = null, company = null }) {
+  state.companyModal = {
+    open: true,
+    companyId: companyId || "",
+    company: company || target?.company || null,
+    target,
+    detail: null,
+    loading: !!companyId,
+    draftIndex: 0,
+  };
+  renderCompanyModal();
+  if (companyId) void loadCompanyModalDetail(companyId);
+}
+
+async function loadCompanyModalDetail(companyId) {
+  try {
+    const detail = await api(`/api/kindling/companies/${encodeURIComponent(companyId)}`);
+    if (!state.companyModal.open || state.companyModal.companyId !== companyId) return;
+    state.companyModal.detail = detail;
+    state.companyModal.loading = false;
+    renderCompanyModal();
+  } catch (err) {
+    if (!state.companyModal.open || state.companyModal.companyId !== companyId) return;
+    state.companyModal.loading = false;
+    renderCompanyModal();
+  }
+}
+
+async function saveCompanyFeedback(button) {
+  const companyId = state.companyModal.companyId;
+  if (!companyId) return;
+  const verdict = document.querySelector("#companyFeedback [data-feedback-verdict].active")?.dataset.feedbackVerdict || "";
+  const labels = Array.from(document.querySelectorAll("#companyFeedback [data-feedback-label].active"))
+    .map((b) => b.dataset.feedbackLabel);
+  const note = (document.getElementById("feedbackNote")?.value || "").trim();
+  if (!verdict && !labels.length && !note) { alert("Add a verdict, a label, or a reason first."); return; }
+  setBusyElement(button, true, "Saving");
+  try {
+    const data = await api(`/api/kindling/companies/${encodeURIComponent(companyId)}/feedback`, {
+      method: "POST",
+      body: JSON.stringify({ verdict, labels, note }),
+    });
+    if (state.companyModal.open && state.companyModal.companyId === companyId && state.companyModal.detail) {
+      state.companyModal.detail.feedback = data.feedback;
+    }
+    setBusyElement(button, false);
+    if (button?.isConnected) {
+      button.textContent = "Saved ✓";
+      setTimeout(() => { if (button.isConnected) button.textContent = "Save feedback"; }, 1600);
+    }
+  } catch (err) {
+    setBusyElement(button, false);
+    alert(`Couldn't save feedback: ${err?.message || err}`);
+  }
+}
+
+function closeCompanyModal() {
+  if (!state.companyModal.open) return;
+  state.companyModal = { open: false, companyId: "", company: null, target: null, detail: null, loading: false, draftIndex: 0 };
+  renderCompanyModal();
+}
+
+function companyModalDraftStep(delta) {
+  const drafts = state.companyModal.detail?.drafts || [];
+  if (drafts.length < 2) return;
+  const next = Math.min(Math.max(0, state.companyModal.draftIndex + delta), drafts.length - 1);
+  if (next === state.companyModal.draftIndex) return;
+  state.companyModal.draftIndex = next;
+  renderCompanyModal();
+}
+
+function companyModalDraftCopy(button) {
+  const drafts = state.companyModal.detail?.drafts || [];
+  const draft = drafts[Math.min(Math.max(0, state.companyModal.draftIndex), drafts.length - 1)];
+  const text = draft?.pitchText || draft?.body || "";
+  if (!text) return;
+  const done = () => {
+    if (!button) return;
+    const original = button.textContent;
+    button.textContent = "Copied ✓";
+    setTimeout(() => { if (button.isConnected) button.textContent = original; }, 1500);
+  };
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).then(done).catch(() => {});
+  }
+}
+
+// "Sent email" from the call list → move the company to the Waiting list and
+// drop it from the deck.
+async function focusSentCurrent(trigger) {
+  const item = state.focus.items[state.focus.index];
+  if (!item) return;
+  const companyId = item.companyId || item.company?.id;
+  if (!companyId) return;
+  setBusyElement(trigger, true, "Saving");
+  try {
+    await api("/api/kindling/outreach/sent", { method: "POST", body: JSON.stringify({ companyId, channel: "email" }) });
+    removeFocusItem(companyId);
+  } catch (err) {
+    setBusyElement(trigger, false);
+    alert(`Couldn't save: ${err?.message || err}`);
+  }
 }
 
 function renderWebsiteLink(website) {
@@ -332,13 +468,30 @@ function renderWebsiteLink(website) {
   return `<a class="focusLink" href="${escapeHtml(href)}" target="_blank" rel="noopener">${escapeHtml(label)}</a>`;
 }
 
-function renderDecisionMakers(people) {
+function renderDecisionMakers(people, opts = {}) {
   if (!Array.isArray(people) || !people.length) return "";
+  // On the deck card we page through contacts 3 at a time so the card stays
+  // short; the details overlay passes no pager and shows everyone.
+  const pageSize = opts.pageSize || 0;
+  let shown = people;
+  let pager = "";
+  if (pageSize && people.length > pageSize) {
+    const pageCount = Math.ceil(people.length / pageSize);
+    const page = Math.min(Math.max(0, opts.page || 0), pageCount - 1);
+    const start = page * pageSize;
+    shown = people.slice(start, start + pageSize);
+    pager = `
+      <nav class="focusContactPager" aria-label="Browse contacts">
+        <button type="button" class="focusContactArrow" data-focus-action="contacts-prev" ${page <= 0 ? "disabled" : ""} aria-label="Previous contacts">‹</button>
+        <span class="focusContactPosition">${start + 1}–${start + shown.length} of ${people.length}</span>
+        <button type="button" class="focusContactArrow" data-focus-action="contacts-next" ${page >= pageCount - 1 ? "disabled" : ""} aria-label="More contacts">›</button>
+      </nav>`;
+  }
   return `
     <section class="focusContacts">
       <h3 class="focusContactsTitle">Decision makers</h3>
       <div class="focusContactList">
-        ${people.map((person) => {
+        ${shown.map((person) => {
           const name = person.name || "Unknown";
           const title = person.title || person.role || "";
           const phone = person.phone || person.mobile || "";
@@ -358,6 +511,7 @@ function renderDecisionMakers(people) {
             </div>`;
         }).join("")}
       </div>
+      ${pager}
     </section>`;
 }
 
@@ -368,7 +522,6 @@ function renderFocusCard(target, index, total) {
   const score = Math.round(Number(target.assessmentScore || target.score || 0));
   const confidence = Math.round(Number(target.confidence || 0) * 100);
   const meta = [company.industry, company.location].filter(Boolean).join(" · ");
-  const caveats = Array.isArray(target.caveats) ? target.caveats : [];
   const reason = target.reason || target.whyNow || "No reasoning captured yet.";
   const website = company.website || "";
   const people = Array.isArray(target.decisionMakers) && target.decisionMakers.length
@@ -390,10 +543,13 @@ function renderFocusCard(target, index, total) {
       ${website ? `<p class="focusWebsite">${renderWebsiteLink(website)}</p>` : ""}
       <p class="focusOffering">${escapeHtml(offering)}</p>
       <p class="focusReason">${escapeHtml(reason)}</p>
-      ${target.nextAction ? `<p class="focusNext"><strong>Next:</strong> ${escapeHtml(target.nextAction)}</p>` : ""}
-      ${caveats.length ? `<p class="focusCaveats"><strong>Caveats:</strong> ${escapeHtml(caveats.slice(0, 2).join("; "))}</p>` : ""}
-      ${renderDecisionMakers(people)}
-      <button type="button" class="focusOpen" data-focus-action="open">Open in Scored →</button>
+      ${renderDecisionMakers(people, { pageSize: 3, page: state.focus.contactPage })}
+      <div class="focusActions">
+        <button type="button" class="focusAction focusActionSent" data-focus-action="reach">Reach out →</button>
+        <button type="button" class="focusAction focusActionSnooze" data-focus-action="snooze">Snooze</button>
+        <button type="button" class="focusAction focusActionDismiss" data-focus-action="dismiss">Dismiss</button>
+        <button type="button" class="focusAction focusActionGhost" data-focus-action="details">View details</button>
+      </div>
     </article>
     </div>
     <nav class="focusNav" aria-label="Browse call list">
@@ -459,12 +615,305 @@ function renderFocus() {
   `;
 }
 
+// Keys already surfaced in dedicated sections (or internal plumbing) — skip them
+// in the generic "Enriched details" grid so we don't repeat or leak noise.
+const FOCUS_PROFILE_HIDDEN_KEYS = new Set([
+  "decisionMakers", "gaps", "parkedReason", "nextQuestions", "response",
+  "changeSummary", "services", "servicesOffered", "signals", "evidence",
+]);
+
+// Signals get a dedicated card — each one a clean stacked block (type → summary →
+// meta → source) instead of the cramped key/value columns the generic renderer
+// produced.
+function renderCompanySignals(signals, loading) {
+  if (!signals.length) return `<p class="focusDetailEmpty">${loading ? "Loading signals…" : "No signals captured yet."}</p>`;
+  return `<div class="signalList">
+    ${signals.map((signal) => {
+      const type = labelFromKey(signal.signalType || signal.type || "Signal");
+      const summary = signal.summary || signal.description || "";
+      const strength = signal.strength ? `${signal.strength} strength` : "";
+      const confidence = signal.confidence ? `${Math.round(Number(signal.confidence) * 100)}% confidence` : "";
+      const when = signal.observedDate || "";
+      const meta = [strength, confidence, when].filter(Boolean).join(" · ");
+      const url = signal.sourceUrl || signal.url || "";
+      return `
+        <div class="signalItem">
+          <div class="signalHead">
+            <span class="signalType">${escapeHtml(type)}</span>
+            ${signal.adaptRelevance ? `<span class="signalRelevance">${escapeHtml(signal.adaptRelevance)}</span>` : ""}
+          </div>
+          ${summary ? `<p class="signalSummary">${escapeHtml(summary)}</p>` : ""}
+          <div class="signalFoot">
+            ${meta ? `<span class="signalMeta">${escapeHtml(meta)}</span>` : ""}
+            ${url ? `<a class="signalSource" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">Source ↗</a>` : ""}
+          </div>
+        </div>`;
+    }).join("")}
+  </div>`;
+}
+
+// Issue labels a reviewer can flag on a company. Mirrors COMPANY_ISSUE_LABELS on
+// the server; the detail payload also carries the authoritative list.
+const COMPANY_ISSUE_LABELS = [
+  { key: "wrong_fit", label: "Wrong fit" },
+  { key: "missing_decision_maker", label: "Missing decision maker" },
+  { key: "duplicate", label: "Duplicate" },
+  { key: "bad_website", label: "Bad website / no website" },
+  { key: "bad_outreach", label: "Bad outreach" },
+  { key: "wrong_industry", label: "Wrong industry" },
+];
+
+// Reviewer feedback card: a good/bad verdict, issue-label chips, and a reason.
+// Toggles are handled with direct class flips (no re-render) so the note keeps
+// focus while editing; the current selection is read from the DOM on save.
+function renderCompanyFeedback(detail) {
+  const feedback = detail?.feedback || null;
+  const labels = (detail?.issueLabels && detail.issueLabels.length) ? detail.issueLabels : COMPANY_ISSUE_LABELS;
+  const selectedLabels = new Set(feedback?.labels || []);
+  const verdict = feedback?.verdict || "";
+  const canEdit = Boolean(state.me?.access?.edit);
+  const savedNote = feedback?.updatedAt
+    ? `<span class="feedbackSaved">Saved ${escapeHtml(shortDate(feedback.updatedAt))}</span>`
+    : "";
+  return `
+    <section class="focusDetailCard companyFeedbackCard" id="companyFeedback">
+      <h3>Reviewer feedback ${savedNote}</h3>
+      <div class="feedbackVerdicts">
+        <button type="button" class="feedbackVerdictBtn feedbackVerdictGood ${verdict === "good" ? "active" : ""}" data-feedback-verdict="good" ${canEdit ? "" : "disabled"}>👍 Good result</button>
+        <button type="button" class="feedbackVerdictBtn feedbackVerdictBad ${verdict === "bad" ? "active" : ""}" data-feedback-verdict="bad" ${canEdit ? "" : "disabled"}>👎 Bad result</button>
+      </div>
+      <p class="feedbackHint">Flag any issues</p>
+      <div class="feedbackLabels">
+        ${labels.map((l) => `<button type="button" class="feedbackChip ${selectedLabels.has(l.key) ? "active" : ""}" data-feedback-label="${escapeHtml(l.key)}" ${canEdit ? "" : "disabled"}>${escapeHtml(l.label)}</button>`).join("")}
+      </div>
+      <textarea class="feedbackNote" id="feedbackNote" rows="2" placeholder="Reason (optional)" ${canEdit ? "" : "disabled"}>${escapeHtml(feedback?.note || "")}</textarea>
+      ${canEdit ? `<div class="feedbackActions">
+        <button type="button" class="feedbackSave" data-feedback-save>Save feedback</button>
+      </div>` : ""}
+    </section>`;
+}
+
+// Render the shared company-details overlay into its global mount node so it can
+// float above any screen (On Deck deck, Companies list, …).
+function renderCompanyModal() {
+  const root = $("companyModalRoot");
+  if (!root) return;
+  const modal = state.companyModal;
+  if (!modal.open) { root.innerHTML = ""; return; }
+
+  const detail = modal.detail;
+  const target = modal.target;
+  const company = detail?.company || modal.company || target?.company || {};
+  const name = company.name || target?.name || "Unknown company";
+  const profile = company.profile || {};
+  const sources = detail?.sources || [];
+  const drafts = detail?.drafts || [];
+  const signals = Array.isArray(detail?.signals) ? detail.signals
+    : (Array.isArray(profile.signals) ? profile.signals : []);
+  const loading = modal.loading;
+
+  const hasAssessment = !!target;
+  const offering = target?.bestOffering?.name || target?.bestOfferingName || "";
+  const score = Math.round(Number(target?.assessmentScore || target?.score || 0));
+  // Best fit score to surface in the header — from the deck assessment when we
+  // have one, else the company's best service-fit assessment (detail payload),
+  // else the score carried on the list-row record.
+  const assessments = Array.isArray(detail?.serviceFitAssessments) ? detail.serviceFitAssessments : [];
+  const bestAssessmentScore = assessments.reduce((max, a) => Math.max(max, Number(a.score || 0)), 0);
+  const headerFitRaw = hasAssessment
+    ? score
+    : (bestAssessmentScore || (modal.company?.fitScore != null ? Number(modal.company.fitScore) : 0));
+  const headerFit = headerFitRaw ? Math.round(headerFitRaw) : null;
+  const headerFitBand = headerFit == null ? "" : (headerFit >= 75 ? "high" : headerFit >= 50 ? "medium" : "low");
+  const confidence = Math.round(Number(target?.confidence ?? company.confidence ?? 0) * 100);
+  const reason = target?.reason || target?.whyNow || "No reasoning captured yet.";
+  const caveats = Array.isArray(target?.caveats) ? target.caveats : [];
+  const people = Array.isArray(target?.decisionMakers) && target.decisionMakers.length
+    ? target.decisionMakers
+    : (Array.isArray(company.decisionMakers) ? company.decisionMakers : []);
+  const services = Array.isArray(profile.services) ? profile.services
+    : (Array.isArray(profile.servicesOffered) ? profile.servicesOffered : []);
+
+  const eyebrow = [stageLabel(company.enrichmentStatus), hasAssessment ? `${score} fit` : "", confidence ? `${confidence}% confidence` : ""]
+    .filter(Boolean).join(" · ");
+
+  const whyCard = hasAssessment ? `
+    <section class="focusDetailCard">
+      <h3>Why this fit</h3>
+      <p class="focusReason">${escapeHtml(reason)}</p>
+      ${target.nextAction ? `<p class="focusNext"><strong>Next:</strong> ${escapeHtml(target.nextAction)}</p>` : ""}
+      ${caveats.length ? `<p class="focusCaveats"><strong>Caveats:</strong> ${escapeHtml(caveats.join("; "))}</p>` : ""}
+      <dl class="focusDetailFacts">
+        ${offering ? `<div><dt>Best offering</dt><dd>${escapeHtml(offering)}</dd></div>` : ""}
+        <div><dt>Fit score</dt><dd>${score} / 100</dd></div>
+        ${confidence ? `<div><dt>Confidence</dt><dd>${confidence}%</dd></div>` : ""}
+      </dl>
+    </section>` : `
+    <section class="focusDetailCard">
+      <h3>Company</h3>
+      <dl class="focusDetailFacts">
+        <div><dt>Industry</dt><dd>${escapeHtml(company.industry || "Unknown")}</dd></div>
+        <div><dt>Location</dt><dd>${escapeHtml(company.location || "Unknown")}</dd></div>
+        <div><dt>Stage</dt><dd>${escapeHtml(stageLabel(company.enrichmentStatus))}</dd></div>
+        ${confidence ? `<div><dt>Confidence</dt><dd>${confidence}%</dd></div>` : ""}
+      </dl>
+    </section>`;
+
+  root.innerHTML = `
+    <div class="modalBackdrop focusDetailBackdrop" data-modal-action="close">
+      <section class="modalPanel focusDetailPanel" role="dialog" aria-modal="true" aria-label="Company details" data-modal-panel>
+        <header class="focusDetailHeader">
+          <div class="focusDetailHeading">
+            <div class="eyebrow">${escapeHtml(eyebrow)}</div>
+            <h2>${escapeHtml(name)}</h2>
+            <p class="focusDetailMeta">${escapeHtml([company.industry, company.location].filter(Boolean).join(" · ") || "")}
+              ${company.website ? ` · ${renderWebsiteLink(company.website)}` : ""}</p>
+          </div>
+          <div class="focusDetailHeaderRight">
+            ${headerFit != null ? `<span class="focusDetailFit resultFit resultFit-${headerFitBand}">${headerFit} fit</span>` : ""}
+            <button type="button" class="focusDetailClose" data-modal-action="close" aria-label="Close">✕</button>
+          </div>
+        </header>
+
+        <div class="focusDetailBody">
+          ${renderFocusDrafts(drafts, loading)}
+
+          <div class="focusDetailColumns">
+            ${whyCard}
+            <section class="focusDetailCard">
+              <h3>Decision makers</h3>
+              ${people.length ? renderDecisionMakers(people) : `<p class="focusDetailEmpty">${loading ? "Loading contacts…" : "No named contacts captured yet."}</p>`}
+            </section>
+          </div>
+
+          ${modal.companyId ? renderCompanyFeedback(detail) : ""}
+
+          ${services.length ? `
+          <section class="focusDetailCard">
+            <h3>Services offered</h3>
+            ${renderProfileValueHtml(services)}
+          </section>` : ""}
+
+          <section class="focusDetailCard">
+            <h3>Enriched details</h3>
+            ${renderFocusProfile(profile, loading)}
+          </section>
+
+          ${signals.length || loading ? `
+          <section class="focusDetailCard">
+            <h3>Signals</h3>
+            ${renderCompanySignals(signals, loading)}
+          </section>` : ""}
+
+          <section class="focusDetailCard">
+            <h3>Sources</h3>
+            <div class="sourceList">
+              ${sources.map((source) => `
+                <a href="${escapeHtml(source.url || "#")}" target="_blank" rel="noreferrer">
+                  <strong>${escapeHtml(source.title || source.sourceType || source.url || "Source")}</strong>
+                  <span>${escapeHtml(source.sourceType || "")}${source.confidence ? ` · confidence ${Number(source.confidence || 0).toFixed(2)}` : ""}</span>
+                </a>
+              `).join("") || `<p class="focusDetailEmpty">${loading ? "Loading sources…" : "No sources recorded yet."}</p>`}
+            </div>
+          </section>
+        </div>
+      </section>
+    </div>`;
+}
+
+// The draft outreach is the payoff of the whole deck — give it pride of place at
+// the top of the modal, and let the user flick through variants if there's more
+// than one.
+function renderFocusDrafts(drafts, loading) {
+  if (!drafts.length) {
+    return `
+      <section class="focusDraftCard focusDraftEmpty">
+        <div class="focusDraftLabel">✷ Draft outreach</div>
+        <p class="focusDetailEmpty">${loading ? "Loading drafts…" : "No outreach draft written yet."}</p>
+      </section>`;
+  }
+  const total = drafts.length;
+  const idx = Math.min(Math.max(0, state.companyModal.draftIndex), total - 1);
+  const draft = drafts[idx];
+  const text = draft.pitchText || draft.body || "";
+  const label = draft.variantLabel ? escapeHtml(draft.variantLabel) : "";
+  // Position + label of the current variant, e.g. "2 of 3 · Consultative".
+  const meta = total > 1
+    ? `${idx + 1} of ${total}${label ? ` · ${label}` : ""}`
+    : label;
+  return `
+    <section class="focusDraftCard">
+      <div class="focusDraftTop">
+        <div class="focusDraftLabel">✷ Draft outreach${meta ? ` <span class="focusDraftCount">${meta}</span>` : ""}</div>
+        <div class="focusDraftControls">
+          ${total > 1 ? `
+            <button type="button" class="focusDraftNav" data-modal-action="draft-prev" ${idx <= 0 ? "disabled" : ""} aria-label="Previous draft">‹</button>
+            <button type="button" class="focusDraftNav" data-modal-action="draft-next" ${idx >= total - 1 ? "disabled" : ""} aria-label="Next draft">›</button>
+          ` : ""}
+          <button type="button" class="focusDraftCopy" data-modal-action="draft-copy">Copy</button>
+        </div>
+      </div>
+      <div class="focusDraftText markdownBody" id="focusDraftText">${renderMarkdown(text) || `<span class="focusDetailEmpty">This draft is empty.</span>`}</div>
+    </section>`;
+}
+
+// Curated, human-readable rendering of the enriched profile blob — no raw JSON.
+function renderFocusProfile(profile, loading) {
+  const entries = Object.entries(profile || {})
+    .filter(([key]) => !FOCUS_PROFILE_HIDDEN_KEYS.has(key))
+    .filter(([, value]) => !isEmptyProfileValue(value));
+  if (!entries.length) return `<p class="focusDetailEmpty">${loading ? "Loading details…" : "No enriched profile captured yet."}</p>`;
+  return `<div class="focusProfileGrid">
+    ${entries.map(([key, value]) => `
+      <div class="focusProfileField">
+        <span class="focusProfileLabel">${escapeHtml(labelFromKey(key))}</span>
+        <div class="focusProfileValue">${renderProfileValueHtml(value) || "—"}</div>
+      </div>
+    `).join("")}
+  </div>`;
+}
+
+function isEmptyProfileValue(value) {
+  if (value === null || value === undefined || value === "") return true;
+  if (Array.isArray(value)) return value.length === 0;
+  if (typeof value === "object") return Object.keys(value).length === 0;
+  return false;
+}
+
+// Recursively render an arbitrary profile value as readable HTML. Arrays of
+// scalars become chips, arrays of objects become stacked sub-cards, objects
+// become labelled rows. Never falls back to JSON.stringify.
+function renderProfileValueHtml(value) {
+  if (isEmptyProfileValue(value)) return "";
+  if (Array.isArray(value)) {
+    const scalars = value.every((entry) => entry === null || typeof entry !== "object");
+    if (scalars) {
+      return `<div class="profileChips">${value.map((entry) => `<span class="profileChip">${escapeHtml(String(entry))}</span>`).join("")}</div>`;
+    }
+    return `<div class="profileSubList">${value.map((entry) => `<div class="profileSubItem">${renderProfileValueHtml(entry)}</div>`).join("")}</div>`;
+  }
+  if (typeof value === "object") {
+    const entries = Object.entries(value).filter(([, entry]) => !isEmptyProfileValue(entry));
+    if (!entries.length) return "";
+    return `<dl class="profileNested">${entries.map(([key, entry]) => `
+      <div><dt>${escapeHtml(labelFromKey(key))}</dt><dd>${renderProfileValueHtml(entry)}</dd></div>
+    `).join("")}</dl>`;
+  }
+  const text = String(value);
+  if (/^https?:\/\//i.test(text)) {
+    return `<a href="${escapeHtml(text)}" target="_blank" rel="noreferrer">${escapeHtml(text.replace(/^https?:\/\//, "").replace(/\/$/, ""))}</a>`;
+  }
+  return escapeHtml(text);
+}
+
 // ---- Sidebar drawer -------------------------------------------------------
 
 const APP_NAV_ITEMS = [
   { key: "deck", label: "On Deck", route: "/", icon: "deck" },
   { key: "service", label: "Service Offering", route: "/service-offerings", icon: "offering" },
   { key: "companies", label: "Company List", route: "/companies", icon: "companies" },
+  { key: "results", label: "Results", route: "/results", icon: "results" },
+  { key: "chats", label: "Chats", route: "/chat", icon: "chats" },
   { key: "settings", label: "Settings", route: "/settings", icon: "settings" },
 ];
 
@@ -472,6 +921,8 @@ const NAV_ICONS = {
   deck: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 3 8l9 5 9-5-9-5Z"/><path d="m3 13 9 5 9-5"/></svg>',
   offering: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h10M4 17h7"/></svg>',
   companies: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="8" height="16" rx="1"/><rect x="13" y="9" width="8" height="11" rx="1"/></svg>',
+  results: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V5"/><path d="M4 19h16"/><path d="M8 16v-5"/><path d="M13 16V8"/><path d="M18 16v-3"/></svg>',
+  chats: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.5 7.2L4 21l1.8-5.5A8 8 0 1 1 21 12Z"/></svg>',
   settings: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.5-2.4 1a7 7 0 0 0-1.7-1L14.5 3h-5l-.3 2.5a7 7 0 0 0-1.7 1l-2.4-1-2 3.5L3 11a7 7 0 0 0 0 2l-2 1.5 2 3.5 2.4-1a7 7 0 0 0 1.7 1l.3 2.5h5l.3-2.5a7 7 0 0 0 1.7-1l2.4 1 2-3.5-2-1.5a7 7 0 0 0 .1-1Z"/></svg>',
 };
 
@@ -485,6 +936,12 @@ function navCountFor(key) {
   if (key === "service") {
     const services = state.servicePage.profile?.version?.structured?.services;
     return Array.isArray(services) ? services.length : null;
+  }
+  if (key === "results") {
+    const counts = state.resultsPage.counts;
+    if (!counts) return null;
+    // Badge = things still awaiting a response (waiting + aged-out).
+    return Number(counts.waiting || 0) + Number(counts.no_response || 0);
   }
   return null;
 }
@@ -715,41 +1172,795 @@ function renderCompanyListPage() {
   </div>`;
 }
 
-async function login() {
+// ---- Results: outreach tracking -------------------------------------------
+
+const RESULTS_TABS = [
+  { key: "waiting", label: "Waiting", countKey: "waiting" },
+  { key: "no_response", label: "No Response", countKey: "no_response" },
+  { key: "meeting", label: "Meetings", countKey: "meeting" },
+  { key: "rejected", label: "Rejected", countKey: "rejected" },
+  { key: "snoozed", label: "Snoozed", countKey: "snoozed" },
+];
+
+const REASON_CATEGORY_LABELS = {
+  not_appropriate: "Not appropriate to call",
+  already_contacted: "Previously contacted (outside Kindling)",
+  poor_record: "Poor record",
+  poor_feedback: "Poor feedback after outreach",
+  said_no: "They said no",
+  no_response: "No response",
+  other: "Other",
+};
+
+const RESULTS_PAGE_SIZE = 25;
+
+function shortDate(ts) {
+  if (!ts) return "";
+  const d = new Date(Number(ts));
+  return d.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+}
+
+function daysSince(ts) {
+  if (!ts) return null;
+  return Math.floor((Date.now() - Number(ts)) / (24 * 60 * 60 * 1000));
+}
+
+let resultsSeq = 0;
+async function loadResultsPage({ force = false } = {}) {
+  if (state.resultsPage.loaded && !force) {
+    renderResultsPage();
+    return;
+  }
+  const seq = ++resultsSeq;
+  const page = state.resultsPage;
+  page.loading = true;
+  page.error = "";
+  renderResultsPage();
+  try {
+    const query = new URLSearchParams({
+      tab: page.tab,
+      limit: String(RESULTS_PAGE_SIZE),
+      offset: String(Math.max(0, Number(page.offset) || 0)),
+    });
+    if (page.q) query.set("q", page.q);
+    const data = await api(`/api/kindling/outreach/results?${query}`);
+    if (seq !== resultsSeq) return;
+    page.items = data.items || [];
+    page.total = Number(data.total ?? page.items.length ?? 0);
+    page.offset = Number(data.offset ?? page.offset ?? 0);
+    page.counts = data.counts || page.counts;
+    page.loaded = true;
+    page.loading = false;
+    renderResultsPage();
+    if (!$("appNav").classList.contains("hidden")) renderAppNav("results");
+  } catch (err) {
+    if (seq !== resultsSeq) return;
+    page.loading = false;
+    page.error = err?.message || String(err);
+    renderResultsPage();
+  }
+}
+
+function setResultsTab(tab) {
+  if (state.resultsPage.tab === tab) return;
+  state.resultsPage.tab = tab;
+  state.resultsPage.offset = 0;
+  void loadResultsPage({ force: true });
+}
+
+function stepResultsPage(delta) {
+  const page = state.resultsPage;
+  const next = Math.max(0, (Number(page.offset) || 0) + delta * RESULTS_PAGE_SIZE);
+  if (next === page.offset || next >= page.total) return;
+  page.offset = next;
+  void loadResultsPage({ force: true });
+}
+
+function renderResultsTabs() {
+  const counts = state.resultsPage.counts;
+  const active = state.resultsPage.tab;
+  return `<div class="scoredTabs resultsTabs" role="tablist">
+    ${RESULTS_TABS.map((tab) => {
+      const count = counts ? Number(counts[tab.countKey] || 0) : null;
+      return `<button type="button" class="scoredTab ${tab.key === active ? "active" : ""}" data-results-tab="${tab.key}">
+        ${escapeHtml(tab.label)}${count != null ? ` <span class="scoredTabCount">${count}</span>` : ""}
+      </button>`;
+    }).join("")}
+  </div>`;
+}
+
+function renderResultRow(item, tab) {
+  const company = item.company || {};
+  const name = company.name || "Unknown company";
+  const meta = [company.industry, company.location].filter(Boolean).join(" · ");
+  const fit = item.fitBand && item.fitBand !== "unscored"
+    ? `<span class="resultFit resultFit-${escapeHtml(item.fitBand)}">${escapeHtml(item.fitBand)} fit</span>` : "";
+
+  let timing = "";
+  let actions = "";
+  if (tab === "waiting" || tab === "no_response") {
+    const d = daysSince(item.outreachAt);
+    timing = `<span class="resultTiming">Sent ${escapeHtml(shortDate(item.outreachAt))}${d != null ? ` · ${d}d waiting` : ""}</span>`;
+    actions = `
+      <button type="button" class="resultBtn resultBtnGood" data-result-meeting="${escapeHtml(item.companyId)}">Got a meeting</button>
+      <button type="button" class="resultBtn" data-result-drop="${escapeHtml(item.companyId)}">Dropped…</button>`;
+  } else if (tab === "meeting") {
+    timing = `<span class="resultTiming">Meeting · responded ${escapeHtml(shortDate(item.responseAt))}</span>`;
+  } else if (tab === "rejected") {
+    const cat = REASON_CATEGORY_LABELS[item.reasonCategory] || item.reasonCategory || "Dismissed";
+    timing = `<span class="resultTiming">${escapeHtml(cat)}${item.dismissedFrom === "call_list" ? " · from call list" : item.dismissedFrom === "waiting" ? " · after outreach" : ""}</span>`;
+  } else if (tab === "snoozed") {
+    timing = `<span class="resultTiming">Snoozed${item.snoozedUntil ? ` until ${escapeHtml(shortDate(item.snoozedUntil))}` : ""}</span>`;
+  }
+
+  const reasonLine = (tab === "rejected" && item.reason)
+    ? `<p class="resultReason">${escapeHtml(item.reason)}</p>` : "";
+
+  // Undo always available — pulls the company out of tracking and back onto the
+  // call list. Tucked behind a ⋮ menu so it doesn't crowd each row. On the Snoozed
+  // tab it reads as "resume now" (ends the snooze).
+  const undoLabel = tab === "snoozed" ? "↩ Resume now" : "↩ Undo";
+  const menu = `
+    <div class="resultMenu">
+      <button type="button" class="resultMenuToggle" data-result-menu aria-label="More actions" aria-haspopup="true">⋮</button>
+      <div class="resultMenuList" role="menu">
+        <button type="button" class="resultMenuItem" role="menuitem" data-result-undo="${escapeHtml(item.companyId)}">${undoLabel}</button>
+      </div>
+    </div>`;
+
+  return `
+    <div class="resultRow">
+      <div class="resultRowMain">
+        <div class="resultRowHead">
+          <strong>${escapeHtml(name)}</strong>
+          ${fit}
+        </div>
+        ${meta ? `<span class="resultMeta">${escapeHtml(meta)}</span>` : ""}
+        ${timing}
+        ${reasonLine}
+      </div>
+      <div class="resultRowActions">${actions}${menu}</div>
+    </div>`;
+}
+
+function renderResultsPage() {
+  const el = $("resultsPage");
+  if (!el) return;
+  const { items, total, offset, tab, q, loading, loaded, error } = state.resultsPage;
+  let body;
+  if (loading && !loaded) {
+    body = `<div class="pageLoading"><span class="kindlingSpinner" aria-hidden="true"></span>Loading results…</div>`;
+  } else if (error) {
+    body = `<p class="pageError">Couldn't load results: ${escapeHtml(error)}</p>
+      <button type="button" data-page-action="retry-results">Retry</button>`;
+  } else if (!items.length) {
+    const empty = {
+      waiting: "Nothing waiting. Send outreach from On Deck to start tracking.",
+      no_response: "No silent threads — everyone waiting is still inside the week.",
+      meeting: "No meetings booked yet.",
+      rejected: "No dismissed or dropped companies.",
+      snoozed: "Nothing snoozed. Snooze a company from On Deck to park it for later.",
+    }[tab] || "Nothing here yet.";
+    body = `<p class="pageEmpty">${escapeHtml(empty)}</p>`;
+  } else {
+    body = `<div class="kindlingPanel resultsListPanel">${items.map((item) => renderResultRow(item, tab)).join("")}</div>`;
+  }
+
+  let pager = "";
+  if (loaded && total > RESULTS_PAGE_SIZE) {
+    const start = items.length ? offset + 1 : 0;
+    const end = Math.min(total, offset + items.length);
+    pager = `<div class="pager resultsPager">
+      <span>${start}-${end} of ${total}</span>
+      <div>
+        <button type="button" data-results-page="prev" ${offset <= 0 ? "disabled" : ""}>Previous</button>
+        <button type="button" data-results-page="next" ${offset + items.length >= total ? "disabled" : ""}>Next</button>
+      </div>
+    </div>`;
+  }
+
+  el.innerHTML = `<div class="pageInner resultsInner">
+    <header class="pageTopHeader"><h1>Results</h1><span class="pageCount">Outreach you've sent</span></header>
+    ${renderResultsTabs()}
+    <form class="resultsSearch" data-results-search>
+      <input type="search" id="resultsSearchInput" placeholder="Search company or reason…" value="${escapeHtml(q || "")}" />
+      ${q ? `<button type="button" data-results-clear>Clear</button>` : ""}
+    </form>
+    ${pager}
+    ${body}
+  </div>`;
+}
+
+// ---- Shared reason / outcome modal ----------------------------------------
+
+// config: { title, message, confirmLabel, requireReason, categories:[{value,label}], onConfirm({reason, category}) }
+function openReasonModal(config) {
+  state.reasonModal = config;
+  const root = $("reasonModalRoot");
+  if (!root) return;
+  const cats = config.categories || [];
+  root.innerHTML = `
+    <div class="reasonModalBackdrop">
+      <div class="reasonModal" role="dialog" aria-modal="true">
+        <h2 class="reasonModalTitle">${escapeHtml(config.title || "Add a reason")}</h2>
+        ${config.message ? `<p class="reasonModalMessage">${escapeHtml(config.message)}</p>` : ""}
+        ${cats.length ? `
+          <label class="reasonModalField">
+            <span>Category</span>
+            <select id="reasonModalCategory">
+              ${cats.map((c) => `<option value="${escapeHtml(c.value)}">${escapeHtml(c.label)}</option>`).join("")}
+            </select>
+          </label>` : ""}
+        <label class="reasonModalField">
+          <span>Reason${config.requireReason ? "" : " (optional)"}</span>
+          <textarea id="reasonModalText" rows="3" placeholder="${escapeHtml(config.placeholder || "What happened / why?")}"></textarea>
+        </label>
+        <div class="reasonModalActions">
+          <button type="button" data-reason-close>Cancel</button>
+          <button type="button" class="reasonModalConfirm" data-reason-confirm>${escapeHtml(config.confirmLabel || "Confirm")}</button>
+        </div>
+      </div>
+    </div>`;
+  root.classList.remove("hidden");
+  const text = $("reasonModalText");
+  if (text) text.focus();
+}
+
+function closeReasonModal() {
+  state.reasonModal = null;
+  const root = $("reasonModalRoot");
+  if (root) {
+    root.classList.add("hidden");
+    root.innerHTML = "";
+  }
+}
+
+async function confirmReasonModal() {
+  const config = state.reasonModal;
+  if (!config) return;
+  const reason = ($("reasonModalText")?.value || "").trim();
+  const category = $("reasonModalCategory")?.value || "";
+  if (config.requireReason && !reason) {
+    const text = $("reasonModalText");
+    if (text) text.focus();
+    return;
+  }
+  const confirmBtn = document.querySelector("[data-reason-confirm]");
+  setBusyElement(confirmBtn, true, "Saving");
+  try {
+    await config.onConfirm({ reason, category });
+    closeReasonModal();
+  } catch (err) {
+    setBusyElement(confirmBtn, false);
+    const modal = document.querySelector(".reasonModal");
+    if (modal && !modal.querySelector(".reasonModalError")) {
+      const p = document.createElement("p");
+      p.className = "reasonModalError";
+      p.textContent = err?.message || String(err);
+      modal.insertBefore(p, modal.querySelector(".reasonModalActions"));
+    }
+  }
+}
+
+// ---- Outreach actions (call list + results) -------------------------------
+
+const DISMISS_CATEGORIES = [
+  { value: "not_appropriate", label: "Not appropriate to call" },
+  { value: "already_contacted", label: "Previously contacted (outside Kindling)" },
+  { value: "poor_record", label: "Poor record" },
+  { value: "poor_feedback", label: "Poor feedback after outreach" },
+  { value: "other", label: "Other" },
+];
+
+const DROP_CATEGORIES = [
+  { value: "said_no", label: "They said no" },
+  { value: "no_response", label: "No response" },
+  { value: "poor_feedback", label: "Poor feedback after outreach" },
+  { value: "other", label: "Other" },
+];
+
+function dismissFromDeck(companyId) {
+  openReasonModal({
+    title: "Dismiss from call list",
+    message: "This company won't be called. Capture why so we can improve targeting.",
+    confirmLabel: "Dismiss",
+    requireReason: true,
+    categories: DISMISS_CATEGORIES,
+    placeholder: "e.g. wrong industry, no decision-maker contact, out of area…",
+    onConfirm: async ({ reason, category }) => {
+      await api("/api/kindling/outreach/dismiss", { method: "POST", body: JSON.stringify({ companyId, reason, reasonCategory: category }) });
+      removeFocusItem(companyId);
+    },
+  });
+}
+
+async function snoozeFromDeck(companyId, trigger) {
+  if (!companyId) return;
+  setBusyElement(trigger, true, "Snoozing");
+  try {
+    await api("/api/kindling/outreach/snooze", { method: "POST", body: JSON.stringify({ companyId }) });
+    removeFocusItem(companyId);
+  } catch (err) {
+    setBusyElement(trigger, false);
+    alert(`Couldn't snooze: ${err?.message || err}`);
+  }
+}
+
+function dropFromResults(companyId) {
+  openReasonModal({
+    title: "Drop this company",
+    message: "Mark this outreach as closed without a meeting.",
+    confirmLabel: "Drop",
+    requireReason: true,
+    categories: DROP_CATEGORIES,
+    placeholder: "What was the outcome?",
+    onConfirm: async ({ reason, category }) => {
+      await api("/api/kindling/outreach/respond", { method: "POST", body: JSON.stringify({ companyId, outcome: "dropped", reason, reasonCategory: category }) });
+      await loadResultsPage({ force: true });
+    },
+  });
+}
+
+function removeFocusItem(companyId) {
+  const items = state.focus.items;
+  const idx = items.findIndex((it) => (it.companyId || it.company?.id) === companyId);
+  if (idx === -1) return;
+  items.splice(idx, 1);
+  if (state.focus.index >= items.length) state.focus.index = Math.max(0, items.length - 1);
+  renderFocus();
+  if (!$("appNav").classList.contains("hidden")) renderAppNav("deck");
+  // Results badge/list will be stale until next visit; force a reload next open.
+  state.resultsPage.loaded = false;
+}
+
+// After a "no answer" call, the company stays on the deck but recirculates to the
+// back so fresh targets come first; the next card slides into the current slot.
+function moveFocusItemToBack(companyId) {
+  const items = state.focus.items;
+  const idx = items.findIndex((it) => (it.companyId || it.company?.id) === companyId);
+  if (idx === -1) return;
+  const [item] = items.splice(idx, 1);
+  items.push(item);
+  if (state.focus.index >= items.length) state.focus.index = Math.max(0, items.length - 1);
+  state.focus.contactPage = 0;
+  renderFocus();
+}
+
+// ---- Reach Out modal (draft emails + contacts; log an email or a call) -----
+// Self-contained: its own dynamically-mounted root + module-level state, so it
+// never collides with the shared company-details overlay.
+let reachState = { open: false, companyId: "", company: null, drafts: [], people: [], loading: false, view: "reach", draftIndex: 0 };
+
+function ensureReachRoot() {
+  let root = document.getElementById("reachModalRoot");
+  if (root) return root;
+  root = document.createElement("div");
+  root.id = "reachModalRoot";
+  root.className = "reachModalRoot hidden";
+  document.body.appendChild(root);
+  root.addEventListener("click", onReachClick);
+  root.addEventListener("submit", onReachSubmit);
+  return root;
+}
+
+function openReachOutModal() {
+  const item = state.focus.items[state.focus.index];
+  if (!item) return;
+  const companyId = item.companyId || item.company?.id || "";
+  if (!companyId) return;
+  reachState = {
+    open: true,
+    companyId,
+    company: item.company || { name: item.name, website: item.website },
+    drafts: [],
+    people: Array.isArray(item.decisionMakers) ? item.decisionMakers : (item.company?.decisionMakers || []),
+    loading: true,
+    view: "reach",
+    draftIndex: 0,
+  };
+  renderReachModal();
+  void loadReachDetail(companyId);
+}
+
+async function loadReachDetail(companyId) {
+  try {
+    const data = await api(`/api/kindling/companies/${encodeURIComponent(companyId)}/outreach`);
+    if (!reachState.open || reachState.companyId !== companyId) return;
+    reachState.company = data.company || reachState.company;
+    reachState.drafts = data.drafts || [];
+    if (Array.isArray(data.people) && data.people.length) reachState.people = data.people;
+    reachState.loading = false;
+    renderReachModal();
+  } catch (err) {
+    if (!reachState.open || reachState.companyId !== companyId) return;
+    reachState.loading = false;
+    renderReachModal();
+  }
+}
+
+function closeReachModal() {
+  reachState.open = false;
+  const root = document.getElementById("reachModalRoot");
+  if (root) { root.classList.add("hidden"); root.innerHTML = ""; }
+}
+
+function renderReachContacts() {
+  const people = reachState.people || [];
+  if (!people.length) {
+    return `<p class="reachEmpty">${reachState.loading ? "Loading contacts…" : "No named contacts captured yet."}</p>`;
+  }
+  return people.map((p) => {
+    const name = p.name || "Unknown";
+    const title = p.title || p.role || "";
+    const phone = p.phone || p.mobile || "";
+    const email = p.email || "";
+    const chips = [];
+    if (phone) chips.push(`<a class="reachChip" href="tel:${escapeHtml(phone.replace(/\s+/g, ""))}">📞 ${escapeHtml(phone)}</a><button type="button" class="reachChipCopy" data-copy="${escapeHtml(phone)}" title="Copy number">Copy</button>`);
+    if (email) chips.push(`<a class="reachChip" href="mailto:${escapeHtml(email)}">✉️ ${escapeHtml(email)}</a><button type="button" class="reachChipCopy" data-copy="${escapeHtml(email)}" title="Copy email">Copy</button>`);
+    return `
+      <div class="reachContact">
+        <div class="reachContactName">${escapeHtml(name)}${title ? ` <span class="reachContactRole">${escapeHtml(title)}</span>` : ""}</div>
+        ${chips.length ? `<div class="reachContactChips">${chips.join("")}</div>` : `<div class="reachContactChips reachMuted">No direct contact captured</div>`}
+      </div>`;
+  }).join("");
+}
+
+function renderReachDrafts() {
+  const drafts = reachState.drafts || [];
+  if (!drafts.length) {
+    return `<p class="reachEmpty">${reachState.loading ? "Loading drafts…" : "No draft emails written yet — copy a contact and write your own."}</p>`;
+  }
+  // Show one email at a time and let the user page through variants, mirroring
+  // the draft pager on the company details modal. More width + one-at-a-time
+  // means each email gets the vertical room to read without a cramped column.
+  const total = drafts.length;
+  const idx = Math.min(Math.max(0, reachState.draftIndex || 0), total - 1);
+  const d = drafts[idx];
+  const text = d.pitchText || d.body || "";
+  const label = d.variantLabel ? escapeHtml(d.variantLabel) : "";
+  const meta = total > 1
+    ? `${idx + 1} of ${total}${label ? ` · ${label}` : ""}`
+    : (label || "Draft 1");
+  return `
+    <section class="reachDraft">
+      <div class="reachDraftHead">
+        <span class="reachDraftLabel">${meta}</span>
+        <div class="reachDraftControls">
+          ${total > 1 ? `
+            <button type="button" class="reachDraftNav" data-reach-action="draft-prev" ${idx <= 0 ? "disabled" : ""} aria-label="Previous draft">‹</button>
+            <button type="button" class="reachDraftNav" data-reach-action="draft-next" ${idx >= total - 1 ? "disabled" : ""} aria-label="Next draft">›</button>
+          ` : ""}
+          <button type="button" class="reachDraftCopy" data-copy-draft="${idx}">Copy</button>
+        </div>
+      </div>
+      <pre class="reachDraftText">${escapeHtml(text) || "(empty)"}</pre>
+    </section>`;
+}
+
+function renderReachModal() {
+  const root = ensureReachRoot();
+  if (!reachState.open) { root.classList.add("hidden"); root.innerHTML = ""; return; }
+  root.classList.remove("hidden");
+  const company = reachState.company || {};
+  const name = company.name || "Company";
+
+  if (reachState.view === "call") {
+    root.innerHTML = `
+      <div class="reachBackdrop" data-reach-action="close">
+        <div class="reachPanel reachPanelCall" role="dialog" aria-modal="true" data-reach-panel>
+          <header class="reachHeader">
+            <div><div class="reachEyebrow">Log a call</div><h2>${escapeHtml(name)}</h2></div>
+            <button type="button" class="reachClose" data-reach-action="close" aria-label="Close">✕</button>
+          </header>
+          <form class="reachCallForm" data-reach-form="call">
+            <label class="reachField">
+              <span>How did the call go?</span>
+              <textarea id="reachCallNotes" rows="4" placeholder="What was said, next steps, who you spoke to…"></textarea>
+            </label>
+            <label class="reachField">
+              <span>Outcome</span>
+              <select id="reachCallOutcome">
+                <option value="meeting">Successful — follow-up meeting</option>
+                <option value="dropped">Unsuccessful — not interested</option>
+                <option value="no_answer">No answer — try again later</option>
+              </select>
+            </label>
+            <label class="reachField" id="reachCallReasonField">
+              <span>If unsuccessful, why?</span>
+              <select id="reachCallCategory">
+                ${DROP_CATEGORIES.map((c) => `<option value="${escapeHtml(c.value)}">${escapeHtml(c.label)}</option>`).join("")}
+              </select>
+            </label>
+            <p class="reachError hidden" id="reachCallError"></p>
+            <div class="reachActions">
+              <button type="button" data-reach-action="back">Back</button>
+              <button type="submit" class="reachPrimary">Save call</button>
+            </div>
+          </form>
+        </div>
+      </div>`;
+    const notes = document.getElementById("reachCallNotes");
+    if (notes) notes.focus();
+    return;
+  }
+
+  root.innerHTML = `
+    <div class="reachBackdrop" data-reach-action="close">
+      <div class="reachPanel" role="dialog" aria-modal="true" data-reach-panel>
+        <header class="reachHeader">
+          <div>
+            <div class="reachEyebrow">Reach out${company.website ? ` · ${renderWebsiteLink(company.website)}` : ""}</div>
+            <h2>${escapeHtml(name)}</h2>
+          </div>
+          <button type="button" class="reachClose" data-reach-action="close" aria-label="Close">✕</button>
+        </header>
+        <div class="reachBody">
+          <section class="reachCol reachColDrafts">
+            <h3 class="reachColTitle">Draft emails</h3>
+            <div class="reachDraftList">${renderReachDrafts()}</div>
+          </section>
+          <section class="reachCol reachColContacts">
+            <h3 class="reachColTitle">Contacts</h3>
+            <div class="reachContactList">${renderReachContacts()}</div>
+          </section>
+        </div>
+        <footer class="reachFooter">
+          <span class="reachFooterNote">Logs the outreach against ${escapeHtml(name)} (timestamped now).</span>
+          <div class="reachActions">
+            <button type="button" class="reachPrimary" data-reach-action="email">I emailed them</button>
+            <button type="button" class="reachPrimary reachCall" data-reach-action="call">I called them</button>
+          </div>
+        </footer>
+      </div>
+    </div>`;
+}
+
+function onReachClick(event) {
+  const copyDraft = event.target.closest("[data-copy-draft]");
+  if (copyDraft) { reachCopy((reachState.drafts[Number(copyDraft.dataset.copyDraft)] || {}).pitchText || "", copyDraft); return; }
+  const copyEl = event.target.closest("[data-copy]");
+  if (copyEl) { reachCopy(copyEl.dataset.copy || "", copyEl); return; }
+  const action = event.target.closest("[data-reach-action]")?.dataset.reachAction;
+  if (!action) return;
+  if (action === "close") {
+    if (!event.target.closest("[data-reach-panel]") || event.target.closest("button")) closeReachModal();
+    return;
+  }
+  if (action === "draft-prev") { reachDraftStep(-1); return; }
+  if (action === "draft-next") { reachDraftStep(1); return; }
+  if (action === "back") { reachState.view = "reach"; renderReachModal(); return; }
+  if (action === "email") void reachMarkEmailed(event.target.closest("[data-reach-action]"));
+  if (action === "call") { reachState.view = "call"; renderReachModal(); }
+}
+
+function reachDraftStep(delta) {
+  const drafts = reachState.drafts || [];
+  if (drafts.length < 2) return;
+  const next = Math.min(Math.max(0, (reachState.draftIndex || 0) + delta), drafts.length - 1);
+  if (next === reachState.draftIndex) return;
+  reachState.draftIndex = next;
+  renderReachModal();
+}
+
+function onReachSubmit(event) {
+  if (!event.target.closest('[data-reach-form="call"]')) return;
+  event.preventDefault();
+  void reachSubmitCall();
+}
+
+function reachCopy(text, button) {
+  if (!text || !navigator.clipboard?.writeText) return;
+  navigator.clipboard.writeText(text).then(() => {
+    if (!button) return;
+    const original = button.textContent;
+    button.textContent = "Copied ✓";
+    setTimeout(() => { if (button.isConnected) button.textContent = original; }, 1400);
+  }).catch(() => {});
+}
+
+async function reachMarkEmailed(button) {
+  const companyId = reachState.companyId;
+  setBusyElement(button, true, "Saving");
+  try {
+    await api("/api/kindling/outreach/sent", { method: "POST", body: JSON.stringify({ companyId, channel: "email" }) });
+    closeReachModal();
+    removeFocusItem(companyId);
+  } catch (err) {
+    setBusyElement(button, false);
+    alert(`Couldn't save: ${err?.message || err}`);
+  }
+}
+
+async function reachSubmitCall() {
+  const companyId = reachState.companyId;
+  const notes = (document.getElementById("reachCallNotes")?.value || "").trim();
+  const outcome = document.getElementById("reachCallOutcome")?.value || "meeting";
+  const category = document.getElementById("reachCallCategory")?.value || "other";
+  const errEl = document.getElementById("reachCallError");
+  if (outcome === "dropped" && !notes) {
+    if (errEl) { errEl.textContent = "Add a quick note on what happened."; errEl.classList.remove("hidden"); }
+    document.getElementById("reachCallNotes")?.focus();
+    return;
+  }
+  const body = { companyId, outcome, channel: "call", notes };
+  if (outcome === "dropped") { body.reason = notes; body.reasonCategory = category; }
+  const submitBtn = document.querySelector('[data-reach-form="call"] .reachPrimary');
+  setBusyElement(submitBtn, true, "Saving");
+  try {
+    const data = await api("/api/kindling/outreach/respond", { method: "POST", body: JSON.stringify(body) });
+    closeReachModal();
+    // "No answer" keeps the company on the deck (server state "on_deck"); recirculate
+    // it to the back, unless the 3rd attempt today auto-snoozed it out.
+    if (outcome === "no_answer" && data.result?.state === "on_deck" && !data.result?.snoozedUntil) {
+      moveFocusItemToBack(companyId);
+    } else {
+      removeFocusItem(companyId);
+    }
+  } catch (err) {
+    setBusyElement(submitBtn, false);
+    if (errEl) { errEl.textContent = err?.message || String(err); errEl.classList.remove("hidden"); }
+  }
+}
+
+// While the Reach Out modal is open, swallow deck shortcuts (capture phase runs
+// before the deck/keydown handlers) and let Escape close it.
+document.addEventListener("keydown", (event) => {
+  if (!reachState.open) return;
+  if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closeReachModal(); return; }
+  if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
+  if (["ArrowLeft", "ArrowRight", "Enter"].includes(event.key)) event.stopPropagation();
+}, true);
+
+// ---- Login signers --------------------------------------------------------
+//
+// Both login methods and NIP-98 pipeline authorization go through a small signer
+// abstraction so adding nsec support doesn't leave pipeline actions broken for
+// users without a browser extension.
+//
+//   { kind, getPublicKey() => 64-hex, signEvent(event) => signedEvent, clear() }
+
+// Wraps a NIP-07 browser extension (window.nostr).
+function makeExtensionSigner() {
+  return {
+    kind: "extension",
+    getPublicKey: () => window.nostr.getPublicKey(),
+    signEvent: (event) => window.nostr.signEvent(event),
+    clear() {},
+  };
+}
+
+// Wraps a decoded nsec secret key, signing entirely in this tab. The raw secret
+// stays closed over here and is never returned, logged, or sent anywhere.
+function makeNsecSigner(secretKey) {
+  let key = secretKey;
+  return {
+    kind: "nsec",
+    getPublicKey: async () => getPublicKey(key),
+    signEvent: async (event) => {
+      if (!key) throw new Error("Signer was cleared. Reconnect a Nostr signer.");
+      return finalizeEvent(event, key);
+    },
+    clear() {
+      if (key) key.fill?.(0);
+      key = null;
+    },
+  };
+}
+
+// HTTPS is required for nsec entry on remote origins; localhost dev is exempt.
+function nsecLoginAllowed() {
+  if (location.protocol === "https:") return true;
+  return ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
+}
+
+// Shared tail for every login method: challenge → sign → verify → boot.
+async function completeLoginWithSigner(signer) {
+  const pubkey = await signer.getPublicKey();
+  const challenge = await api("/api/auth/challenge", {
+    method: "POST",
+    body: JSON.stringify({ pubkey }),
+  });
+  const event = await signer.signEvent({
+    kind: 22242,
+    created_at: Math.floor(Date.now() / 1000),
+    tags: [["challenge", challenge.nonce], ["client", "kindling-wapp"]],
+    content: challenge.content,
+  });
+  const result = await api("/api/auth/verify", {
+    method: "POST",
+    body: JSON.stringify({ event }),
+  });
+  state.signer = signer;
+  state.token = result.token;
+  state.me = result;
+  localStorage.setItem("chat_wapp_token", result.token);
+  await bootApp();
+}
+
+async function loginWithExtension() {
   $("loginError").textContent = "";
   if (!window.nostr) {
     $("loginError").textContent = "No Nostr browser extension was found.";
     return;
   }
   try {
-    const pubkey = await window.nostr.getPublicKey();
-    const challenge = await api("/api/auth/challenge", {
-      method: "POST",
-      body: JSON.stringify({ pubkey }),
-    });
-    const event = await window.nostr.signEvent({
-      kind: 22242,
-      created_at: Math.floor(Date.now() / 1000),
-      tags: [["challenge", challenge.nonce], ["client", "kindling-wapp"]],
-      content: challenge.content,
-    });
-    const result = await api("/api/auth/verify", {
-      method: "POST",
-      body: JSON.stringify({ event }),
-    });
-    state.token = result.token;
-    state.me = result;
-    localStorage.setItem("chat_wapp_token", result.token);
-    await bootApp();
+    await completeLoginWithSigner(makeExtensionSigner());
   } catch (error) {
+    clearSigner();
     $("loginError").textContent = error.message;
+  }
+}
+
+async function loginWithNsec() {
+  $("loginError").textContent = "";
+  const input = $("nsecInput");
+  const value = (input?.value || "").trim();
+  if (!nsecLoginAllowed()) {
+    $("loginError").textContent = "Pasting an NSEC requires a secure (HTTPS) connection.";
+    return;
+  }
+  if (!value.startsWith("nsec1")) {
+    if (input) input.value = "";
+    $("loginError").textContent = "That doesn't look like an nsec key. It should start with \"nsec1\".";
+    return;
+  }
+  let signer = null;
+  try {
+    let decoded;
+    try {
+      decoded = nip19.decode(value);
+    } catch {
+      throw new Error("Invalid NSEC — the key could not be decoded.");
+    }
+    if (decoded.type !== "nsec") {
+      throw new Error("That's a valid Nostr key but not an nsec private key.");
+    }
+    signer = makeNsecSigner(decoded.data);
+    // Drop the secret from the DOM as soon as it's decoded into memory.
+    if (input) input.value = "";
+    await completeLoginWithSigner(signer);
+  } catch (error) {
+    signer?.clear();
+    if (state.signer === signer) state.signer = null;
+    if (input) input.value = "";
+    // error.message here is one of our own sanitized strings or a server error
+    // ("...not allowed to log in...", "Challenge expired", network failure) —
+    // never the secret key.
+    $("loginError").textContent = error.message || "Could not sign in with that NSEC.";
+  }
+}
+
+// Drop the in-memory signer (logout, token expiry, failed login). The bearer
+// token in localStorage is handled separately by logout().
+function clearSigner() {
+  state.signer?.clear?.();
+  state.signer = null;
+}
+
+// Choose which login method is visible. The extension path stays the default.
+function setLoginMethod(method) {
+  const isNsec = method === "nsec";
+  $("loginExtension")?.classList.toggle("hidden", isNsec);
+  $("loginNsec")?.classList.toggle("hidden", !isNsec);
+  $("loginError").textContent = "";
+  if (isNsec) {
+    const input = $("nsecInput");
+    if (input) {
+      input.value = "";
+      input.disabled = !nsecLoginAllowed();
+    }
+    const note = $("nsecHttpsNote");
+    if (note) note.classList.toggle("hidden", nsecLoginAllowed());
+    const submit = $("nsecLoginButton");
+    if (submit) submit.disabled = !nsecLoginAllowed();
   }
 }
 
 async function bootApp() {
   try {
     state.me = await api("/api/me");
-    $("npub").textContent = state.me.npub;
+    const npubEl = $("npub");
+    if (npubEl) npubEl.textContent = state.me.npub;
     syncAccessUi();
     void ensureUserProfile();
     await renderRoute();
@@ -759,6 +1970,7 @@ async function bootApp() {
 }
 
 function logout() {
+  clearSigner();
   state.token = "";
   state.me = null;
   state.activeChatId = "";
@@ -1020,6 +2232,58 @@ function escapeHtml(value) {
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
+}
+
+// Minimal, escape-first markdown renderer for first-party outreach drafts.
+// Supports the subset the pipeline emits: headings, paragraphs, bold/italic,
+// links, ordered/unordered lists, and horizontal rules. Escaping happens before
+// any markdown tokens are interpreted, so the output is safe to inject.
+function renderInlineMarkdown(text) {
+  return text
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|mailto:[^\s)]+)\)/g,
+      (_, label, href) => `<a href="${href}" target="_blank" rel="noopener noreferrer">${label}</a>`)
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/__([^_]+)__/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
+    .replace(/(^|[^_\w])_([^_\n]+)_(?!\w)/g, "$1<em>$2</em>");
+}
+
+function renderMarkdown(md) {
+  const lines = escapeHtml(md).split(/\r?\n/);
+  const out = [];
+  let para = [];
+  let list = null; // { type: "ul" | "ol", items: [] }
+  let code = null; // { lines: [] } while inside a ``` fenced block
+  const flushPara = () => {
+    if (para.length) { out.push(`<p>${para.map(renderInlineMarkdown).join("<br>")}</p>`); para = []; }
+  };
+  const flushList = () => {
+    if (list) { out.push(`<${list.type}>${list.items.map((i) => `<li>${renderInlineMarkdown(i)}</li>`).join("")}</${list.type}>`); list = null; }
+  };
+  for (const line of lines) {
+    const fence = line.trim().match(/^```/);
+    if (code) {
+      if (fence) { out.push(`<pre><code>${code.lines.join("\n")}</code></pre>`); code = null; }
+      else code.lines.push(line);
+      continue;
+    }
+    if (fence) { flushPara(); flushList(); code = { lines: [] }; continue; }
+    const t = line.trim();
+    if (!t) { flushPara(); flushList(); continue; }
+    if (/^([-*_])(?:\s*\1){2,}$/.test(t)) { flushPara(); flushList(); out.push("<hr>"); continue; }
+    const heading = t.match(/^(#{1,6})\s+(.*)$/);
+    if (heading) { flushPara(); flushList(); const lvl = heading[1].length; out.push(`<h${lvl}>${renderInlineMarkdown(heading[2])}</h${lvl}>`); continue; }
+    const ul = t.match(/^[-*]\s+(.*)$/);
+    const ol = t.match(/^\d+\.\s+(.*)$/);
+    if (ul) { flushPara(); if (!list || list.type !== "ul") { flushList(); list = { type: "ul", items: [] }; } list.items.push(ul[1]); continue; }
+    if (ol) { flushPara(); if (!list || list.type !== "ol") { flushList(); list = { type: "ol", items: [] }; } list.items.push(ol[1]); continue; }
+    flushList();
+    para.push(t);
+  }
+  if (code) out.push(`<pre><code>${code.lines.join("\n")}</code></pre>`);
+  flushPara(); flushList();
+  return out.join("");
 }
 
 function selectedCompany() {
@@ -1696,17 +2960,20 @@ function renderServiceProfile(version) {
     <p>No service profile has been created yet.</p>
   `;
   const profile = version.structured || {};
+  const summary = profile.summary || version.summary || "";
   return `
-    <div class="serviceProfileHeader">
-      <div>
-        <h2>${escapeHtml(profile.title || "Company profile")}</h2>
-        <span>Version ${escapeHtml(version.versionNumber || "New")}</span>
+    <section class="aboutAdapt">
+      <div class="aboutAdaptTop">
+        <span class="aboutEyebrow">About Adapt</span>
+        <span class="aboutVersion">Version ${escapeHtml(version.versionNumber || "New")}</span>
       </div>
-    </div>
-    <section class="profileSection profileLead">
-      <h3>Summary</h3>
-      <p>${escapeHtml(profile.summary || version.summary || "")}</p>
-      ${profile.positioningStatement ? `<p>${escapeHtml(profile.positioningStatement)}</p>` : ""}
+      <h2>${escapeHtml(profile.title || "Company profile")}</h2>
+      ${summary ? `<p class="aboutSummary">${escapeHtml(summary)}</p>` : ""}
+      ${profile.positioningStatement ? `
+        <div class="aboutPositioning">
+          <strong>Positioning</strong>
+          <p>${escapeHtml(profile.positioningStatement)}</p>
+        </div>` : ""}
     </section>
     ${renderServiceLines(profile.services || [])}
     ${renderProfileGroup("Ideal customer profile", profile.idealCustomerProfile)}
@@ -1724,12 +2991,16 @@ function renderServiceProfile(version) {
 
 function renderServiceLines(services) {
   if (!Array.isArray(services) || !services.length) return "";
+  const count = services.length;
   return `
-    <section class="profileSection">
-      <h3>Services</h3>
-      <div class="serviceLineList">
+    <section class="profileSection offersSection">
+      <div class="offersHeader">
+        <h3>What Adapt offers</h3>
+        <span class="offersCount">${count} service${count === 1 ? "" : "s"}</span>
+      </div>
+      <div class="serviceCardGrid">
         ${services.map((service) => `
-          <article class="serviceLine">
+          <article class="serviceCard">
             <h4>${escapeHtml(service.name || "Service")}</h4>
             <p>${escapeHtml(service.description || "")}</p>
             ${renderInlineList("Benefits", service.benefits)}
@@ -2018,11 +3289,17 @@ function renderCompanyListRows(companies) {
       const site = company.website
         ? `<a class="companyRowSite" href="${escapeHtml(/^https?:\/\//i.test(company.website) ? company.website : `https://${company.website}`)}" target="_blank" rel="noopener">${escapeHtml(company.website)}</a>`
         : "";
+      const fitPill = company.fitScore != null
+        ? `<span class="companyRowFit resultFit resultFit-${escapeHtml(company.fitBand || "high")}">${company.fitScore} fit</span>`
+        : "";
       return `
-        <div class="companyListRow">
+        <div class="companyListRow" data-open-company="${escapeHtml(company.id)}" role="button" tabindex="0">
           <span class="companyRowMain">
             <strong>${escapeHtml(company.name)}</strong>
-            <small>${escapeHtml(stageLabel(company.enrichmentStatus))}</small>
+            <span class="companyRowBadges">
+              ${fitPill}
+              <small>${escapeHtml(stageLabel(company.enrichmentStatus))}</small>
+            </span>
           </span>
           <span class="companyRowMeta">${escapeHtml(meta)}</span>
           ${site}
@@ -2617,9 +3894,11 @@ function handleKindlingChange(event) {
 
 function renderSettings() {
   $("autopilotUrlInput").value = state.settings?.autopilotUrl || "";
+  $("publicOriginInput").value = state.settings?.publicOrigin || "";
   $("pipelineInput").value = state.settings?.defaultPipeline || "";
+  $("snoozeDaysInput").value = state.settings?.snoozeDays || 1;
   const canEdit = Boolean(state.me?.access?.edit);
-  for (const id of ["autopilotUrlInput", "pipelineInput", "pipelineSelect", "loadPipelinesButton", "saveSettingsButton", "researchDeskButton", "accessNpubInput", "accessRoleSelect", "addAccessButton"]) {
+  for (const id of ["autopilotUrlInput", "publicOriginInput", "pipelineInput", "snoozeDaysInput", "pipelineSelect", "loadPipelinesButton", "saveSettingsButton", "researchDeskButton", "accessNpubInput", "accessRoleSelect", "addAccessButton"]) {
     $(id).disabled = !canEdit;
   }
 }
@@ -2842,7 +4121,9 @@ async function saveSettings() {
       method: "PUT",
       body: JSON.stringify({
         autopilotUrl: $("autopilotUrlInput").value.trim(),
+        publicOrigin: $("publicOriginInput").value.trim(),
         defaultPipeline: $("pipelineInput").value.trim(),
+        snoozeDays: Math.max(1, Math.min(365, Math.floor(Number($("snoozeDaysInput").value) || 1))),
       }),
     });
     state.settings = payload.settings;
@@ -2933,22 +4214,25 @@ async function removeAccessRule(rule) {
   }
 }
 
+// Full-screen Chats view: previous chats as a horizontally-scrolling tab strip,
+// mirroring the floating widget's style.
 function renderChats() {
-  const list = $("chatList");
-  list.innerHTML = "";
+  const bar = $("chatTabs");
+  if (!bar) return;
+  bar.innerHTML = "";
   for (const chat of state.chats) {
     const button = document.createElement("button");
-    button.className = `chatItem${chat.id === state.activeChatId ? " active" : ""}`;
-    button.innerHTML = `<strong></strong><span></span>`;
-    button.querySelector("strong").textContent = chat.title;
-    button.querySelector("span").textContent = chat.preview || "No messages yet";
+    button.type = "button";
+    button.className = `athenaTab${chat.id === state.activeChatId ? " active" : ""}`;
+    button.textContent = chat.title || "New chat";
+    button.title = chat.title || "New chat";
     button.addEventListener("click", async () => {
       state.activeChatId = chat.id;
       localStorage.setItem("chat_wapp_chat", chat.id);
       renderChats();
       await loadActiveChat();
     });
-    list.appendChild(button);
+    bar.appendChild(button);
   }
 }
 
@@ -2974,7 +4258,14 @@ function renderMessages(messages) {
   for (const message of messages) {
     const node = document.createElement("div");
     node.className = `message ${message.role} ${message.status}`;
-    node.textContent = message.status === "pending" ? "Thinking..." : message.content;
+    if (message.status === "pending") {
+      node.textContent = "Thinking...";
+    } else if (message.role === "assistant") {
+      node.classList.add("markdownBody");
+      node.innerHTML = renderMarkdown(message.content || "");
+    } else {
+      node.textContent = message.content;
+    }
     box.appendChild(node);
   }
   box.scrollTop = box.scrollHeight;
@@ -2990,6 +4281,28 @@ function syncAccessUi() {
   }
 }
 
+// Shared chat-send core used by both the full-screen chat and the floating
+// Ask Athena widget. Posts the user message, and if the backend asks for a
+// NIP-98 pipeline authorization, signs it and starts the run. `onProgress` is
+// called with the interim message list (user + pending assistant) so the UI can
+// echo the message immediately, before signing completes.
+async function postChatMessage(content, onProgress) {
+  const payload = await api(`/api/chats/${encodeURIComponent(state.activeChatId)}/messages`, {
+    method: "POST",
+    body: JSON.stringify({ content }),
+  });
+  if (onProgress) onProgress(payload.messages || []);
+  if (payload.requiresAutopilotAuth && payload.triggerRequest) {
+    const autopilotAuthorization = await signNip98Request(payload.triggerRequest);
+    const started = await api(`/api/pipeline-runs/${encodeURIComponent(payload.runId)}/start`, {
+      method: "POST",
+      body: JSON.stringify({ autopilotAuthorization }),
+    });
+    return started.messages || payload.messages || [];
+  }
+  return payload.messages || [];
+}
+
 async function sendMessage(event) {
   event.preventDefault();
   if (!state.me?.access?.edit) return;
@@ -2999,20 +4312,9 @@ async function sendMessage(event) {
   input.value = "";
   $("sendButton").disabled = true;
   try {
-    const payload = await api(`/api/chats/${encodeURIComponent(state.activeChatId)}/messages`, {
-      method: "POST",
-      body: JSON.stringify({ content }),
-    });
-    renderMessages(payload.messages || []);
-    if (payload.requiresAutopilotAuth && payload.triggerRequest) {
-      setStatus("Authorizing pipeline");
-      const autopilotAuthorization = await signNip98Request(payload.triggerRequest);
-      const started = await api(`/api/pipeline-runs/${encodeURIComponent(payload.runId)}/start`, {
-        method: "POST",
-        body: JSON.stringify({ autopilotAuthorization }),
-      });
-      renderMessages(started.messages || []);
-    }
+    setStatus("Authorizing pipeline");
+    const messages = await postChatMessage(content, (interim) => renderMessages(interim));
+    renderMessages(messages);
     await loadChats();
   } catch (error) {
     setStatus(error.message);
@@ -3022,8 +4324,252 @@ async function sendMessage(event) {
   }
 }
 
+// ---- Floating "Ask Athena" widget ----------------------------------------
+// A read-only chat that overlays every app page. Shares state.activeChatId and
+// the chats list with the full-screen Chats view, so it always shows the most
+// recent thread; "+" starts a new one. Live updates via its own poll loop.
+
+function athenaEditable() {
+  return Boolean(state.me?.access?.edit);
+}
+
+function setAthenaStatus(text) {
+  const el = $("athenaStatus");
+  if (el) el.textContent = text;
+}
+
+async function openAthena() {
+  if (!state.token || !state.me) return;
+  state.athena.open = true;
+  $("athenaPanel").classList.remove("hidden");
+  $("athenaLauncher").classList.add("active");
+  try {
+    await loadChats();
+    if (!state.activeChatId || !state.chats.find((chat) => chat.id === state.activeChatId)) {
+      if (state.chats[0]) {
+        state.activeChatId = state.chats[0].id;
+        localStorage.setItem("chat_wapp_chat", state.activeChatId);
+      } else if (athenaEditable()) {
+        await newAthenaChat();
+      }
+    }
+    renderAthenaTabs();
+    if (state.activeChatId) await loadAthenaChat();
+    else renderAthenaMessages([]);
+  } catch (error) {
+    setAthenaStatus(error.message);
+  }
+  syncAthenaAccess();
+  applyAthenaChrome();
+  startAthenaPolling();
+  $("athenaInput")?.focus();
+}
+
+function closeAthena() {
+  state.athena.open = false;
+  state.athena.pinned = false;
+  localStorage.setItem("athena_pinned", "0");
+  $("athenaPanel").classList.add("hidden");
+  $("athenaLauncher").classList.remove("active");
+  applyAthenaChrome();
+  stopAthenaPolling();
+}
+
+function toggleAthena() {
+  if (state.athena.open) closeAthena();
+  else void openAthena();
+}
+
+// Toggle the docked right-hand drawer. Pinning implies open; the panel then
+// persists across pages until unpinned or closed.
+function toggleAthenaPin() {
+  state.athena.pinned = !state.athena.pinned;
+  localStorage.setItem("athena_pinned", state.athena.pinned ? "1" : "0");
+  if (state.athena.pinned && !state.athena.open) {
+    void openAthena();
+    return;
+  }
+  applyAthenaChrome();
+}
+
+// Apply pinned/floating chrome: docks the panel as a right column and pushes the
+// page content over so it isn't covered. Hidden on /chat and when signed out.
+function applyAthenaChrome() {
+  const root = $("athena");
+  const app = $("app");
+  const pinBtn = $("athenaPin");
+  if (!root || !app) return;
+  const visible = !root.classList.contains("hidden");
+  const pinned = state.athena.pinned && state.athena.open && visible;
+  root.classList.toggle("pinned", pinned);
+  app.classList.toggle("athenaPinned", pinned);
+  if (pinBtn) {
+    pinBtn.textContent = state.athena.pinned ? "⇤" : "⇥";
+    pinBtn.title = state.athena.pinned ? "Unpin" : "Pin to side";
+    pinBtn.classList.toggle("active", state.athena.pinned);
+  }
+}
+
+function selectAthenaChat(chatId) {
+  state.activeChatId = chatId;
+  localStorage.setItem("chat_wapp_chat", chatId);
+  renderAthenaTabs();
+  void loadAthenaChat();
+  $("athenaInput")?.focus();
+}
+
+async function newAthenaChat() {
+  if (!athenaEditable()) return;
+  const payload = await api("/api/chats", { method: "POST", body: "{}" });
+  state.activeChatId = payload.chat.id;
+  localStorage.setItem("chat_wapp_chat", state.activeChatId);
+  await loadChats();
+  renderAthenaTabs();
+  await loadAthenaChat();
+  $("athenaInput")?.focus();
+}
+
+async function loadAthenaChat() {
+  if (!state.activeChatId) return;
+  const payload = await api(`/api/chats/${encodeURIComponent(state.activeChatId)}/messages`);
+  renderAthenaMessages(payload.messages || []);
+}
+
+function renderAthenaTabs() {
+  const bar = $("athenaTabs");
+  if (!bar) return;
+  bar.innerHTML = "";
+  for (const chat of state.chats.slice(0, 5)) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = `athenaTab${chat.id === state.activeChatId ? " active" : ""}`;
+    btn.textContent = chat.title || "New chat";
+    btn.title = chat.title || "New chat";
+    btn.addEventListener("click", () => selectAthenaChat(chat.id));
+    bar.appendChild(btn);
+  }
+  const plus = document.createElement("button");
+  plus.type = "button";
+  plus.className = "athenaTab athenaTabNew";
+  plus.textContent = "+";
+  plus.title = "New chat";
+  plus.disabled = !athenaEditable();
+  plus.addEventListener("click", () => void newAthenaChat());
+  bar.appendChild(plus);
+}
+
+function renderAthenaMessages(messages) {
+  const box = $("athenaMessages");
+  if (!box) return;
+  box.innerHTML = "";
+  if (!messages.length) {
+    const empty = document.createElement("div");
+    empty.className = "athenaEmpty";
+    empty.textContent = athenaEditable()
+      ? "Ask about the system, data, or processes. Athena is read-only — it never changes anything."
+      : "You have read-only access. Ask an editor to chat with Athena.";
+    box.appendChild(empty);
+  }
+  for (const message of messages) {
+    const node = document.createElement("div");
+    node.className = `athenaMessage ${message.role} ${message.status}`;
+    if (message.status === "pending") {
+      node.textContent = "Thinking…";
+    } else if (message.role === "assistant") {
+      node.classList.add("markdownBody");
+      node.innerHTML = renderMarkdown(message.content || "");
+    } else {
+      node.textContent = message.content;
+    }
+    box.appendChild(node);
+  }
+  box.scrollTop = box.scrollHeight;
+  const pending = messages.some((message) => message.status === "pending");
+  setAthenaStatus(pending ? "Athena is thinking…" : "Ready");
+}
+
+function syncAthenaAccess() {
+  const canEdit = athenaEditable();
+  for (const id of ["athenaInput", "athenaSend"]) {
+    const el = $(id);
+    if (el) el.disabled = !canEdit;
+  }
+}
+
+async function sendAthenaMessage(event) {
+  event.preventDefault();
+  if (!athenaEditable()) return;
+  const input = $("athenaInput");
+  const content = input.value.trim();
+  if (!content || !state.activeChatId) return;
+  input.value = "";
+  $("athenaSend").disabled = true;
+  try {
+    setAthenaStatus("Authorizing…");
+    const messages = await postChatMessage(content, (interim) => renderAthenaMessages(interim));
+    renderAthenaMessages(messages);
+    await loadChats();
+    renderAthenaTabs();
+  } catch (error) {
+    setAthenaStatus(error.message);
+  } finally {
+    $("athenaSend").disabled = !athenaEditable();
+    if (athenaEditable()) input.focus();
+  }
+}
+
+function startAthenaPolling() {
+  stopAthenaPolling();
+  state.athenaPollTimer = setInterval(async () => {
+    if (state.athena.open && state.activeChatId && state.token) {
+      await loadAthenaChat().catch(() => undefined);
+      await loadChats().catch(() => undefined);
+      renderAthenaTabs();
+    }
+  }, 1500);
+}
+
+function stopAthenaPolling() {
+  if (state.athenaPollTimer) clearInterval(state.athenaPollTimer);
+  state.athenaPollTimer = null;
+}
+
+// Show the launcher on every app page once signed in; hide it on the login
+// screen and on the full-screen /chat view (where it would be redundant).
+function syncAthenaLauncher() {
+  const root = $("athena");
+  if (!root) return;
+  const hide = !(state.token && state.me) || state.route === "/chat";
+  root.classList.toggle("hidden", hide);
+  if (hide) {
+    // Don't lose the pinned preference when passing through /chat — just undock.
+    root.classList.remove("pinned");
+    $("app")?.classList.remove("athenaPinned");
+    return;
+  }
+  // Re-dock the pinned drawer when returning to a normal page.
+  if (state.athena.pinned && !state.athena.open) {
+    void openAthena();
+    return;
+  }
+  applyAthenaChrome();
+}
+
+// Resolve the signer to use for a NIP-98 (kind 27235) pipeline authorization.
+// Prefer the active in-memory signer; fall back to a fresh extension signer if
+// the page reloaded onto a restored bearer session. An nsec signer cannot be
+// restored after reload, so we ask the user to reconnect one.
+function currentSigner() {
+  if (state.signer) return state.signer;
+  if (window.nostr) {
+    state.signer = makeExtensionSigner();
+    return state.signer;
+  }
+  throw new Error("Reconnect a Nostr signer to authorize this pipeline run.");
+}
+
 async function signNip98Request(triggerRequest) {
-  if (!window.nostr) throw new Error("No Nostr browser extension was found.");
+  const signer = currentSigner();
   const tags = [
     ["u", triggerRequest.url],
     ["method", triggerRequest.method || "POST"],
@@ -3032,7 +4578,7 @@ async function signNip98Request(triggerRequest) {
     const bodyJson = JSON.stringify(triggerRequest.body);
     tags.push(["payload", await sha256Hex(bodyJson)]);
   }
-  const event = await window.nostr.signEvent({
+  const event = await signer.signEvent({
     kind: 27235,
     created_at: Math.floor(Date.now() / 1000),
     tags,
@@ -3066,8 +4612,15 @@ function startPolling() {
   }, 1500);
 }
 
-$("loginButton").addEventListener("click", login);
-$("logoutButton").addEventListener("click", logout);
+$("loginButton").addEventListener("click", loginWithExtension);
+$("showNsecLogin")?.addEventListener("click", () => setLoginMethod("nsec"));
+$("showExtensionLogin")?.addEventListener("click", () => setLoginMethod("extension"));
+$("nsecLoginButton")?.addEventListener("click", loginWithNsec);
+$("loginNsec")?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  void loginWithNsec();
+});
+$("logoutButton")?.addEventListener("click", logout);
 $("newChatButton").addEventListener("click", newChat);
 $("homeActButton").addEventListener("click", () => {
   setKindlingView("companies");
@@ -3094,6 +4647,19 @@ $("homeResearchButton").addEventListener("click", () => {
   navigate("/researchdesk");
 });
 $("homeChatButton").addEventListener("click", () => navigate("/chat"));
+
+// Floating Ask Athena widget
+$("athenaLauncher")?.addEventListener("click", toggleAthena);
+$("athenaPin")?.addEventListener("click", toggleAthenaPin);
+$("athenaClose")?.addEventListener("click", closeAthena);
+$("athenaExpand")?.addEventListener("click", () => { closeAthena(); navigate("/chat"); });
+$("athenaComposer")?.addEventListener("submit", sendAthenaMessage);
+$("athenaInput")?.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    $("athenaComposer").requestSubmit();
+  }
+});
 $("homeSettingsButton").addEventListener("click", () => navigate("/settings"));
 $("settingsHomeButton").addEventListener("click", () => navigate("/"));
 $("homeFocusButton").addEventListener("click", () => navigate("/"));
@@ -3136,18 +4702,91 @@ $("companyListPage").addEventListener("click", (event) => {
     return;
   }
   const page = event.target.closest("[data-company-page]")?.dataset.companyPage;
-  if (page) stepCompanyPage(page === "next" ? 1 : -1);
+  if (page) { stepCompanyPage(page === "next" ? 1 : -1); return; }
+  // Open the shared details overlay for a row — but let the inline website link
+  // behave like a normal link.
+  if (event.target.closest("a")) return;
+  const row = event.target.closest("[data-open-company]");
+  if (row) {
+    const companyId = row.dataset.openCompany;
+    const company = (state.companyListPage.companies || []).find((c) => c.id === companyId) || null;
+    openCompanyModal({ companyId, company });
+  }
+});
+$("companyListPage").addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  const row = event.target.closest?.("[data-open-company]");
+  if (!row) return;
+  event.preventDefault();
+  const companyId = row.dataset.openCompany;
+  const company = (state.companyListPage.companies || []).find((c) => c.id === companyId) || null;
+  openCompanyModal({ companyId, company });
 });
 
 $("focus").addEventListener("click", (event) => {
-  const action = event.target.closest("[data-focus-action]")?.dataset.focusAction;
+  const trigger = event.target.closest("[data-focus-action]");
+  const action = trigger?.dataset.focusAction;
   if (!action) return;
   if (action === "prev") focusStep(-1);
   else if (action === "next") focusStep(1);
-  else if (action === "open") focusOpenCurrent();
+  else if (action === "contacts-prev") focusContactStep(-1);
+  else if (action === "contacts-next") focusContactStep(1);
+  else if (action === "open" || action === "details") focusOpenCurrent();
   else if (action === "retry") void loadFocusScreen({ force: true });
+  else if (action === "sent") void focusSentCurrent(trigger);
+  else if (action === "reach") openReachOutModal();
+  else if (action === "snooze") {
+    const item = state.focus.items[state.focus.index];
+    if (item) void snoozeFromDeck(item.companyId || item.company?.id, trigger);
+  }
+  else if (action === "dismiss") {
+    const item = state.focus.items[state.focus.index];
+    if (item) dismissFromDeck(item.companyId || item.company?.id);
+  }
+});
+
+// Shared company-details overlay interactions (mounted globally so it works from
+// any screen).
+$("companyModalRoot").addEventListener("click", (event) => {
+  // Reviewer feedback controls toggle in place (no re-render) so the note keeps focus.
+  const verdictBtn = event.target.closest("[data-feedback-verdict]");
+  if (verdictBtn) {
+    const wasActive = verdictBtn.classList.contains("active");
+    document.querySelectorAll("#companyFeedback [data-feedback-verdict]").forEach((b) => b.classList.remove("active"));
+    if (!wasActive) verdictBtn.classList.add("active");
+    return;
+  }
+  const labelBtn = event.target.closest("[data-feedback-label]");
+  if (labelBtn) { labelBtn.classList.toggle("active"); return; }
+  if (event.target.closest("[data-feedback-save]")) { void saveCompanyFeedback(event.target.closest("[data-feedback-save]")); return; }
+
+  const trigger = event.target.closest("[data-modal-action]");
+  const action = trigger?.dataset.modalAction;
+  if (!action) return;
+  if (action === "close") {
+    // Close on the backdrop itself or the Close button — not on clicks inside
+    // the panel (links, text selection, draft nav, etc.).
+    if (!event.target.closest("[data-modal-panel]") || trigger.tagName === "BUTTON") closeCompanyModal();
+    return;
+  }
+  if (action === "draft-prev") companyModalDraftStep(-1);
+  else if (action === "draft-next") companyModalDraftStep(1);
+  else if (action === "draft-copy") companyModalDraftCopy(trigger);
 });
 document.addEventListener("keydown", (event) => {
+  if (state.reasonModal) {
+    if (event.key === "Escape") closeReasonModal();
+    return;
+  }
+  // The company-details overlay can be open over any screen — Escape closes it
+  // and swallows the deck shortcuts while it's up.
+  if (state.companyModal.open) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeCompanyModal();
+    }
+    return;
+  }
   if ($("focus").classList.contains("hidden")) return;
   if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
   if (event.key === "ArrowLeft") {
@@ -3161,6 +4800,73 @@ document.addEventListener("keydown", (event) => {
     focusOpenCurrent();
   }
 });
+
+// Results page interactions
+$("resultsPage").addEventListener("click", (event) => {
+  if (event.target.closest('[data-page-action="retry-results"]')) { void loadResultsPage({ force: true }); return; }
+  const tab = event.target.closest("[data-results-tab]")?.dataset.resultsTab;
+  if (tab) { setResultsTab(tab); return; }
+  const pg = event.target.closest("[data-results-page]")?.dataset.resultsPage;
+  if (pg) { stepResultsPage(pg === "next" ? 1 : -1); return; }
+  if (event.target.closest("[data-results-clear]")) {
+    state.resultsPage.q = "";
+    state.resultsPage.offset = 0;
+    void loadResultsPage({ force: true });
+    return;
+  }
+  const meetingId = event.target.closest("[data-result-meeting]")?.dataset.resultMeeting;
+  if (meetingId) {
+    const btn = event.target.closest("[data-result-meeting]");
+    setBusyElement(btn, true, "Saving");
+    void api("/api/kindling/outreach/respond", { method: "POST", body: JSON.stringify({ companyId: meetingId, outcome: "meeting" }) })
+      .then(() => loadResultsPage({ force: true }))
+      .catch((err) => { setBusyElement(btn, false); alert(`Couldn't save: ${err?.message || err}`); });
+    return;
+  }
+  const dropId = event.target.closest("[data-result-drop]")?.dataset.resultDrop;
+  if (dropId) { dropFromResults(dropId); return; }
+  const menuToggle = event.target.closest("[data-result-menu]");
+  if (menuToggle) {
+    const menu = menuToggle.closest(".resultMenu");
+    const wasOpen = menu.classList.contains("open");
+    $("resultsPage").querySelectorAll(".resultMenu.open").forEach((m) => m.classList.remove("open"));
+    if (!wasOpen) menu.classList.add("open");
+    return;
+  }
+  const undoId = event.target.closest("[data-result-undo]")?.dataset.resultUndo;
+  if (undoId) {
+    const btn = event.target.closest("[data-result-undo]");
+    setBusyElement(btn, true, "Undoing");
+    void api("/api/kindling/outreach/undo", { method: "POST", body: JSON.stringify({ companyId: undoId }) })
+      .then(() => {
+        state.focus.loaded = false; // deck must refetch — this company is back
+        return loadResultsPage({ force: true });
+      })
+      .catch((err) => { setBusyElement(btn, false); alert(`Couldn't undo: ${err?.message || err}`); });
+  }
+});
+$("resultsPage").addEventListener("submit", (event) => {
+  if (!event.target.closest("[data-results-search]")) return;
+  event.preventDefault();
+  state.resultsPage.q = ($("resultsSearchInput")?.value || "").trim();
+  state.resultsPage.offset = 0;
+  void loadResultsPage({ force: true });
+});
+// Close any open row menu when clicking outside of it.
+document.addEventListener("click", (event) => {
+  if (event.target.closest(".resultMenu")) return;
+  $("resultsPage")?.querySelectorAll(".resultMenu.open").forEach((m) => m.classList.remove("open"));
+});
+
+// Reason / outcome modal interactions
+$("reasonModalRoot").addEventListener("click", (event) => {
+  if (event.target.closest("[data-reason-confirm]")) { void confirmReasonModal(); return; }
+  if (event.target.closest("[data-reason-close]")) { closeReasonModal(); return; }
+  // Only a click on the backdrop itself (outside the modal box) dismisses; clicks
+  // on the dropdown/textarea/etc. inside the modal must not close it.
+  if (event.target.classList.contains("reasonModalBackdrop")) closeReasonModal();
+});
+
 $("researchDeskButton").addEventListener("click", () => {
   setKindlingView("research");
   navigate("/researchdesk");

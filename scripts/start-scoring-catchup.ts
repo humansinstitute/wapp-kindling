@@ -253,7 +253,8 @@ function selectCandidates(db: Database, marketProfileVersionId: string, offering
           AND wq.status IN ('queued', 'running')
           AND wq.target_id = c.id || ':' || ?2 || ':' || ?1
       )
-    ORDER BY profile_count DESC,
+    ORDER BY (c.id IN (SELECT company_id FROM company_segments WHERE segment_id = 'adapt-icp-known-good-fit')) DESC,
+      profile_count DESC,
       source_count DESC,
       max_source_confidence DESC,
       c.confidence DESC,

@@ -113,6 +113,52 @@ button[aria-busy="true"]::after {
   min-width: 190px;
 }
 
+.loginMethod {
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  width: 100%;
+  max-width: 360px;
+  margin: 0 auto;
+}
+
+.nsecLabel {
+  font-size: 13px;
+  color: var(--muted);
+  justify-self: start;
+}
+
+#nsecInput {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: inherit;
+}
+
+.nsecNote {
+  font-size: 12px;
+  color: var(--muted);
+  text-align: left;
+  margin: 0;
+  line-height: 1.45;
+}
+
+.nsecHttpsNote {
+  color: #9b2d1f;
+}
+
+/* Text-style toggles between the two login methods — opt out of the accent
+   button styling that .login button applies. */
+.login button.loginLink {
+  background: none;
+  border: none;
+  color: var(--accent);
+  min-width: 0;
+  padding: 2px 4px;
+  font-size: 13px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 .error {
   min-height: 22px;
   color: #9b2d1f;
@@ -405,6 +451,39 @@ button[aria-busy="true"]::after {
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: var(--muted);
+}
+
+.focusContactPager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  margin-top: 2px;
+}
+
+.focusContactArrow {
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  font-size: 18px;
+  line-height: 1;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  background: var(--panel);
+}
+
+.focusContactArrow:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.focusContactPosition {
+  min-width: 96px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 650;
 }
 
 .focusContactList {
@@ -873,6 +952,102 @@ button[aria-busy="true"]::after {
 .serviceProfileHeader span {
   color: var(--muted);
   font-size: 13px;
+}
+
+/* About Adapt — company-level overview hero */
+.aboutAdapt {
+  display: grid;
+  gap: 12px;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #fbfaf7;
+}
+
+.aboutAdaptTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.aboutEyebrow {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.aboutVersion {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.aboutAdapt h2 {
+  margin: 0;
+  font-size: 24px;
+  line-height: 1.12;
+}
+
+.aboutSummary {
+  margin: 0;
+  color: var(--ink);
+}
+
+.aboutPositioning {
+  display: grid;
+  gap: 4px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.aboutPositioning strong {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.aboutPositioning p {
+  margin: 0;
+  color: var(--ink);
+}
+
+/* What Adapt offers — services section */
+.offersHeader {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.offersCount {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent-2);
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(186, 85, 55, 0.12);
+}
+
+.serviceCardGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.serviceCard {
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+}
+
+.serviceCard h4 {
+  margin: 0;
+  font-size: 16px;
 }
 
 .profileSection {
@@ -1346,6 +1521,13 @@ button[aria-busy="true"]::after {
   font-size: 12px;
 }
 
+.companyRowBadges {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .modalBackdrop {
   position: fixed;
   inset: 0;
@@ -1538,8 +1720,57 @@ button[aria-busy="true"]::after {
 
 .shell {
   min-height: 100vh;
+}
+
+.chatScreen {
+  height: 100vh;
   display: grid;
-  grid-template-columns: 310px minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  background: var(--panel-soft);
+}
+
+.chatScreenHeader {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 22px 28px 14px;
+}
+
+.chatScreenTitle .eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.chatScreenTitle h1 {
+  margin: 4px 0 0;
+  font-size: 24px;
+  letter-spacing: -0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chatScreenActions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.chatScreenActions .newChat {
+  width: auto;
+  border-radius: 999px;
+  padding: 9px 16px;
+}
+
+.chatTabs {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 2px 28px 16px;
+  border-bottom: 1px solid var(--line);
+  scrollbar-width: thin;
 }
 
 .sidebar {
@@ -1828,25 +2059,35 @@ textarea:focus {
 
 .messages {
   overflow: auto;
-  padding: 24px;
+  padding: 28px;
   display: flex;
   flex-direction: column;
   gap: 14px;
+  width: 100%;
+  max-width: 880px;
+  margin: 0 auto;
 }
 
 .message {
-  max-width: min(760px, 92%);
-  padding: 13px 15px;
+  max-width: min(680px, 88%);
+  padding: 12px 16px;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 14px;
   background: var(--panel);
   white-space: pre-wrap;
+  box-shadow: var(--shadow-soft);
 }
 
 .message.user {
   align-self: flex-end;
-  background: #e8f1ee;
-  border-color: #b9d1ca;
+  background: var(--accent);
+  border-color: var(--accent-dark);
+  color: #fff;
+  border-bottom-right-radius: 5px;
+}
+
+.message.assistant {
+  border-bottom-left-radius: 5px;
 }
 
 .message.assistant {
@@ -1866,10 +2107,14 @@ textarea:focus {
 .composer {
   border-top: 1px solid var(--line);
   background: var(--panel);
-  padding: 14px;
+  padding: 16px 28px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
+  width: 100%;
+  max-width: 880px;
+  margin: 0 auto;
+  align-items: end;
 }
 
 textarea {
@@ -1900,8 +2145,16 @@ textarea {
 }
 
 .composer textarea {
-  min-height: 44px;
-  max-height: 180px;
+  min-height: 50px;
+  max-height: 160px;
+  resize: none;
+  border-radius: 12px;
+  padding: 13px 15px;
+}
+
+.composer button {
+  border-radius: 12px;
+  height: 50px;
 }
 
 @media (max-width: 760px) {
@@ -2466,6 +2719,16 @@ textarea {
   background: var(--panel-soft);
   border: 1px solid rgba(200, 195, 184, 0.7);
   border-radius: 10px;
+  cursor: pointer;
+  transition: border-color 140ms ease, box-shadow 140ms ease, background 140ms ease;
+}
+
+.companyListRow:hover,
+.companyListRow:focus-visible {
+  border-color: var(--accent);
+  background: var(--panel);
+  box-shadow: var(--shadow-soft);
+  outline: none;
 }
 
 .companyRowMeta {
@@ -2497,3 +2760,1150 @@ textarea {
   border-top: none;
   border-bottom: 1px solid var(--line);
 }
+
+/* ===== On Deck card actions ===== */
+.focusActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.focusAction {
+  font-weight: 650;
+}
+.focusActionSent {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.focusActionSnooze {
+  background: var(--panel);
+  border-color: var(--line-strong);
+  color: var(--text-muted, var(--accent-2));
+}
+.focusActionSnooze:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.focusActionDismiss {
+  background: var(--panel);
+  border-color: var(--line-strong);
+  color: var(--accent-2);
+}
+.focusActionGhost {
+  background: var(--panel);
+  border-color: var(--accent);
+  color: var(--accent);
+  margin-left: auto;
+}
+.focusActionGhost:hover {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+/* ===== Results page ===== */
+.resultsPage {
+  min-height: 100vh;
+  background: var(--bg);
+}
+.resultsInner {
+  width: 100%;
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 40px clamp(24px, 5vw, 56px) 56px;
+  display: grid;
+  gap: 16px;
+  align-content: start;
+}
+.resultsTabs {
+  margin-bottom: 0;
+  flex-wrap: wrap;
+}
+.resultsSearch {
+  display: flex;
+  gap: 8px;
+}
+.resultsSearch input {
+  flex: 1;
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.resultsPager {
+  margin-top: 0;
+  padding-top: 0;
+  padding-bottom: 12px;
+  border-top: none;
+  border-bottom: 1px solid var(--line);
+}
+.resultsListPanel {
+  display: grid;
+  gap: 8px;
+}
+.resultRow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 14px;
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.resultRowMain {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.resultRowHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.resultRowHead strong {
+  font-size: 15px;
+}
+.resultFit {
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: #eef6f3;
+  color: var(--accent-dark);
+}
+.resultFit-medium { background: #fbf3e6; color: var(--pending); }
+.resultFit-low { background: #f1efe9; color: var(--muted); }
+.resultMeta,
+.resultTiming {
+  color: var(--muted);
+  font-size: 13px;
+}
+.resultReason {
+  margin: 2px 0 0;
+  font-size: 14px;
+  color: var(--ink);
+}
+.resultRowActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex: none;
+}
+.resultBtn {
+  padding: 7px 11px;
+  font-size: 13px;
+  font-weight: 650;
+}
+.resultBtnGood {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+/* ===== Reason / outcome modal ===== */
+.reasonModalRoot {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+}
+.reasonModalBackdrop {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(23, 33, 31, 0.42);
+}
+.reasonModal {
+  width: min(460px, 100%);
+  background: var(--panel);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  padding: 22px;
+  display: grid;
+  gap: 14px;
+}
+.reasonModalTitle {
+  margin: 0;
+  font-size: 20px;
+}
+.reasonModalMessage {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+.reasonModalField {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--muted);
+}
+.reasonModalField select,
+.reasonModalField textarea {
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--ink);
+  font-weight: 400;
+}
+.reasonModalError {
+  margin: 0;
+  color: #9b2d1f;
+  font-size: 13px;
+}
+.reasonModalActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.reasonModalConfirm {
+  background: var(--accent-2);
+  border-color: var(--accent-2);
+  color: #fff;
+}
+
+/* ---- On Deck company details modal ------------------------------------- */
+/* Sits above the left nav (z-index 40) so it reads as a true overlay. */
+.focusDetailBackdrop {
+  z-index: 60;
+  background: rgba(23, 33, 30, 0.55);
+  padding: 0;
+  place-items: stretch;
+}
+
+.focusDetailPanel {
+  width: 80vw;
+  height: 86vh;
+  max-width: none;
+  max-height: none;
+  margin: auto;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 14px;
+}
+
+.focusDetailHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px 26px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-soft);
+}
+
+.focusDetailHeading h2 {
+  margin: 4px 0 2px;
+  font-size: 24px;
+  letter-spacing: 0;
+}
+
+.focusDetailMeta {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.focusDetailMeta a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.focusDetailHeaderRight {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.focusDetailFit {
+  font-size: 13px;
+  padding: 4px 12px;
+}
+
+.focusDetailClose {
+  flex: none;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border-radius: 50%;
+  font-size: 16px;
+  line-height: 1;
+  color: var(--muted);
+}
+
+.focusDetailBody {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 22px 26px 30px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.focusDetailColumns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.focusDetailCard {
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+}
+
+.focusDetailCard h3 {
+  margin: 0 0 12px;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.focusDetailCard .focusContacts {
+  margin-top: 0;
+  border-top: none;
+  padding-top: 0;
+}
+
+/* ===== Reviewer feedback card ===== */
+.companyFeedbackCard h3 {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.feedbackSaved {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+}
+.feedbackVerdicts {
+  display: flex;
+  gap: 8px;
+}
+.feedbackVerdictBtn {
+  flex: 1;
+  padding: 9px 12px;
+  font-size: 14px;
+  font-weight: 650;
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  cursor: pointer;
+}
+.feedbackVerdictGood.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.feedbackVerdictBad.active {
+  background: var(--accent-2);
+  border-color: var(--accent-2);
+  color: #fff;
+}
+.feedbackHint {
+  margin: 14px 0 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.feedbackLabels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.feedbackChip {
+  padding: 5px 11px;
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  color: var(--ink);
+  cursor: pointer;
+}
+.feedbackChip.active {
+  background: #fbf3e6;
+  border-color: var(--accent-2);
+  color: var(--accent-2);
+}
+.feedbackNote {
+  width: 100%;
+  margin-top: 12px;
+  padding: 9px 11px;
+  font: inherit;
+  font-size: 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  background: var(--panel);
+  resize: vertical;
+  box-sizing: border-box;
+}
+.feedbackActions {
+  margin-top: 10px;
+  display: flex;
+  justify-content: flex-end;
+}
+.feedbackSave {
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 650;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.feedbackVerdictBtn:disabled,
+.feedbackChip:disabled,
+.feedbackSave:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.focusDetailCard .focusContactsTitle {
+  display: none;
+}
+
+.focusDetailFacts {
+  margin: 14px 0 0;
+  display: grid;
+  gap: 8px;
+}
+
+.focusDetailFacts div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.focusDetailFacts dt {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.focusDetailFacts dd {
+  margin: 0;
+  font-weight: 650;
+  text-align: right;
+}
+
+.focusDetailEmpty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+/* Draft outreach — the headline payoff, pinned to the top of the modal. */
+.focusDraftCard {
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(17, 107, 93, 0.06), rgba(17, 107, 93, 0.02));
+  padding: 18px 20px;
+  box-shadow: 0 1px 0 rgba(17, 107, 93, 0.12);
+}
+
+.focusDraftEmpty {
+  border-style: dashed;
+  background: var(--panel-soft);
+}
+
+.focusDraftTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.focusDraftLabel {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent-dark);
+}
+
+.focusDraftCount {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 9px;
+}
+
+.focusDraftControls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.focusDraftNav {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.focusDraftCopy {
+  padding: 7px 14px;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-size: 13px;
+}
+
+.focusDraftCopy:hover {
+  border-color: var(--accent-dark);
+}
+
+.focusDraftText {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 16px 18px;
+  font-size: 14.5px;
+  line-height: 1.55;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+/* Rendered markdown inside the draft preview. */
+.focusDraftText > :first-child { margin-top: 0; }
+.focusDraftText > :last-child { margin-bottom: 0; }
+.focusDraftText p { margin: 0 0 12px; }
+.focusDraftText h1,
+.focusDraftText h2,
+.focusDraftText h3,
+.focusDraftText h4 { margin: 14px 0 8px; line-height: 1.3; }
+.focusDraftText h1 { font-size: 18px; }
+.focusDraftText h2 { font-size: 16px; }
+.focusDraftText h3 { font-size: 15px; }
+.focusDraftText ul,
+.focusDraftText ol { margin: 0 0 12px; padding-left: 20px; }
+.focusDraftText li { margin: 2px 0; }
+.focusDraftText hr { border: 0; border-top: 1px solid var(--line); margin: 14px 0; }
+.focusDraftText a { color: var(--accent, #4f8cff); }
+
+/* Enriched profile — readable rows, never raw JSON. */
+.focusProfileGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 14px;
+}
+
+.focusProfileField {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.focusProfileLabel {
+  font-size: 12px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 650;
+}
+
+.focusProfileValue {
+  font-size: 14px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.focusProfileValue a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.profileChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.profileChip {
+  display: inline-block;
+  padding: 3px 10px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--panel-soft);
+  font-size: 13px;
+}
+
+.profileSubList {
+  display: grid;
+  gap: 10px;
+}
+
+.profileSubItem {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel-soft);
+}
+
+.profileNested {
+  margin: 0;
+  display: grid;
+  gap: 8px;
+}
+
+/* Stacked label-above-value reads cleanly for arbitrary content — the old
+   fixed two-column grid cramped long values into a narrow strip. */
+.profileNested > div {
+  display: grid;
+  gap: 2px;
+}
+
+.profileNested dt {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  font-weight: 650;
+}
+
+.profileNested dd {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+/* ---- Signals -------------------------------------------------------- */
+.signalList {
+  display: grid;
+  gap: 10px;
+}
+
+.signalItem {
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 9px;
+  background: var(--panel-soft);
+  display: grid;
+  gap: 7px;
+}
+
+.signalHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.signalType {
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.signalRelevance {
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  font-weight: 650;
+  color: var(--accent-dark);
+  background: rgba(17, 107, 93, 0.1);
+  border-radius: 999px;
+  padding: 2px 9px;
+}
+
+.signalSummary {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.signalFoot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.signalMeta {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.signalSource {
+  font-size: 12.5px;
+  font-weight: 650;
+  color: var(--accent);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.signalSource:hover {
+  text-decoration: underline;
+}
+
+@media (max-width: 860px) {
+  .focusDetailPanel {
+    width: 100vw;
+    height: 100vh;
+    border-radius: 0;
+  }
+  .focusDetailColumns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ===== Reach Out modal (drafts + contacts; log email/call) ===== */
+.reachModalRoot { position: fixed; inset: 0; z-index: 90; }
+.reachBackdrop {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(23, 33, 31, 0.45);
+}
+.reachPanel {
+  width: min(80vw, 1280px);
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.reachPanelCall { width: min(480px, 100%); }
+.reachHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 20px 22px;
+  border-bottom: 1px solid var(--line);
+}
+.reachHeader h2 { margin: 4px 0 0; font-size: 22px; }
+.reachEyebrow { color: var(--muted); font-size: 13px; font-weight: 650; }
+.reachClose {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 18px;
+  padding: 4px 8px;
+}
+.reachBody {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr;
+  gap: 0;
+  overflow: hidden;
+  flex: 1;
+  min-height: 0;
+}
+.reachCol { padding: 18px 22px; overflow-y: auto; min-height: 0; }
+.reachColDrafts {
+  border-right: 1px solid var(--line);
+  background: var(--panel-soft);
+  /* One email at a time: let the draft fill the column and scroll inside it. */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.reachColTitle {
+  margin: 0 0 12px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.reachDraftList { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.reachDraft {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.reachDraftControls { display: flex; align-items: center; gap: 6px; }
+.reachDraftNav {
+  padding: 2px 9px;
+  font-size: 15px;
+  line-height: 1;
+  font-weight: 700;
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  color: var(--ink);
+}
+.reachDraftNav:disabled { opacity: 0.4; cursor: default; }
+.reachDraftHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.reachDraftLabel { font-size: 12px; font-weight: 700; color: var(--muted); }
+.reachDraftCopy { padding: 4px 12px; font-size: 12px; }
+.reachDraftText {
+  margin: 0;
+  padding: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.6;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.reachContactList { display: grid; gap: 12px; }
+.reachContact { display: grid; gap: 6px; }
+.reachContactName { font-weight: 650; font-size: 14px; }
+.reachContactRole { font-weight: 500; color: var(--muted); font-size: 13px; }
+.reachContactChips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.reachChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+}
+.reachChipCopy { padding: 3px 9px; font-size: 12px; }
+.reachMuted { color: var(--muted); font-size: 13px; }
+.reachEmpty { color: var(--muted); font-size: 14px; margin: 0; }
+.reachFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 16px 22px;
+  border-top: 1px solid var(--line);
+}
+.reachFooterNote { color: var(--muted); font-size: 13px; }
+.reachActions { display: flex; gap: 8px; }
+.reachPrimary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.reachCall { background: var(--accent-2); border-color: var(--accent-2); }
+.reachCallForm { padding: 20px 22px; display: grid; gap: 14px; }
+.reachField { display: grid; gap: 6px; font-size: 13px; font-weight: 650; color: var(--muted); }
+.reachField textarea,
+.reachField select {
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--ink);
+  font-weight: 400;
+}
+.reachError { margin: 0; color: #9b2d1f; font-size: 13px; }
+
+@media (max-width: 680px) {
+  .reachBody { grid-template-columns: 1fr; }
+  .reachColDrafts { border-right: none; border-bottom: 1px solid var(--line); }
+}
+
+.resultBtnUndo {
+  background: var(--panel);
+  border-color: var(--line-strong);
+  color: var(--muted);
+}
+.resultBtnUndo:hover {
+  border-color: var(--accent);
+  color: var(--accent-dark);
+}
+
+/* Per-row ⋮ menu (holds Undo / Resume now) */
+.resultMenu {
+  position: relative;
+}
+.resultMenuToggle {
+  padding: 4px 8px;
+  font-size: 18px;
+  line-height: 1;
+  font-weight: 700;
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+}
+.resultMenuToggle:hover {
+  background: var(--panel);
+  border-color: var(--line-strong);
+  color: var(--accent-dark);
+}
+.resultMenuList {
+  display: none;
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 20;
+  min-width: 150px;
+  padding: 4px;
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+.resultMenu.open .resultMenuList {
+  display: block;
+}
+.resultMenuItem {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-weight: 600;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--ink);
+  cursor: pointer;
+}
+.resultMenuItem:hover {
+  background: var(--panel-soft);
+  color: var(--accent-dark);
+}
+
+/* ---- Floating "Ask Athena" widget ------------------------------------- */
+.athena {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 1200;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 12px;
+}
+.athena.hidden { display: none; }
+
+.athenaLauncher {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 999px;
+  padding: 12px 18px;
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent-dark);
+  box-shadow: var(--shadow);
+  font-weight: 700;
+}
+.athenaLauncher:hover { background: var(--accent-dark); border-color: var(--accent-dark); }
+.athenaLauncher.active { background: var(--accent-dark); }
+.athenaLauncherIcon { font-size: 16px; line-height: 1; }
+
+.athenaPanel {
+  width: min(420px, calc(100vw - 32px));
+  height: min(560px, calc(100vh - 120px));
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.athenaPanel.hidden { display: none; }
+
+.athenaHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-soft);
+}
+.athenaTitle { font-weight: 750; }
+.athenaSpark { color: var(--accent); }
+.athenaHeaderActions { display: flex; gap: 6px; }
+.athenaHeaderActions button {
+  padding: 4px 9px;
+  border-radius: 8px;
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+}
+.athenaHeaderActions button:hover { color: var(--accent-dark); border-color: var(--line); box-shadow: none; transform: none; }
+
+.athenaTabs {
+  display: flex;
+  gap: 6px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--line);
+  scrollbar-width: thin;
+}
+.athenaTab {
+  flex: 0 0 auto;
+  max-width: 150px;
+  padding: 5px 11px;
+  border-radius: 999px;
+  background: var(--panel-soft);
+  border-color: var(--line);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.athenaTab.active { background: var(--accent); color: #fff; border-color: var(--accent-dark); }
+.athenaTabNew { font-weight: 800; padding: 5px 12px; }
+
+.athenaMessages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.athenaEmpty { color: var(--muted); font-size: 13px; text-align: center; margin: auto; max-width: 280px; }
+.athenaMessage {
+  max-width: 85%;
+  padding: 9px 12px;
+  border-radius: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 14px;
+  line-height: 1.45;
+}
+.athenaMessage.user { align-self: flex-end; background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
+.athenaMessage.assistant { align-self: flex-start; background: var(--panel-soft); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+.athenaMessage.pending { color: var(--pending); font-style: italic; }
+.athenaMessage.error { background: #fbeae5; border-color: var(--accent-2); color: var(--accent-2); }
+
+.athenaStatus { padding: 0 14px 6px; font-size: 12px; color: var(--muted); }
+
+.athenaComposer {
+  display: flex;
+  gap: 8px;
+  padding: 12px;
+  border-top: 1px solid var(--line);
+}
+.athenaComposer textarea {
+  flex: 1;
+  resize: none;
+  max-height: 120px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  padding: 9px 11px;
+}
+.athenaComposer button { background: var(--accent); color: #fff; border-color: var(--accent-dark); }
+.athenaComposer button:hover { background: var(--accent-dark); }
+
+.sidebarTopActions { display: flex; gap: 6px; }
+
+/* ---- Ask Athena pinned right drawer ----------------------------------- */
+:root { --athena-w: 384px; }
+
+.athena.pinned {
+  right: 0;
+  top: 0;
+  bottom: 0;
+}
+.athena.pinned .athenaPanel {
+  width: var(--athena-w);
+  height: 100vh;
+  border-radius: 0;
+  border-top: 0;
+  border-bottom: 0;
+  border-right: 0;
+  box-shadow: -12px 0 32px rgba(23, 33, 31, 0.08);
+}
+.athena.pinned .athenaLauncher { display: none; }
+
+.athenaHeaderActions button.active { color: var(--accent-dark); }
+
+#app.athenaPinned > section:not(.hidden) {
+  margin-right: var(--athena-w);
+  transition: margin-right 0.18s ease;
+}
+@media (max-width: 760px) {
+  .athena.pinned .athenaPanel { width: 100vw; }
+  #app.athenaPinned > section:not(.hidden) { margin-right: 0; }
+}
+
+/* ---- Markdown rendering inside chat bubbles ---------------------------- */
+.markdownBody > :first-child { margin-top: 0; }
+.markdownBody > :last-child { margin-bottom: 0; }
+.markdownBody p { margin: 0 0 10px; }
+.markdownBody h1,
+.markdownBody h2,
+.markdownBody h3,
+.markdownBody h4 {
+  margin: 14px 0 8px;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+}
+.markdownBody h1 { font-size: 1.3em; }
+.markdownBody h2 { font-size: 1.18em; }
+.markdownBody h3 { font-size: 1.06em; }
+.markdownBody h4 { font-size: 1em; }
+.markdownBody ul,
+.markdownBody ol { margin: 0 0 10px; padding-left: 1.3em; }
+.markdownBody li { margin: 3px 0; }
+.markdownBody a { color: var(--accent-dark); text-decoration: underline; }
+.markdownBody hr { border: 0; border-top: 1px solid var(--line); margin: 12px 0; }
+.markdownBody code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.88em;
+  background: rgba(17, 107, 93, 0.08);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 1px 5px;
+}
+.markdownBody pre {
+  margin: 0 0 10px;
+  padding: 12px 14px;
+  background: var(--ink);
+  color: #f3f1ea;
+  border-radius: 10px;
+  overflow-x: auto;
+}
+.markdownBody pre code {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  font-size: 0.86em;
+}
+/* Keep contrast when an assistant bubble ever uses an accent background */
+.message.user .markdownBody a,
+.message.user .markdownBody code { color: #fff; border-color: rgba(255,255,255,0.4); }

@@ -1,0 +1,51 @@
+{
+  "name": "kindling-ask-athena",
+  "description": "Read-only Ask Athena Q&A agent for the Kindling WApp. Answers questions about the Athena system, data, and processes by reading the /workspace/athena-kindling repo. Makes NO changes to code, data, or jobs. Posts the answer straight to the chat webhook.",
+  "version": 1,
+  "tags": [
+    "kindling",
+    "wapp",
+    "chat",
+    "ask-athena",
+    "read-only",
+    "http-trigger",
+    "webhook"
+  ],
+  "input": {
+    "source": "chat-wapp",
+    "agent": "claude",
+    "workingDirectory": "/workspace/athena-kindling",
+    "chatId": "",
+    "userPubkey": "",
+    "userNpub": "",
+    "message": "",
+    "history": [],
+    "webhook": {
+      "url": "",
+      "authHeader": "x-chat-wapp-token",
+      "token": ""
+    }
+  },
+  "steps": [
+    {
+      "id": "answer-and-deliver",
+      "name": "answer-and-deliver",
+      "description": "Answer the user's question read-only from the repo, then POST the answer to the chat webhook.",
+      "type": "agent",
+      "agent": "$.agent",
+      "directory": "$.workingDirectory",
+      "timeoutMs": 600000,
+      "input": {
+        "pick": {
+          "chatId": "$.chatId",
+          "message": "$.message",
+          "history": "$.history",
+          "webhook": "$.webhook"
+        }
+      },
+      "prompt": "You are Ask Athena, a STRICTLY READ-ONLY assistant running inside the /workspace/athena-kindling repository.\n\nYour input (JSON) contains:\n- chatId: the chat thread id\n- message: the user's latest question\n- history: prior messages in this thread ({role, content}) for context\n- webhook: { url, token } you MUST call to deliver your answer\n\nHARD RULES — never break these:\n- You may READ files, grep/search, and inspect the SQLite DB with read-only SELECT queries.\n- You must NEVER edit, create, move, or delete files; never write to or migrate the database; never run git writes (commit/push/checkout/reset); never start, trigger, or modify jobs/pipelines; never change any configuration.\n- This is a question-answering task ONLY. If the user asks you to change something, DO NOT do it — instead explain what you would change, which files/tables are involved, and why.\n- Do not fabricate. If you cannot determine something from the repo/data, say so plainly.\n\nHow to answer:\n1. Read the relevant parts of the repo (and read-only DB if useful) to ground your answer in the actual system. Cite concrete file paths and table/column names where helpful.\n2. Use `history` to stay consistent with the ongoing conversation.\n3. Write a clear, concise markdown answer for the user.\n\nDELIVERY (required final step):\nAfter composing your answer, deliver it by POSTing to the chat webhook. Run exactly one HTTP POST:\n\n  curl -sS -X POST \"<webhook.url>\" \\\n    -H \"content-type: application/json\" \\\n    -H \"<webhook.authHeader>: <webhook.token>\" \\\n    --data @<(jq -nc --arg c \"<chatId>\" --arg r \"<your markdown answer>\" '{chatId:$c, response:$r}')\n\nUse the actual values from your input. The webhook body MUST be JSON of the form {\"chatId\": \"<chatId>\", \"response\": \"<your markdown answer>\"}. The header name is the value of webhook.authHeader (\"x-chat-wapp-token\") and its value is webhook.token. If the POST returns a non-2xx status, retry once. The webhook delivering your answer is the only write you are permitted to make.\n\nReturn a short confirmation of what you answered and that delivery succeeded.",
+      "assign": "$.answer"
+    }
+  ],
+  "default": false
+}

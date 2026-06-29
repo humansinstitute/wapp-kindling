@@ -7,6 +7,8 @@ import { db } from "./db.ts";
 import { pubkeyToNpub } from "./auth.ts";
 
 const DEFAULT_BATCH_LIMIT = 21;
+// Priority cohort: drain known good-fit ICP companies before the generic backlog.
+const ICP_SEGMENT_ID = "adapt-icp-known-good-fit";
 const PETE_NPUB = "npub1jss47s4fvv6usl7tn6yp5zamv2u60923ncgfea0e6thkza5p7c3q0afmzy";
 const DEFAULT_DM_CHANNEL_ID = "97ae5c0d-f88c-41e7-9f7a-d64d27a4fd18";
 const DEFAULT_PIPELINE_RUN_BASE_URL = "https://rick.runwingman.com/pipelines/runs";
@@ -148,7 +150,10 @@ function selectNextIndustry() {
         COALESCE(NULLIF(TRIM(industry), ''), '(blank)') AS industry,
         SUM(CASE WHEN enrichment_status = 'not_started' THEN 1 ELSE 0 END) AS unprocessed_count,
         SUM(CASE WHEN enrichment_status = 'queued' THEN 1 ELSE 0 END) AS queued_count,
-        SUM(CASE WHEN enrichment_status = 'running' THEN 1 ELSE 0 END) AS running_count
+        SUM(CASE WHEN enrichment_status = 'running' THEN 1 ELSE 0 END) AS running_count,
+        SUM(CASE WHEN enrichment_status = 'not_started'
+          AND id IN (SELECT company_id FROM company_segments WHERE segment_id = '${ICP_SEGMENT_ID}')
+          THEN 1 ELSE 0 END) AS icp_unprocessed_count
       FROM companies
       GROUP BY COALESCE(NULLIF(TRIM(industry), ''), '(blank)')
     ),
@@ -172,7 +177,7 @@ function selectNextIndustry() {
     WHERE ic.unprocessed_count > 0
       AND ic.queued_count = 0
       AND ic.running_count = 0
-    ORDER BY ia.last_started_at IS NOT NULL ASC, ia.last_started_at ASC, ic.unprocessed_count DESC, ic.industry ASC
+    ORDER BY (ic.icp_unprocessed_count > 0) DESC, ia.last_started_at IS NOT NULL ASC, ia.last_started_at ASC, ic.unprocessed_count DESC, ic.industry ASC
     LIMIT 1
   `).get() as { industry: string; unprocessed_count: number; queued_count: number; running_count: number; last_started_at?: number | null } | null;
 }
@@ -183,7 +188,7 @@ function listCompaniesForIndustry(industry: string, limit: number) {
     FROM companies
     WHERE COALESCE(NULLIF(TRIM(industry), ''), '(blank)') = ?1
       AND enrichment_status = 'not_started'
-    ORDER BY updated_at ASC, name ASC
+    ORDER BY (id IN (SELECT company_id FROM company_segments WHERE segment_id = '${ICP_SEGMENT_ID}')) DESC, updated_at ASC, name ASC
     LIMIT ?2
   `).all(industry, limit) as Record<string, unknown>[]).map((row) => ({
     id: text(row.id),

@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
@@ -40,6 +41,7 @@ import {
   type SchedulerSettingsPatch,
 } from "./db.ts";
 import { buildPipelineTriggerRequest, startPreparedChatPipeline, type PipelineTriggerRequest } from "./pipeline.ts";
+import { splitPitchVariants } from "./outreach-variants.ts";
 
 const PUBLIC_DIR = join(import.meta.dir, "..", "public");
 const COMPANY_LIST_LIMIT = 500;
@@ -116,10 +118,36 @@ function toServerAutopilotUrl(value: string) {
   return value.replace(/\/$/, "");
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function startOfDay(ts: number): number {
+  const d = new Date(ts);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+// How many days a snooze pushes a call-list item out for. Configurable in
+// Settings; defaults to 1 (reappears tomorrow morning).
+function getSnoozeDays(): number {
+  const raw = Number(getSetting("snoozeDays"));
+  return Number.isFinite(raw) && raw >= 1 ? Math.min(365, Math.floor(raw)) : 1;
+}
+
+// The WApp's own public origin, used to build pipeline webhook/write-back URLs
+// that Autopilot calls AFTER a run finishes. Prefer an explicit config (DB
+// setting, then env) over the localhost:PORT fallback — the fallback is fragile
+// (a stray server process with the wrong PORT, a changed port, or off-box
+// pipeline execution all break callbacks). A stable public URL wins.
+function configuredPublicOrigin(): string {
+  return (getSetting("publicOrigin") || PUBLIC_ORIGIN || "").replace(/\/$/, "");
+}
+
 function getAppSettings(): AppSettings {
   return {
     autopilotUrl: (getSetting("autopilotUrl") || WINGMAN_URL || "").replace(/\/$/, ""),
+    publicOrigin: configuredPublicOrigin(),
     defaultPipeline: getSetting("defaultPipeline") || PIPELINE_NAME,
+    snoozeDays: getSnoozeDays(),
   };
 }
 
@@ -193,6 +221,8 @@ function mapCompanyListItem(row: Record<string, unknown>) {
     duplicateStatus: String(row.duplicate_status),
     enrichmentStatus: normalizeCompanyExecutionStatus(row.enrichment_status),
     confidence: Number(row.confidence ?? 0),
+    fitScore: row.fit_score == null ? null : Math.round(Number(row.fit_score)),
+    fitBand: row.fit_score == null ? null : scoreBand(Number(row.fit_score)),
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
   };
@@ -780,11 +810,12 @@ function recentSchedulerLaunch(action: SchedulerActionKey, roleKey: string, cool
 }
 
 function scheduledKindlingOrigin() {
-  if (PUBLIC_ORIGIN) return PUBLIC_ORIGIN;
+  const configured = configuredPublicOrigin();
+  if (configured) return configured;
   const testDbPath = process.env.CHAT_WAPP_DB_PATH || "";
   const runningContractTests = /kindling-api-|test\.sqlite$/.test(testDbPath);
   if (PORT === 3256 && !runningContractTests) {
-    throw new Error("CHAT_WAPP_PUBLIC_ORIGIN must point at the Kindling WApp origin before scheduled automation can start");
+    throw new Error("Set the WApp public origin (Settings publicOrigin or CHAT_WAPP_PUBLIC_ORIGIN) before scheduled automation can start");
   }
   return `http://localhost:${PORT}`;
 }
@@ -3094,6 +3125,30 @@ function replaceServiceOfferingsForMarketProfileVersion(marketProfileVersionId: 
   return offerings;
 }
 
+// Single source of truth for outreach voice: the same guide the scheduled
+// "Update Outreach" review session uses. Injected into draft_outreach pipeline
+// context so the drafting agents write in-voice at source (not corrected after).
+let outreachVoiceGuideCache: { text: string; at: number } | null = null;
+function readOutreachVoiceGuide(): string {
+  const now = Date.now();
+  if (outreachVoiceGuideCache && now - outreachVoiceGuideCache.at < 5 * 60 * 1000) {
+    return outreachVoiceGuideCache.text;
+  }
+  let text = "";
+  try {
+    const guide = readFileSync(join(process.cwd(), "docs/outreach-voice-guide.md"), "utf8");
+    let examples = "";
+    try {
+      examples = readFileSync(join(process.cwd(), "docs/Outreach-emails.md"), "utf8");
+    } catch { /* exemplars optional */ }
+    text = examples
+      ? `${guide}\n\n---\n\n# Real example emails (voice reference, do not copy verbatim)\n\n${examples}`
+      : guide;
+  } catch { /* guide optional; pipeline falls back to profile outreachVoice */ }
+  outreachVoiceGuideCache = { text, at: now };
+  return text;
+}
+
 function mapServiceOffering(row: Record<string, unknown>) {
   return {
     id: String(row.id),
@@ -3448,6 +3503,68 @@ function recordActivity(targetType: string, targetId: string, actor: string, act
     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
   `).run(id, targetType, targetId, actor, actionType, summary, JSON.stringify(payload), Date.now());
   return id;
+}
+
+// ---- Per-company reviewer feedback ---------------------------------------
+
+const COMPANY_VERDICTS = ["good", "bad"] as const;
+
+// Structured issue labels a reviewer can attach to a company. Stable keys are
+// stored; labels are display-only.
+const COMPANY_ISSUE_LABELS = [
+  { key: "wrong_fit", label: "Wrong fit" },
+  { key: "missing_decision_maker", label: "Missing decision maker" },
+  { key: "duplicate", label: "Duplicate" },
+  { key: "bad_website", label: "Bad website / no website" },
+  { key: "bad_outreach", label: "Bad outreach" },
+  { key: "wrong_industry", label: "Wrong industry" },
+] as const;
+const COMPANY_ISSUE_LABEL_KEYS = new Set(COMPANY_ISSUE_LABELS.map((l) => l.key));
+
+function normalizeVerdict(value: unknown): string | null {
+  const v = String(value ?? "").trim().toLowerCase();
+  return (COMPANY_VERDICTS as readonly string[]).includes(v) ? v : null;
+}
+
+function normalizeIssueLabels(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  for (const raw of value) {
+    const key = String(raw ?? "").trim();
+    if (COMPANY_ISSUE_LABEL_KEYS.has(key as never)) seen.add(key);
+  }
+  return [...seen];
+}
+
+function mapCompanyFeedback(row: Record<string, unknown> | null) {
+  if (!row) return null;
+  return {
+    companyId: String(row.company_id),
+    verdict: row.verdict == null ? null : String(row.verdict),
+    labels: jsonParse<string[]>(row.labels_json, []),
+    note: String(row.note ?? ""),
+    actor: String(row.actor ?? ""),
+    createdAt: Number(row.created_at ?? 0),
+    updatedAt: Number(row.updated_at ?? 0),
+  };
+}
+
+function getCompanyFeedback(companyId: string) {
+  return mapCompanyFeedback(db.query("SELECT * FROM company_feedback WHERE company_id = ?1").get(companyId) as Record<string, unknown> | null);
+}
+
+function upsertCompanyFeedback(companyId: string, patch: { verdict: string | null; labels: string[]; note: string; actor: string }) {
+  const now = Date.now();
+  const labelsJson = JSON.stringify(patch.labels);
+  const existing = db.query("SELECT company_id FROM company_feedback WHERE company_id = ?1").get(companyId);
+  if (existing) {
+    db.query("UPDATE company_feedback SET verdict = ?2, labels_json = ?3, note = ?4, actor = ?5, updated_at = ?6 WHERE company_id = ?1")
+      .run(companyId, patch.verdict, labelsJson, patch.note, patch.actor, now);
+  } else {
+    db.query("INSERT INTO company_feedback (company_id, verdict, labels_json, note, actor, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)")
+      .run(companyId, patch.verdict, labelsJson, patch.note, patch.actor, now);
+  }
+  return getCompanyFeedback(companyId);
 }
 
 function clampTargetCount(value: unknown): number {
@@ -4157,15 +4274,19 @@ function listCompanies(filters: URLSearchParams | null = null, options: { limit?
   const { where, values } = buildCompanyFilterQuery(filters);
   const limit = Math.max(1, Math.min(COMPANY_LIST_LIMIT, Math.floor(options.limit ?? COMPANY_LIST_LIMIT)));
   const offset = Math.max(0, Math.floor(options.offset ?? 0));
+  // Rank by best service-fit score first (highest fit at the top); companies
+  // with no assessment fall to the bottom in recently-updated order.
   const rows = db.query(`
-    SELECT *
+    SELECT
+      companies.*,
+      (SELECT MAX(sfa.score) FROM service_fit_assessments sfa WHERE sfa.company_id = companies.id) AS fit_score
     FROM companies
     ${where}
-    ORDER BY updated_at DESC, lower(name) ASC
+    ORDER BY (fit_score IS NULL) ASC, fit_score DESC, updated_at DESC, lower(name) ASC
     LIMIT ?${values.length + 1}
     OFFSET ?${values.length + 2}
   `).all(...values, limit, offset) as Record<string, unknown>[];
-  return rows.map(options.compact ? mapCompanyListItem : mapCompany);
+  return rows.map((row) => (options.compact ? mapCompanyListItem(row) : mapCompany(row)));
 }
 
 function normaliseIndustryBatchLimit(value: unknown): number {
@@ -5435,10 +5556,19 @@ function getTopTargetRunDetail(runId: string, limit = 100, offset = 0, options: 
   const draftFilter = options.hasOutreachDraft
     ? "AND EXISTS (SELECT 1 FROM outreach_drafts od WHERE od.company_id = tli.company_id)"
     : "";
-  // The On Deck call list hides companies already acted on (sent/dismissed).
+  // The On Deck call list hides companies already acted on (sent/dismissed), but
+  // keeps "on_deck" items (a no-answer call) so they recirculate — unless they're
+  // snoozed, in which case they stay hidden until snoozed_until passes.
+  const nowMs = Date.now();
   const outreachFilter = options.excludeOutreach
-    ? "AND NOT EXISTS (SELECT 1 FROM outreach_results r WHERE r.company_id = tli.company_id)"
+    ? `AND NOT EXISTS (
+         SELECT 1 FROM outreach_results r
+         WHERE r.company_id = tli.company_id
+           AND NOT (r.state = 'on_deck' AND (r.snoozed_until IS NULL OR r.snoozed_until <= ${nowMs}))
+       )`
     : "";
+  // Push attempted (on_deck) items to the back of the deck so fresh targets lead.
+  const deckAttemptOrder = `COALESCE((SELECT CASE WHEN r.state = 'on_deck' THEN 1 ELSE 0 END FROM outreach_results r WHERE r.company_id = tli.company_id), 0) ASC,`;
   // Band is derived from the service-fit assessment score (0-100), not the
   // composite ranking score on target_list_items.
   const filters = `${draftFilter} ${outreachFilter} ${bandScoreClause(options.band, "sfa.score")}`;
@@ -5472,13 +5602,13 @@ function getTopTargetRunDetail(runId: string, limit = 100, offset = 0, options: 
       c.data_ring,
       c.enrichment_status,
       c.profile_json,
-      (SELECT COUNT(*) FROM outreach_drafts od WHERE od.company_id = tli.company_id) AS outreach_draft_count
+      (SELECT COUNT(DISTINCT COALESCE(od.source_run_id, od.id)) FROM outreach_drafts od WHERE od.company_id = tli.company_id) AS outreach_draft_count
     FROM target_list_items tli
     JOIN service_fit_assessments sfa ON sfa.id = tli.service_fit_assessment_id
     JOIN companies c ON c.id = tli.company_id
     WHERE tli.target_list_run_id = ?1
       ${filters}
-    ORDER BY sfa.score DESC, tli.rank ASC
+    ORDER BY ${deckAttemptOrder} sfa.score DESC, tli.rank ASC
     LIMIT ?2
     OFFSET ?3
   `).all(runId, safeLimit, safeOffset) as Record<string, unknown>[];
@@ -5513,8 +5643,9 @@ function latestTopTargetRunId() {
 const OUTREACH_NO_RESPONSE_MS = 7 * 24 * 60 * 60 * 1000;
 
 const OUTREACH_REASON_CATEGORIES = [
-  "not_appropriate", // dismissed from call list — not worth contacting
-  "poor_record",     // record quality too low — candidate to re-queue
+  "not_appropriate",   // dismissed from call list — not worth contacting
+  "already_contacted", // already contacted outside Kindling
+  "poor_record",       // record quality too low — reason saved for a later cleanup job
   "poor_feedback",   // negative feedback after we reached out
   "said_no",         // they declined
   "no_response",     // never replied
@@ -5554,6 +5685,9 @@ function mapOutreachResult(row: Record<string, unknown>) {
     reason: String(row.reason ?? ""),
     reasonCategory: String(row.reason_category ?? ""),
     dismissedFrom: String(row.dismissed_from ?? ""),
+    notes: String(row.notes ?? ""),
+    snoozedUntil: row.snoozed_until == null ? null : Number(row.snoozed_until),
+    dayAttempts: row.day_attempts == null ? 0 : Number(row.day_attempts),
     fitBand: String(row.fit_band ?? ""),
     fitScore: row.fit_score == null ? null : Number(row.fit_score),
     createdAt: Number(row.created_at ?? 0),
@@ -5572,32 +5706,43 @@ function upsertOutreachResult(companyId: string, patch: Record<string, unknown>)
   const now = Date.now();
   const existing = db.query("SELECT * FROM outreach_results WHERE company_id = ?1").get(companyId) as Record<string, unknown> | null;
   const fit = companyFit(companyId);
+  const str = (v: unknown): string | null => (v == null ? null : String(v));
+  const num = (v: unknown): number | null => (v == null ? null : Number(v));
   const merged = {
     state: String(patch.state ?? existing?.state ?? "waiting"),
-    channel: patch.channel ?? existing?.channel ?? null,
-    outreach_at: patch.outreach_at ?? existing?.outreach_at ?? null,
-    response_at: patch.response_at ?? existing?.response_at ?? null,
-    outcome: patch.outcome ?? existing?.outcome ?? null,
-    reason: patch.reason ?? existing?.reason ?? null,
-    reason_category: patch.reason_category ?? existing?.reason_category ?? null,
-    dismissed_from: patch.dismissed_from ?? existing?.dismissed_from ?? null,
-    fit_band: existing?.fit_band ?? fit.band,
-    fit_score: existing?.fit_score ?? fit.score,
+    channel: str(patch.channel ?? existing?.channel),
+    outreach_at: num(patch.outreach_at ?? existing?.outreach_at),
+    response_at: num(patch.response_at ?? existing?.response_at),
+    outcome: str(patch.outcome ?? existing?.outcome),
+    reason: str(patch.reason ?? existing?.reason),
+    reason_category: str(patch.reason_category ?? existing?.reason_category),
+    dismissed_from: str(patch.dismissed_from ?? existing?.dismissed_from),
+    notes: str(patch.notes ?? existing?.notes),
+    fit_band: String(existing?.fit_band ?? fit.band),
+    fit_score: Number(existing?.fit_score ?? fit.score),
+    // These three accept an explicit null to clear, so key off presence in the
+    // patch rather than nullish-coalescing (which would keep a stale value).
+    snoozed_until: "snoozed_until" in patch ? num(patch.snoozed_until) : num(existing?.snoozed_until),
+    day_attempts: "day_attempts" in patch ? num(patch.day_attempts) : num(existing?.day_attempts),
+    day_attempts_date: "day_attempts_date" in patch ? num(patch.day_attempts_date) : num(existing?.day_attempts_date),
   };
   if (existing) {
     db.query(`
       UPDATE outreach_results
       SET state = ?2, channel = ?3, outreach_at = ?4, response_at = ?5, outcome = ?6,
-          reason = ?7, reason_category = ?8, dismissed_from = ?9, fit_band = ?10, fit_score = ?11, updated_at = ?12
+          reason = ?7, reason_category = ?8, dismissed_from = ?9, fit_band = ?10, fit_score = ?11, notes = ?12,
+          snoozed_until = ?14, day_attempts = ?15, day_attempts_date = ?16, updated_at = ?13
       WHERE company_id = ?1
     `).run(companyId, merged.state, merged.channel, merged.outreach_at, merged.response_at, merged.outcome,
-      merged.reason, merged.reason_category, merged.dismissed_from, merged.fit_band, merged.fit_score, now);
+      merged.reason, merged.reason_category, merged.dismissed_from, merged.fit_band, merged.fit_score, merged.notes, now,
+      merged.snoozed_until, merged.day_attempts, merged.day_attempts_date);
   } else {
     db.query(`
-      INSERT INTO outreach_results (id, company_id, state, channel, outreach_at, response_at, outcome, reason, reason_category, dismissed_from, fit_band, fit_score, created_at, updated_at)
-      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)
+      INSERT INTO outreach_results (id, company_id, state, channel, outreach_at, response_at, outcome, reason, reason_category, dismissed_from, fit_band, fit_score, notes, snoozed_until, day_attempts, day_attempts_date, created_at, updated_at)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?17)
     `).run(crypto.randomUUID(), companyId, merged.state, merged.channel, merged.outreach_at, merged.response_at, merged.outcome,
-      merged.reason, merged.reason_category, merged.dismissed_from, merged.fit_band, merged.fit_score, now);
+      merged.reason, merged.reason_category, merged.dismissed_from, merged.fit_band, merged.fit_score, merged.notes,
+      merged.snoozed_until, merged.day_attempts, merged.day_attempts_date, now);
   }
   return db.query(`
     SELECT r.*, c.name, c.location, c.industry, c.website
@@ -5607,9 +5752,10 @@ function upsertOutreachResult(companyId: string, patch: Record<string, unknown>)
 }
 
 function outreachResultCounts() {
-  const rows = db.query("SELECT state, outreach_at FROM outreach_results").all() as Record<string, unknown>[];
-  const counts = { waiting: 0, no_response: 0, meeting: 0, rejected: 0 };
-  const cutoff = Date.now() - OUTREACH_NO_RESPONSE_MS;
+  const rows = db.query("SELECT state, outreach_at, snoozed_until FROM outreach_results").all() as Record<string, unknown>[];
+  const counts = { waiting: 0, no_response: 0, meeting: 0, rejected: 0, snoozed: 0 };
+  const now = Date.now();
+  const cutoff = now - OUTREACH_NO_RESPONSE_MS;
   for (const row of rows) {
     const state = String(row.state);
     if (state === "waiting") {
@@ -5617,6 +5763,7 @@ function outreachResultCounts() {
       else counts.waiting += 1;
     } else if (state === "meeting") counts.meeting += 1;
     else if (state === "rejected") counts.rejected += 1;
+    else if (state === "on_deck" && row.snoozed_until != null && Number(row.snoozed_until) > now) counts.snoozed += 1;
   }
   return counts;
 }
@@ -5627,7 +5774,7 @@ function listOutreachResults(params: URLSearchParams) {
   const { limit, offset } = pagingFromParams(params, { limit: 25, max: 100 });
   const cutoff = Date.now() - OUTREACH_NO_RESPONSE_MS;
   const clauses: string[] = [];
-  const values: unknown[] = [];
+  const values: (string | number)[] = [];
   if (tab === "waiting") {
     clauses.push("r.state = 'waiting' AND (r.outreach_at IS NULL OR r.outreach_at >= ?" + (values.push(cutoff)) + ")");
   } else if (tab === "no_response") {
@@ -5636,6 +5783,8 @@ function listOutreachResults(params: URLSearchParams) {
     clauses.push("r.state = 'meeting'");
   } else if (tab === "rejected") {
     clauses.push("r.state = 'rejected'");
+  } else if (tab === "snoozed") {
+    clauses.push("r.state = 'on_deck' AND r.snoozed_until IS NOT NULL AND r.snoozed_until > ?" + (values.push(Date.now())));
   }
   if (q) {
     const p1 = values.push(`%${q}%`);
@@ -5740,6 +5889,17 @@ function getOrBuildTopTargetDetail(limit = 100, offset = 0) {
   const rebuilt = runTopTargetAggregation({ reason: "Read-through top-target aggregation", limit: null, createdBy: "local" });
   const limitedDetail = getTopTargetRunDetail(rebuilt.run.id, limit, offset) ?? rebuilt;
   return { ...limitedDetail, rebuilt: true };
+}
+
+// Resolve the run id the deck should read from without running the full
+// band/total/items detail query. Only rebuilds (the expensive path) when no
+// completed run exists yet. Callers that need filtered detail then make a
+// single getTopTargetRunDetail call, instead of running the heavy query twice.
+function resolveTopTargetRunId(): { runId: string; rebuilt: boolean } {
+  const runId = latestTopTargetRunId();
+  if (runId) return { runId, rebuilt: false };
+  const rebuilt = runTopTargetAggregation({ reason: "Read-through top-target aggregation", limit: null, createdBy: "local" });
+  return { runId: rebuilt.run.id, rebuilt: true };
 }
 
 function markKindlingStartFailed(run: Record<string, unknown>, error: string) {
@@ -6679,11 +6839,17 @@ function applyKindlingCallback(body: Record<string, unknown>, token: string) {
     } else {
       const draft = records.outreachDraft as Record<string, unknown> | undefined;
       const companyId = String(draft?.companyId ?? requestId);
-      db.query(`
-        INSERT INTO outreach_drafts(id, company_id, pitch_text, status, source_run_id, created_at, updated_at)
-        VALUES (?1, ?2, ?3, 'draft', ?4, ?5, ?5)
-      `).run(crypto.randomUUID(), companyId, String(draft?.pitchText ?? body.response ?? ""), String(run.id), now);
-      recordActivity("company", companyId, "pipeline", "outreach_drafted", String(body.response ?? "Outreach drafted"), { requestId });
+      // The pipeline returns several outreach options in one markdown blob; store
+      // each as its own row so the UI can page through them (grouped by source_run_id).
+      const variants = splitPitchVariants(String(draft?.pitchText ?? body.response ?? ""));
+      const insertDraft = db.query(`
+        INSERT INTO outreach_drafts(id, company_id, pitch_text, status, source_run_id, variant_index, variant_label, created_at, updated_at)
+        VALUES (?1, ?2, ?3, 'draft', ?4, ?5, ?6, ?7, ?7)
+      `);
+      for (const variant of variants) {
+        insertDraft.run(crypto.randomUUID(), companyId, variant.body, String(run.id), variant.index, variant.label, now);
+      }
+      recordActivity("company", companyId, "pipeline", "outreach_drafted", String(body.response ?? "Outreach drafted"), { requestId, variantCount: variants.length });
       updateSchedulerRunForRequest({
         requestId,
         roleKey: "draft_outreach",
@@ -6758,7 +6924,7 @@ function requestPublicOrigin(req: Request): string {
 }
 
 function webhookOrigin(req: Request): string {
-  return PUBLIC_ORIGIN || requestPublicOrigin(req);
+  return configuredPublicOrigin() || requestPublicOrigin(req);
 }
 
 async function runAutomatedAcquisitionLoop() {
@@ -7142,6 +7308,7 @@ async function runAutomatedOutreachLoop() {
       company,
       activeProfileVersion: getCurrentMarketProfile()?.version ?? null,
       profile: getCurrentMarketProfile(),
+      outreachVoiceGuide: readOutreachVoiceGuide(),
       scheduler: { action: "outreach", roleKey: "draft_outreach" },
     },
     webhookUrl: `${origin}/api/kindling/pipeline-webhook`,
@@ -7260,8 +7427,19 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     const body = await readJson(req);
     const autopilotUrl = body.autopilotUrl === undefined ? null : normalizeAutopilotUrl(body.autopilotUrl);
     const defaultPipeline = body.defaultPipeline === undefined ? null : normalizePipelineName(body.defaultPipeline);
+    // Empty string clears the override (falls back to env / localhost:PORT).
+    const publicOrigin = body.publicOrigin === undefined || body.publicOrigin === ""
+      ? (body.publicOrigin === "" ? "" : null)
+      : normalizeAutopilotUrl(body.publicOrigin);
     if (body.autopilotUrl !== undefined && !autopilotUrl) return json({ error: "autopilotUrl must be a valid http(s) URL" }, 400);
     if (body.defaultPipeline !== undefined && !defaultPipeline) return json({ error: "defaultPipeline is required" }, 400);
+    if (body.publicOrigin !== undefined && body.publicOrigin !== "" && !publicOrigin) return json({ error: "publicOrigin must be a valid http(s) URL" }, 400);
+    if (publicOrigin !== null) setSetting("publicOrigin", publicOrigin);
+    if (body.snoozeDays !== undefined) {
+      const days = Math.floor(Number(body.snoozeDays));
+      if (!Number.isFinite(days) || days < 1 || days > 365) return json({ error: "snoozeDays must be between 1 and 365" }, 400);
+      setSetting("snoozeDays", String(days));
+    }
     if (autopilotUrl) setSetting("autopilotUrl", autopilotUrl);
     if (defaultPipeline) setSetting("defaultPipeline", defaultPipeline);
     return json({ settings: getAppSettings() });
@@ -8300,6 +8478,70 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     return json({ company: mapCompany(company) }, 201);
   }
 
+  // Lightweight payload for the Reach Out modal: draft emails + contacts.
+  const companyOutreachMatch = pathname.match(/^\/api\/kindling\/companies\/([^/]+)\/outreach$/);
+  if (companyOutreachMatch && req.method === "GET") {
+    const session = requireSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    const companyId = decodeURIComponent(companyOutreachMatch[1]!);
+    const row = db.query("SELECT * FROM companies WHERE id = ?1").get(companyId) as Record<string, unknown> | null;
+    if (!row) return json({ error: "company not found" }, 404);
+    const drafts = (db.query("SELECT id, pitch_text, status, updated_at FROM outreach_drafts WHERE company_id = ?1 ORDER BY updated_at DESC").all(companyId) as Record<string, unknown>[])
+      .map((d) => ({ id: String(d.id), pitchText: String(d.pitch_text ?? ""), status: String(d.status ?? ""), updatedAt: Number(d.updated_at ?? 0) }));
+    const companyProfile = jsonParse<Record<string, unknown>>(row.profile_json, {});
+    const people = Array.isArray(companyProfile.decisionMakers)
+      ? (companyProfile.decisionMakers as Record<string, unknown>[]).map(mapDecisionMaker).filter((p) => p.name)
+      : [];
+    return json({
+      company: { id: String(row.id), name: String(row.name), website: String(row.website ?? ""), industry: String(row.industry ?? ""), location: String(row.location ?? "") },
+      drafts,
+      people,
+    });
+  }
+
+  // Per-company reviewer feedback: good/bad verdict + issue labels + reason.
+  const companyFeedbackMatch = pathname.match(/^\/api\/kindling\/companies\/([^/]+)\/feedback$/);
+  if (companyFeedbackMatch && req.method === "POST") {
+    const session = requireEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const companyId = decodeURIComponent(companyFeedbackMatch[1]!);
+    const company = db.query("SELECT id, name FROM companies WHERE id = ?1").get(companyId) as Record<string, unknown> | null;
+    if (!company) return json({ error: "company not found" }, 404);
+    const body = await readJson(req);
+    const verdict = normalizeVerdict(body.verdict);
+    const labels = normalizeIssueLabels(body.labels);
+    const note = String(body.note ?? "").trim();
+    if (!verdict && !labels.length && !note) return json({ error: "feedback must include a verdict, a label, or a note" }, 400);
+    const actor = `user:${session.pubkey.slice(0, 16)}`;
+    const feedback = upsertCompanyFeedback(companyId, { verdict, labels, note, actor });
+    const labelText = labels.map((k) => COMPANY_ISSUE_LABELS.find((l) => l.key === k)?.label || k).join(", ");
+    const summary = `Reviewer feedback: ${verdict || "no verdict"}${labelText ? ` — ${labelText}` : ""}`;
+    recordActivity("company", companyId, actor, "company_feedback", summary, { verdict, labels, note });
+    return json({ feedback });
+  }
+
+  // Aggregate feedback: how reviewers are scoring companies and which issues recur.
+  if (pathname === "/api/kindling/feedback/stats" && req.method === "GET") {
+    const session = requireSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    const rows = db.query("SELECT verdict, labels_json FROM company_feedback").all() as Record<string, unknown>[];
+    const verdicts: Record<string, number> = { good: 0, bad: 0, none: 0 };
+    const labelCounts: Record<string, number> = {};
+    for (const l of COMPANY_ISSUE_LABELS) labelCounts[l.key] = 0;
+    for (const row of rows) {
+      const v = row.verdict == null ? "none" : String(row.verdict);
+      verdicts[v] = (verdicts[v] || 0) + 1;
+      for (const key of jsonParse<string[]>(row.labels_json, [])) {
+        if (key in labelCounts) labelCounts[key] += 1;
+      }
+    }
+    return json({
+      total: rows.length,
+      verdicts,
+      labels: COMPANY_ISSUE_LABELS.map((l) => ({ key: l.key, label: l.label, count: labelCounts[l.key] || 0 })),
+    });
+  }
+
   const companyMatch = pathname.match(/^\/api\/kindling\/companies\/([^/]+)$/);
   if (companyMatch && req.method === "GET") {
     const session = requireSession(req);
@@ -8323,7 +8565,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
       ORDER BY version_number DESC, created_at DESC
     `).all(companyId) as Record<string, unknown>[]).map(mapCustomerProfileVersion);
     const activities = (db.query("SELECT * FROM activities WHERE target_type = 'company' AND target_id = ?1 ORDER BY created_at DESC LIMIT 50").all(companyId) as Record<string, unknown>[]).map(rowJson);
-    const drafts = (db.query("SELECT * FROM outreach_drafts WHERE company_id = ?1 ORDER BY updated_at DESC").all(companyId) as Record<string, unknown>[]).map(rowJson);
+    const drafts = (db.query("SELECT * FROM outreach_drafts WHERE company_id = ?1 ORDER BY updated_at DESC, variant_index ASC").all(companyId) as Record<string, unknown>[]).map(rowJson);
     const serviceFitAssessments = listServiceFitAssessmentsForCompany(companyId);
     const segments = listCompanySegments(companyId);
     const companyProfile = jsonParse<Record<string, unknown>>(row.profile_json, {});
@@ -8340,6 +8582,8 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
       drafts,
       outreachDrafts: drafts,
       segments,
+      feedback: getCompanyFeedback(companyId),
+      issueLabels: COMPANY_ISSUE_LABELS,
     });
   }
 
@@ -8500,7 +8744,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
       roleKey: "draft_outreach",
       localRequestId: requestId,
       message: `Draft outreach for ${String(company.name)}`,
-      context: { companyId, companyName: String(company.name), company: mapCompany(company), activeProfileVersion: getCurrentMarketProfile()?.version ?? null, profile: getCurrentMarketProfile() },
+      context: { companyId, companyName: String(company.name), company: mapCompany(company), activeProfileVersion: getCurrentMarketProfile()?.version ?? null, profile: getCurrentMarketProfile(), outreachVoiceGuide: readOutreachVoiceGuide() },
       webhookUrl: `${webhookOrigin(req)}/api/kindling/pipeline-webhook`,
       webhookToken,
       userPubkey: session.pubkey,
@@ -8559,14 +8803,38 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     const body = await readJson(req);
     const companyId = String(body.companyId ?? "").trim();
     if (!companyId) return json({ error: "companyId is required" }, 400);
-    const company = db.query("SELECT id, name FROM companies WHERE id = ?1").get(companyId) as Record<string, unknown> | null;
+    const company = db.query("SELECT id, name, data_ring FROM companies WHERE id = ?1").get(companyId) as Record<string, unknown> | null;
     if (!company) return json({ error: "company not found" }, 404);
     const channel = String(body.channel ?? "email").trim() || "email";
     const now = Date.now();
     const row = upsertOutreachResult(companyId, { state: "waiting", channel, outreach_at: now, response_at: null, outcome: null });
+    // Remember the ring we're moving away from so "undo" can restore it.
+    const prevRing = String(company.data_ring ?? "");
+    if (prevRing && prevRing !== "contacted") {
+      db.query("UPDATE outreach_results SET prev_data_ring = COALESCE(prev_data_ring, ?2) WHERE company_id = ?1").run(companyId, prevRing);
+    }
     db.query("UPDATE companies SET data_ring = 'contacted', updated_at = ?2 WHERE id = ?1").run(companyId, now);
     recordActivity("company", companyId, `user:${session.pubkey.slice(0, 16)}`, "outreach_sent", `Outreach sent via ${channel}; awaiting response`, { channel });
     return json({ result: mapOutreachResult(row) });
+  }
+
+  // Undo: remove the outreach record so the company returns to the call list.
+  if (pathname === "/api/kindling/outreach/undo" && req.method === "POST") {
+    const session = requireEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const body = await readJson(req);
+    const companyId = String(body.companyId ?? "").trim();
+    if (!companyId) return json({ error: "companyId is required" }, 400);
+    const existing = db.query("SELECT prev_data_ring FROM outreach_results WHERE company_id = ?1").get(companyId) as Record<string, unknown> | null;
+    db.query("DELETE FROM outreach_results WHERE company_id = ?1").run(companyId);
+    // If we'd flipped the company to 'contacted', put its ring back.
+    const company = db.query("SELECT data_ring FROM companies WHERE id = ?1").get(companyId) as Record<string, unknown> | null;
+    if (company && String(company.data_ring ?? "") === "contacted") {
+      const restore = String(existing?.prev_data_ring ?? "") || "scored";
+      db.query("UPDATE companies SET data_ring = ?2, updated_at = ?3 WHERE id = ?1").run(companyId, restore, Date.now());
+    }
+    recordActivity("company", companyId, `user:${session.pubkey.slice(0, 16)}`, "outreach_undo", "Outreach undone; returned to call list", {});
+    return json({ ok: true });
   }
 
   // Dismiss from the call list → Rejected, with a categorized reason.
@@ -8597,22 +8865,64 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     const company = db.query("SELECT id, name FROM companies WHERE id = ?1").get(companyId) as Record<string, unknown> | null;
     if (!company) return json({ error: "company not found" }, 404);
     const outcome = String(body.outcome ?? "").trim().toLowerCase();
+    const channel = String(body.channel ?? "").trim().toLowerCase();
+    const notes = String(body.notes ?? "").trim();
     const now = Date.now();
+    // A call gives instant feedback, so it may create the record directly
+    // (no prior "sent"). Stamp outreach_at on first touch.
+    const existing = db.query("SELECT outreach_at, day_attempts, day_attempts_date FROM outreach_results WHERE company_id = ?1").get(companyId) as Record<string, unknown> | null;
+    const outreachAt = existing?.outreach_at != null ? Number(existing.outreach_at) : now;
+    const base: Record<string, unknown> = { outreach_at: outreachAt };
+    if (channel) base.channel = channel;
+    if (notes) base.notes = notes;
     if (outcome === "meeting") {
-      const row = upsertOutreachResult(companyId, { state: "meeting", outcome: "meeting", response_at: now });
-      recordActivity("company", companyId, `user:${session.pubkey.slice(0, 16)}`, "outreach_meeting", "Response received: follow-up meeting", {});
+      const row = upsertOutreachResult(companyId, { ...base, state: "meeting", outcome: "meeting", response_at: now });
+      recordActivity("company", companyId, `user:${session.pubkey.slice(0, 16)}`, "outreach_meeting", `Response received: follow-up meeting${channel ? ` (${channel})` : ""}`, { channel, notes });
       return json({ result: mapOutreachResult(row) });
     }
     if (outcome === "dropped") {
-      const reason = String(body.reason ?? "").trim();
+      const reason = String(body.reason ?? "").trim() || notes;
       const reasonCategory = normalizeReasonCategory(body.reasonCategory);
       const row = upsertOutreachResult(companyId, {
-        state: "rejected", outcome: "dropped", response_at: now, reason, reason_category: reasonCategory, dismissed_from: "waiting",
+        ...base, state: "rejected", outcome: "dropped", response_at: now, reason, reason_category: reasonCategory, dismissed_from: "waiting",
       });
-      recordActivity("company", companyId, `user:${session.pubkey.slice(0, 16)}`, "outreach_dropped", `Dropped after outreach (${reasonCategory})`, { reason, reasonCategory });
+      recordActivity("company", companyId, `user:${session.pubkey.slice(0, 16)}`, "outreach_dropped", `Dropped after outreach (${reasonCategory})`, { reason, reasonCategory, channel, notes });
       return json({ result: mapOutreachResult(row) });
     }
-    return json({ error: "outcome must be 'meeting' or 'dropped'" }, 400);
+    // "No answer" on a call — keep the company on the deck (state "on_deck") so it
+    // recirculates to the back. After 3 no-answers in one day, snooze to tomorrow.
+    if (outcome === "no_answer") {
+      const today = startOfDay(now);
+      const sameDay = existing?.day_attempts_date != null && Number(existing.day_attempts_date) === today;
+      const dayAttempts = (sameDay ? Number(existing?.day_attempts ?? 0) : 0) + 1;
+      const snoozedUntil = dayAttempts >= 3 ? startOfDay(now) + getSnoozeDays() * DAY_MS : null;
+      const row = upsertOutreachResult(companyId, {
+        ...base, state: "on_deck", outcome: "no_answer",
+        day_attempts: dayAttempts, day_attempts_date: today, snoozed_until: snoozedUntil,
+      });
+      const detail = snoozedUntil ? ` — 3rd today, snoozed` : "";
+      recordActivity("company", companyId, `user:${session.pubkey.slice(0, 16)}`, "outreach_no_answer", `Call — no answer${channel ? ` (${channel})` : ""}${detail}`, { channel, notes, dayAttempts });
+      return json({ result: mapOutreachResult(row) });
+    }
+    return json({ error: "outcome must be 'meeting', 'dropped', or 'no_answer'" }, 400);
+  }
+
+  // Snooze a call-list item: keep it on the deck but hide it until the configured
+  // number of days have passed (reappears at the back of the deck).
+  if (pathname === "/api/kindling/outreach/snooze" && req.method === "POST") {
+    const session = requireEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const body = await readJson(req);
+    const companyId = String(body.companyId ?? "").trim();
+    if (!companyId) return json({ error: "companyId is required" }, 400);
+    const company = db.query("SELECT id, name FROM companies WHERE id = ?1").get(companyId) as Record<string, unknown> | null;
+    if (!company) return json({ error: "company not found" }, 404);
+    const now = Date.now();
+    const days = getSnoozeDays();
+    const snoozedUntil = startOfDay(now) + days * DAY_MS;
+    const row = upsertOutreachResult(companyId, { state: "on_deck", snoozed_until: snoozedUntil });
+    recordActivity("company", companyId, `user:${session.pubkey.slice(0, 16)}`, "outreach_snoozed", `Snoozed for ${days} day${days === 1 ? "" : "s"}`, { days, snoozedUntil });
+    return json({ result: mapOutreachResult(row) });
   }
 
   if (pathname === "/api/kindling/top-targets" && req.method === "GET") {
@@ -8623,9 +8933,8 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     const bandParam = String(url.searchParams.get("band") || "").toLowerCase();
     const band = ["high", "medium", "low"].includes(bandParam) ? bandParam : "";
     const excludeOutreach = ["1", "true", "yes"].includes(String(url.searchParams.get("excludeOutreach") || "").toLowerCase());
-    const baseDetail = getOrBuildTopTargetDetail(limit, 0);
-    const rebuilt = Boolean(baseDetail.rebuilt);
-    const detail = getTopTargetRunDetail(baseDetail.run.id, limit, offset, { hasOutreachDraft, band, excludeOutreach })!;
+    const { runId, rebuilt } = resolveTopTargetRunId();
+    const detail = getTopTargetRunDetail(runId, limit, offset, { hasOutreachDraft, band, excludeOutreach })!;
     return json({
       targetListRunId: detail.run.id,
       source: "top_targets",

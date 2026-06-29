@@ -48,6 +48,7 @@ function resetData() {
     "customer_profile_versions",
     "sources",
     "company_segments",
+    "company_feedback",
     "target_segments",
     "companies",
     "service_offerings",
@@ -4030,10 +4031,18 @@ describe("Kindling API contracts", () => {
       },
     });
     expect(res.status).toBe(200);
-    const draft = db.query("SELECT pitch_text FROM outreach_drafts WHERE company_id = 'company-3'").get() as Record<string, string>;
-    expect(draft.pitch_text).toContain("## Direct");
-    expect(draft.pitch_text).toContain("Consultative body");
-    expect(draft.pitch_text).toContain("Local subject");
+    // Each option is stored as its own row, ordered by variant_index, with the
+    // `## Label` heading lifted into variant_label (not duplicated in the body).
+    const rows = db.query(
+      "SELECT variant_index, variant_label, pitch_text FROM outreach_drafts WHERE company_id = 'company-3' ORDER BY variant_index ASC",
+    ).all() as Record<string, string | number>[];
+    expect(rows.length).toBe(3);
+    expect(rows.map((r) => r.variant_label)).toEqual(["Direct", "Consultative", "Local"]);
+    expect(rows.map((r) => r.variant_index)).toEqual([0, 1, 2]);
+    expect(String(rows[0].pitch_text)).not.toContain("## Direct");
+    expect(String(rows[0].pitch_text)).toContain("Direct body");
+    expect(String(rows[1].pitch_text)).toContain("Consultative body");
+    expect(String(rows[2].pitch_text)).toContain("Local subject");
   });
 
   test("creates a manual company with only a name", async () => {
@@ -4288,5 +4297,92 @@ describe("Kindling API contracts", () => {
       { id: "tax-missing", enrichment_status: "failed" },
       { id: "tax-written", enrichment_status: "complete" },
     ]);
+  });
+
+  test("captures per-company reviewer feedback with verdict and issue labels", async () => {
+    db.query(`
+      INSERT INTO companies(id, name, location, industry, website, data_ring, duplicate_status, enrichment_status, confidence, profile_json, created_at, updated_at)
+      VALUES ('fb-co', 'Feedback Co', 'Perth', 'Tax', 'https://x.test', 'scored', 'unique', 'complete', 0.8, '{}', 1, 1)
+    `).run();
+
+    // Unknown labels are dropped; verdict is validated.
+    const saved = await api("/api/kindling/companies/fb-co/feedback", {
+      method: "POST",
+      body: { verdict: "bad", labels: ["wrong_fit", "bogus_label", "missing_decision_maker"], note: "Too small." },
+    });
+    expect(saved.res.status).toBe(200);
+    expect(saved.payload.feedback.verdict).toBe("bad");
+    expect(saved.payload.feedback.labels.sort()).toEqual(["missing_decision_maker", "wrong_fit"]);
+    expect(saved.payload.feedback.note).toBe("Too small.");
+
+    // Re-saving upserts the single current-state row (no duplicates).
+    await api("/api/kindling/companies/fb-co/feedback", {
+      method: "POST",
+      body: { verdict: "good", labels: [], note: "" },
+    });
+    const rows = db.query("SELECT verdict FROM company_feedback WHERE company_id = 'fb-co'").all() as Record<string, string>[];
+    expect(rows.length).toBe(1);
+    expect(rows[0]!.verdict).toBe("good");
+
+    // Detail payload surfaces the feedback and the label catalogue.
+    const detail = await api("/api/kindling/companies/fb-co");
+    expect(detail.payload.feedback.verdict).toBe("good");
+    expect(detail.payload.issueLabels.map((l: { key: string }) => l.key)).toContain("bad_website");
+
+    // Aggregate stats reflect the verdict and recur counts.
+    const stats = await api("/api/kindling/feedback/stats");
+    expect(stats.payload.total).toBe(1);
+    expect(stats.payload.verdicts.good).toBe(1);
+
+    // Empty feedback is rejected.
+    const empty = await api("/api/kindling/companies/fb-co/feedback", { method: "POST", body: { verdict: "", labels: [], note: "" } });
+    expect(empty.res.status).toBe(400);
+  });
+});
+
+// Exercises the same browser bundle public/app.js imports for paste-NSEC login,
+// proving a pasted nsec produces a login event the existing backend accepts.
+describe("Paste-NSEC login signing", () => {
+  beforeEach(() => {
+    resetData();
+  });
+
+  test("decodes an nsec to its pubkey and the signed challenge verifies", async () => {
+    const { nip19, getPublicKey: getPub, finalizeEvent: finalize } =
+      await import("../public/vendor/nostr-signer.js");
+
+    const nsecSecret = new Uint8Array(32).fill(11);
+    const expectedPubkey = getPublicKey(nsecSecret);
+
+    // Round-trip the secret through nsec, exactly as the paste flow does.
+    const nsec = nip19.nsecEncode(nsecSecret);
+    const decoded = nip19.decode(nsec);
+    expect(decoded.type).toBe("nsec");
+    const derivedPubkey = getPub(decoded.data as Uint8Array);
+    expect(derivedPubkey).toBe(expectedPubkey);
+
+    // challenge → sign → verify, the same shape completeLoginWithSigner sends.
+    const challenge = await api("/api/auth/challenge", {
+      method: "POST",
+      body: { pubkey: derivedPubkey },
+    });
+    expect(challenge.payload.content).toBe(`kindling-login:${challenge.payload.nonce}`);
+
+    const event = finalize({
+      kind: 22242,
+      created_at: Math.floor(Date.now() / 1000),
+      tags: [["challenge", challenge.payload.nonce], ["client", "kindling-wapp"]],
+      content: challenge.payload.content,
+    }, decoded.data as Uint8Array);
+
+    const verify = await api("/api/auth/verify", { method: "POST", body: { event } });
+    expect(verify.res.status).toBe(200);
+    expect(verify.payload.pubkey).toBe(expectedPubkey);
+    expect(typeof verify.payload.token).toBe("string");
+  });
+
+  test("an invalid nsec string cannot be decoded", async () => {
+    const { nip19 } = await import("../public/vendor/nostr-signer.js");
+    expect(() => nip19.decode("nsec1notarealkey")).toThrow();
   });
 });

@@ -525,12 +525,28 @@ CREATE TABLE IF NOT EXISTS outreach_results (
   dismissed_from TEXT,
   fit_band TEXT,
   fit_score INTEGER,
+  notes TEXT,
+  prev_data_ring TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
   FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_outreach_results_state ON outreach_results(state);
+
+-- Per-company reviewer feedback: a good/bad verdict, structured issue labels
+-- (wrong fit, missing decision maker, duplicate, bad website, etc.) and a free
+-- text reason. One current-state row per company; history lives in activities.
+CREATE TABLE IF NOT EXISTS company_feedback (
+  company_id TEXT PRIMARY KEY,
+  verdict TEXT,
+  labels_json TEXT,
+  note TEXT,
+  actor TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
+);
 
 `);
 
@@ -566,6 +582,18 @@ for (const migration of [
   "ALTER TABLE work_queue ADD COLUMN error TEXT NOT NULL DEFAULT ''",
   "UPDATE discovery_jobs SET geography_text = location WHERE geography_text = ''",
   "UPDATE scan_strategy_attempts SET geography_text = location WHERE geography_text = ''",
+  "ALTER TABLE outreach_results ADD COLUMN notes TEXT",
+  // Each outreach_drafts row now holds a single variant; these tag its order
+  // and label within the set produced by one draft_outreach run (grouped by
+  // source_run_id). Legacy single-blob rows are split by scripts/split-outreach-variants.ts.
+  "ALTER TABLE outreach_drafts ADD COLUMN variant_index INTEGER",
+  "ALTER TABLE outreach_drafts ADD COLUMN variant_label TEXT",
+  "ALTER TABLE outreach_results ADD COLUMN prev_data_ring TEXT",
+  // Deck snooze: items kept on the call list but hidden until snoozed_until, plus
+  // a per-day no-answer counter so 3 attempts in one day auto-snooze to tomorrow.
+  "ALTER TABLE outreach_results ADD COLUMN snoozed_until INTEGER",
+  "ALTER TABLE outreach_results ADD COLUMN day_attempts INTEGER",
+  "ALTER TABLE outreach_results ADD COLUMN day_attempts_date INTEGER",
 ]) {
   try {
     db.query(migration).run();
@@ -752,7 +780,9 @@ export type Message = {
 
 export type AppSettings = {
   autopilotUrl: string;
+  publicOrigin: string;
   defaultPipeline: string;
+  snoozeDays: number;
 };
 
 export type SchedulerSettings = {
