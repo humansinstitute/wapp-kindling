@@ -1,0 +1,400 @@
+[
+  {
+    "rank": 1,
+    "name": "Solution Minds Consulting (SMC)",
+    "website": "https://www.sm-c.com.au/",
+    "location": "Perth, WA",
+    "locationDetails": "Australia-wide (Perth-based operations)",
+    "leadership": {
+      "names": "Not publicly named",
+      "accessModel": "Founder-led independent advisory"
+    },
+    "yearsEstablished": 2006,
+    "yearsOperating": 20,
+    "services": [
+      "ERP & enterprise software advisory",
+      "Digital transformation consulting",
+      "AI transformation consulting",
+      "Business process improvement (550+ projects)"
+    ],
+    "icpFit": "Multi-angle coverage: Technology advisory angle + ERP/cloud systems + business process improvement. Established independent firm (20+ years) with proven enterprise software specialization. Perfect fit for SME advisory positioning.",
+    "researchAngles": [
+      "Technology advisory & digital transformation",
+      "ERP, cloud, enterprise systems",
+      "Business process optimization"
+    ],
+    "sources": [
+      "https://www.sm-c.com.au/",
+      "PERTH-TECHNOLOGY-ADVISORY-RESEARCH.md",
+      "PERTH-BUSINESS-SYSTEMS-CONSULTANTS-RESEARCH.csv"
+    ],
+    "confidence": "HIGH"
+  },
+  {
+    "rank": 2,
+    "name": "Dapth",
+    "website": "https://dapth.com/",
+    "location": "Perth, Western Australia",
+    "locationDetails": "HQ-based, Subiaco area",
+    "leadership": {
+      "names": "Not publicly named",
+      "accessModel": "Established Perth consultancy leadership"
+    },
+    "yearsEstablished": "Established",
+    "yearsOperating": "10+",
+    "services": [
+      "Digital transformation consulting",
+      "Digital strategy consulting",
+      "Custom software development",
+      "Website & intranet development",
+      "Mobile app design",
+      "Strategic digital advice"
+    ],
+    "icpFit": "Strong technology advisory positioning with government sector credentials (WA Department of Transport, Department of Water/Environmental Regulation). Proven boutique model with Perth-based operations.",
+    "researchAngles": [
+      "Technology advisory & digital transformation"
+    ],
+    "publicSectorClients": [
+      "WA Department of Transport",
+      "Department of Water and Environmental Regulation",
+      "Cities: Subiaco, Belmont, Vincent, Cockburn, South Perth"
+    ],
+    "sources": [
+      "https://dapth.com/",
+      "PERTH-TECHNOLOGY-ADVISORY-RESEARCH.md"
+    ],
+    "confidence": "HIGH"
+  },
+  {
+    "rank": 3,
+    "name": "TechBrain",
+    "website": "https://www.techbrain.com.au",
+    "location": "70 Hay Street, Subiaco WA 6008, Perth",
+    "locationDetails": "Perth HQ with Sydney/Melbourne presence",
+    "leadership": {
+      "names": [
+        "Ashish Srivastava - Head of Cyber Security",
+        "Alex Stewart - General Manager",
+        "Palen Govender - Cyber Security Specialist"
+      ],
+      "accessModel": "Named executive team"
+    },
+    "yearsEstablished": "Established",
+    "yearsOperating": "10+",
+    "services": [
+      "Cybersecurity consulting & strategy",
+      "Security assessment (Essential 8 ML2)",
+      "24/7 managed security service",
+      "Threat intelligence & vulnerability management",
+      "Incident response & recovery",
+      "Compliance & regulatory (ISO 27001, NIST, ASIC)",
+      "Security awareness training"
+    ],
+    "icpFit": "Named leadership team provides high-value decision-maker access. Cybersecurity advisory specialist with compliance/regulatory focus. ASIC compliance positioning for financial services clients.",
+    "researchAngles": [
+      "Cybersecurity & IT risk advisory"
+    ],
+    "contact": {
+      "phone": "(08) 9201 2340"
+    },
+    "sources": [
+      "https://www.techbrain.com.au/perth/cyber-security/",
+      "PERTH-CYBERSECURITY-IT-RISK-ADVISORY-RESEARCH.md"
+    ],
+    "confidence": "HIGH"
+  },
+  {
+    "rank": 4,
+    "name": "Austin Technology",
+    "website": "https://austintechnology.com.au/cybersecurity/",
+    "location": "Level 2, 541 Hay St, Subiaco WA 6008, Perth",
+    "locationDetails": "Perth-based, serving nationally",
+    "leadership": {
+      "names": "Chris Wade - Senior Solutions Engineer",
+      "accessModel": "Direct contact via named consultant"
+    },
+    "yearsEstablished": "Established",
+    "yearsOperating": "10+",
+    "services": [
+      "24/7 Security Operations Centre (SOC) monitoring",
+      "Endpoint Detection & Response (EDR)",
+      "Essential Eight compliance alignment",
+      "Penetration testing & vulnerability assessments",
+      "Incident response planning",
+      "Security awareness training",
+      "ISO 27001 alignment"
+    ],
+    "icpFit": "ACSC Partner Program certified, Microsoft Solutions Partner Security certified. 150+ protected Australian organizations. Strong independent positioning with Essential Eight specialization.",
+    "researchAngles": [
+      "Cybersecurity & IT risk advisory"
+    ],
+    "contact": {
+      "phone": "1300 787 429",
+      "email": "sales@austintechnology.com.au"
+    },
+    "sources": [
+      "https://austintechnology.com.au/cybersecurity/",
+      "PERTH-CYBERSECURITY-IT-RISK-ADVISORY-RESEARCH.md"
+    ],
+    "confidence": "HIGH"
+  },
+  {
+    "rank": 5,
+    "name": "Riskwest",
+    "website": "https://riskwest.com.au/",
+    "location": "Suite 202, 37 Barrack St, Perth WA 6000",
+    "locationDetails": "Perth CBD",
+    "leadership": {
+      "names": "Not publicly named",
+      "accessModel": "Senior consultants handle engagements directly"
+    },
+    "yearsEstablished": "Established",
+    "yearsOperating": "10+",
+    "yearsTrading": "ABN 30 573 849 449 (verified)",
+    "services": [
+      "Risk Management Services (ERM frameworks, risk governance)",
+      "Business Continuity Management (BCM program setup, BIA, response plans)",
+      "Assurance & Compliance Services (risk-based assurance, compliance reviews)",
+      "ISO 22301 certification support",
+      "Consulting & mentoring (framework development, RMIS implementation)"
+    ],
+    "icpFit": "Pure advisory boutique with strong risk governance positioning. Unique business continuity focus differentiates from other cybersecurity consultants. Senior consultant engagement model ensures high-value conversations.",
+    "researchAngles": [
+      "Cybersecurity & IT risk advisory"
+    ],
+    "contact": {
+      "phone": "+61(0) 8 9321 9292",
+      "email": "enquiries@riskwest.com.au"
+    },
+    "sources": [
+      "https://riskwest.com.au/",
+      "PERTH-CYBERSECURITY-IT-RISK-ADVISORY-RESEARCH.md"
+    ],
+    "confidence": "HIGH"
+  },
+  {
+    "rank": 6,
+    "name": "Zetta IT Services",
+    "website": "https://www.zetta.com.au/solutions/security/",
+    "location": "Level 11, 108 St George Terrace, Perth WA 6000",
+    "locationDetails": "Perth CBD (WA headquartered, all team based in Perth)",
+    "leadership": {
+      "names": "Not specifically named",
+      "accessModel": "Established Perth-based leadership"
+    },
+    "yearsEstablished": "Established",
+    "yearsOperating": "10+",
+    "services": [
+      "Consulting (digital transformation, industry expertise)",
+      "Project Services (implementation & deployment)",
+      "Managed Services (flexible ICT management)",
+      "Security Specializations: Secure remote work, Unified endpoint management",
+      "Threat protection & detection, Data protection & information security",
+      "Cloud security, Identity & Access Management",
+      "Risk management, Insider threat detection"
+    ],
+    "icpFit": "Multi-service provider combining consulting + project + managed services. Deep Microsoft security ecosystem expertise. ISO 9001 & ISO 27001 certified. Combined approach valuable for SMEs.",
+    "researchAngles": [
+      "Cybersecurity & IT risk advisory",
+      "Technology advisory & digital transformation"
+    ],
+    "certifications": [
+      "ISO 9001",
+      "ISO 27001",
+      "Microsoft Security Partner"
+    ],
+    "contact": {
+      "phone": "1300 307 710",
+      "email": "info@zetta.com.au"
+    },
+    "sources": [
+      "https://www.zetta.com.au/solutions/security/",
+      "PERTH-CYBERSECURITY-IT-RISK-ADVISORY-RESEARCH.md"
+    ],
+    "confidence": "HIGH"
+  },
+  {
+    "rank": 7,
+    "name": "Lothbury Advisory",
+    "website": "https://lothbury.com.au/",
+    "location": "Perth, Western Australia",
+    "locationDetails": "Perth-based boutique",
+    "leadership": {
+      "names": "Charles Mackinnon - Founder/Principal",
+      "accessModel": "Founder-led engagement"
+    },
+    "yearsEstablished": "Founder experience: 50+ years in Investment Banking",
+    "yearsOperating": "Established",
+    "services": [
+      "Corporate Advisory",
+      "Business Strategy",
+      "High-net-worth advisory"
+    ],
+    "icpFit": "Founder-led boutique with deep investment banking experience. Corporate strategy positioning with established Perth presence. Strong decision-maker access through founder.",
+    "researchAngles": [
+      "Technology advisory & digital transformation"
+    ],
+    "sources": [
+      "https://lothbury.com.au/",
+      "PERTH-TECHNOLOGY-ADVISORY-RESEARCH.md"
+    ],
+    "confidence": "MEDIUM"
+  },
+  {
+    "rank": 8,
+    "name": "AOT Consulting",
+    "website": "https://aotconsulting.com/about-us/",
+    "location": "Perth",
+    "locationDetails": "Perth-based",
+    "leadership": {
+      "names": "Not publicly named",
+      "accessModel": "Independent consultancy leadership"
+    },
+    "yearsEstablished": 1989,
+    "yearsOperating": 35,
+    "services": [
+      "Independent business consulting",
+      "Management consulting",
+      "Technology consulting"
+    ],
+    "icpFit": "Long-established independent firm (35+ years) with proven consulting heritage. 100% independent positioning (not Big 4 subsidiary). Perth-based with sustained market presence.",
+    "researchAngles": [
+      "Technology advisory & digital transformation"
+    ],
+    "sources": [
+      "https://aotconsulting.com/about-us/",
+      "PERTH-TECHNOLOGY-ADVISORY-RESEARCH.md"
+    ],
+    "confidence": "MEDIUM"
+  },
+  {
+    "rank": 9,
+    "name": "Compliance & Risk Pty Ltd",
+    "website": "https://complianceandrisk.com.au",
+    "location": "Perth, Western Australia",
+    "locationDetails": "Perth-based",
+    "leadership": {
+      "names": "Not publicly named",
+      "accessModel": "Established consultancy leadership"
+    },
+    "yearsEstablished": "Established",
+    "yearsOperating": "10+",
+    "services": [
+      "ISO 9001:2015 Quality Management Systems auditing & consulting",
+      "ISO 14001:2015 Environmental Management Systems",
+      "ISO 45001:2018 Occupational Health & Safety Management Systems",
+      "Internal audit training and competency development",
+      "Compliance gap assessments",
+      "System documentation and implementation support"
+    ],
+    "icpFit": "Multi-standard ISO expertise (QMS, EMS, OH&S). Compliance-first positioning with established methodology. Cross-angle fit: ISO systems auditing + technology advisory adjacency through compliance consulting.",
+    "researchAngles": [
+      "ISO systems auditing & quality management",
+      "Cybersecurity & IT risk advisory (compliance angle)"
+    ],
+    "sources": [
+      "https://complianceandrisk.com.au",
+      "PERTH-ISO-SYSTEMS-AUDITING-RESEARCH.md"
+    ],
+    "confidence": "HIGH"
+  },
+  {
+    "rank": 10,
+    "name": "StartCloud (Start Technologies Pty Ltd)",
+    "website": "https://startcloud.au/cybersecurity-perth",
+    "location": "Ground Floor West, 6 Gibberd Road, Balcatta WA 6021, Perth",
+    "locationDetails": "Perth-based (serves 19 Perth suburbs)",
+    "leadership": {
+      "names": "Not specified",
+      "accessModel": "MSSP team engagement"
+    },
+    "yearsEstablished": "Established",
+    "yearsOperating": "10+",
+    "services": [
+      "24/7 SOC monitoring",
+      "Essential Eight implementation",
+      "Penetration testing",
+      "Vulnerability management",
+      "Compliance & risk advisory",
+      "AI agent security",
+      "Cloud services",
+      "Technology support & networking"
+    ],
+    "icpFit": "Local Perth-based security team enabling faster incident response. ACSC Essential Eight alignment. Microsoft Solutions Partner certified. SMB-focused positioning with enterprise-grade security.",
+    "researchAngles": [
+      "Cybersecurity & IT risk advisory"
+    ],
+    "contact": {
+      "phone": "08 6285 0001",
+      "website": "startcloud.com.au"
+    },
+    "sources": [
+      "https://startcloud.au/cybersecurity-perth",
+      "PERTH-CYBERSECURITY-IT-RISK-ADVISORY-RESEARCH.md"
+    ],
+    "confidence": "HIGH"
+  },
+  {
+    "rank": 11,
+    "name": "Origin Business Consultants Perth",
+    "website": "https://www.originbc.com.au/",
+    "location": "Perth, WA",
+    "locationDetails": "Perth-based",
+    "leadership": {
+      "names": "Jeremy Wolf - Founder, Operations Strategist",
+      "accessModel": "Founder-led engagement"
+    },
+    "yearsEstablished": "Established",
+    "yearsOperating": "10+",
+    "services": [
+      "Accounting/taxation advisory",
+      "R&D consulting",
+      "Business support & systems integration",
+      "Systems integration for SMEs",
+      "Operations consulting",
+      "Sustainability-focused advisory"
+    ],
+    "icpFit": "Founder-led with operations strategy specialization. Explicit SME advisory positioning. Systems integration + business advisory combination spans technology + operations angles.",
+    "researchAngles": [
+      "Technology advisory & digital transformation",
+      "Business process optimization",
+      "Operations advisory"
+    ],
+    "sources": [
+      "https://www.originbc.com.au/",
+      "PERTH-OPERATIONS-ADVISORY-RESEARCH-SUMMARY.txt",
+      "PERTH-BUSINESS-SYSTEMS-CONSULTANTS-RESEARCH.csv"
+    ],
+    "confidence": "HIGH"
+  },
+  {
+    "rank": 12,
+    "name": "Facilita Consulting",
+    "website": "https://facilita.com.au/",
+    "location": "Perth",
+    "locationDetails": "Perth-based",
+    "leadership": {
+      "names": "Susanna Durston - Founder, former Woodside Energy PM",
+      "accessModel": "Founder-led engagement"
+    },
+    "yearsEstablished": 2021,
+    "yearsOperating": 5,
+    "services": [
+      "Business improvement & change management",
+      "Continuous improvement workshops",
+      "Organizational development",
+      "Process optimization & strategy"
+    ],
+    "icpFit": "Emerging boutique (founded 2021) with strong founder credentials (Woodside Energy background). Process optimization + strategy combination. High-value decision-maker access through founder.",
+    "researchAngles": [
+      "Business process optimization",
+      "Operations advisory"
+    ],
+    "sources": [
+      "https://facilita.com.au/",
+      "PERTH-OPERATIONS-ADVISORY-RESEARCH-SUMMARY.txt",
+      "PERTH-BUSINESS-SYSTEMS-CONSULTANTS-RESEARCH.csv"
+    ],
+    "confidence": "MEDIUM"
+  }
+]
