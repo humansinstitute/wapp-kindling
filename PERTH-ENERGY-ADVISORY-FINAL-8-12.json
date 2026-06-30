@@ -1,0 +1,199 @@
+[
+  {
+    "rank": 1,
+    "firm_name": "Preston Consulting",
+    "website_url": "https://www.prestonconsulting.com.au",
+    "website_status": "ACTIVE",
+    "leadership": [
+      {"name": "Phil Scott", "title": "Founding Director"},
+      {"name": "Catherine Pinchin", "title": "Founding Director"}
+    ],
+    "services": ["Energy efficiency audits", "Renewable energy strategy", "Carbon reduction planning", "Building performance", "Sustainability advisory"],
+    "location": "Perth, WA",
+    "business_model": "Independent boutique advisory",
+    "confidence_score": 0.92,
+    "decision_maker_priority": "HIGH",
+    "source_verification": ["batch1", "batch2", "batch3", "linkedin_abr_enrichment"],
+    "notes": "Co-founders with public profiles; established boutique with strong market presence"
+  },
+  {
+    "rank": 2,
+    "firm_name": "ReGen Strategic",
+    "website_url": "https://www.regenerstrategic.com.au",
+    "website_status": "ACTIVE",
+    "leadership": [
+      {"name": "Anthony Fisk", "title": "Director"}
+    ],
+    "services": ["Renewable energy advisory", "Energy strategy", "Sustainability consulting", "Project development", "Stakeholder engagement"],
+    "location": "Perth, WA",
+    "business_model": "Independent boutique advisory",
+    "confidence_score": 0.90,
+    "decision_maker_priority": "HIGH",
+    "source_verification": ["batch1", "batch2", "batch3", "linkedin_abr_enrichment"],
+    "notes": "Established renewable energy specialist with verified director"
+  },
+  {
+    "rank": 3,
+    "firm_name": "Perspektiv",
+    "website_url": "https://www.perspektiv.com.au",
+    "website_status": "ACTIVE",
+    "leadership": [
+      {"name": "Patrick Ilott", "title": "Founder & CEO"}
+    ],
+    "services": ["Energy efficiency", "Renewable energy consulting", "Sustainability strategy", "Building systems optimization", "Net-zero planning"],
+    "location": "Perth, WA",
+    "business_model": "Independent boutique advisory",
+    "confidence_score": 0.90,
+    "decision_maker_priority": "HIGH",
+    "source_verification": ["batch1", "batch2", "batch3", "linkedin_abr_enrichment"],
+    "notes": "Founder-led boutique with strong sustainability focus; verified leadership"
+  },
+  {
+    "rank": 4,
+    "firm_name": "Western Environmental",
+    "website_url": "https://www.westernenv.com.au",
+    "website_status": "ACTIVE",
+    "leadership": [
+      {"name": "James Gibson", "title": "Director"},
+      {"name": "Philip Brand", "title": "Director"},
+      {"name": "Peter McColl", "title": "Director"},
+      {"name": "David Reynolds", "title": "Director"}
+    ],
+    "services": ["Environmental advisory", "Energy efficiency", "Renewable energy consulting", "Sustainability assessment", "Compliance consulting"],
+    "location": "Perth, WA",
+    "business_model": "Independent boutique advisory",
+    "confidence_score": 0.95,
+    "decision_maker_priority": "MEDIUM",
+    "source_verification": ["batch1", "batch2", "batch3", "linkedin_abr_enrichment"],
+    "notes": "Multi-director leadership team; established boutique with broad sustainability expertise"
+  },
+  {
+    "rank": 5,
+    "firm_name": "Entego Group Pty Ltd",
+    "website_url": "https://www.entego.com.au",
+    "website_status": "ACTIVE",
+    "leadership": [
+      {"name": "Harry Street", "title": "Director"},
+      {"name": "William Street", "title": "Director"}
+    ],
+    "services": ["Energy advisory", "Renewable energy strategy", "Energy management", "Sustainability consulting"],
+    "location": "Perth, WA",
+    "business_model": "Independent boutique advisory",
+    "confidence_score": 0.90,
+    "decision_maker_priority": "MEDIUM",
+    "source_verification": ["batch1", "batch2", "batch3", "linkedin_abr_enrichment"],
+    "notes": "Dual-director team with verified ABN; active energy advisory practice"
+  },
+  {
+    "rank": 6,
+    "firm_name": "Futureproof Consulting",
+    "website_url": "https://www.futureproofconsulting.com.au",
+    "website_status": "ACTIVE",
+    "leadership": [
+      {"name": "Ben Swan", "title": "Founder & Director"}
+    ],
+    "services": ["Energy efficiency consulting", "Renewable energy planning", "Sustainability strategy", "Building performance", "Net-zero advisory"],
+    "location": "Perth, WA",
+    "business_model": "Independent boutique advisory",
+    "confidence_score": 0.85,
+    "decision_maker_priority": "HIGH",
+    "source_verification": ["batch1", "batch2", "batch3", "linkedin_abr_enrichment"],
+    "notes": "Founder-led with focus on net-zero and energy efficiency; verified directory listing"
+  },
+  {
+    "rank": 7,
+    "firm_name": "AllScope Energy Consultants",
+    "website_url": "https://www.allscopeenergy.com.au",
+    "website_status": "ACTIVE",
+    "leadership": [
+      {"name": "Andrew Somoff", "title": "Managing Director"}
+    ],
+    "services": ["Energy auditing", "Renewable energy consulting", "Energy efficiency", "Carbon reduction", "Building systems"],
+    "location": "Perth, WA",
+    "business_model": "Independent boutique advisory",
+    "confidence_score": 0.85,
+    "decision_maker_priority": "HIGH",
+    "source_verification": ["batch1", "batch2", "batch3", "linkedin_abr_enrichment"],
+    "notes": "Established energy consultancy with MD verified in LinkedIn enrichment"
+  },
+  {
+    "rank": 8,
+    "firm_name": "WestSun Energy",
+    "website_url": "https://www.westsun.com.au",
+    "website_status": "ACTIVE",
+    "leadership": [
+      {"name": "Ben Emery", "title": "Director"}
+    ],
+    "services": ["Solar energy consulting", "Renewable energy advice", "Energy efficiency", "Sustainability planning"],
+    "location": "Perth, WA",
+    "business_model": "Independent boutique advisory",
+    "confidence_score": 0.85,
+    "decision_maker_priority": "MEDIUM",
+    "source_verification": ["batch1", "batch2", "batch3", "linkedin_abr_enrichment"],
+    "notes": "Renewable energy specialist with verified director"
+  },
+  {
+    "rank": 9,
+    "firm_name": "Galetech Group",
+    "website_url": "https://www.galetech.com.au",
+    "website_status": "ACTIVE",
+    "leadership": [
+      {"name": "Dermot Costello", "title": "Director"}
+    ],
+    "services": ["Energy consulting", "Renewable energy advisory", "Sustainability strategy", "Building performance"],
+    "location": "Perth, WA",
+    "business_model": "Independent boutique advisory",
+    "confidence_score": 0.82,
+    "decision_maker_priority": "MEDIUM",
+    "source_verification": ["batch1", "batch2", "batch3", "linkedin_abr_enrichment"],
+    "notes": "Established energy advisory firm with verified leadership"
+  },
+  {
+    "rank": 10,
+    "firm_name": "Constructive Building Consultants",
+    "website_url": "https://www.constructivebc.com.au",
+    "website_status": "ACTIVE",
+    "leadership": [
+      {"name": "Lyndon Barker", "title": "Director"}
+    ],
+    "services": ["Building performance", "Energy efficiency", "Sustainability consulting", "Environmental compliance"],
+    "location": "Perth, WA",
+    "business_model": "Independent boutique advisory",
+    "confidence_score": 0.82,
+    "decision_maker_priority": "MEDIUM",
+    "source_verification": ["batch1", "batch2", "batch3", "linkedin_abr_enrichment"],
+    "notes": "Building systems specialist with energy efficiency and sustainability focus"
+  },
+  {
+    "rank": 11,
+    "firm_name": "Ecorate WA",
+    "website_url": "https://www.ecorate.com.au",
+    "website_status": "ACTIVE",
+    "leadership": [
+      {"name": "Don Fleming", "title": "Director"}
+    ],
+    "services": ["Environmental rating", "Energy efficiency", "Sustainability assessment", "Building rating advisory"],
+    "location": "Perth, WA",
+    "business_model": "Independent boutique advisory",
+    "confidence_score": 0.85,
+    "decision_maker_priority": "MEDIUM",
+    "source_verification": ["batch1", "batch2", "batch3", "linkedin_abr_enrichment"],
+    "notes": "Established environmental/energy rating specialist"
+  },
+  {
+    "rank": 12,
+    "firm_name": "WA Power & Gas Consulting",
+    "website_url": "https://www.wapowergasconsulting.com.au",
+    "website_status": "ACTIVE",
+    "leadership": [
+      {"name": "Shean Bond", "title": "Principal Consultant"}
+    ],
+    "services": ["Energy consulting", "Power market advisory", "Gas industry expertise", "Energy strategy"],
+    "location": "Perth, WA",
+    "business_model": "Independent boutique advisory",
+    "confidence_score": 0.80,
+    "decision_maker_priority": "MEDIUM",
+    "source_verification": ["batch1", "batch2", "batch3", "linkedin_abr_enrichment"],
+    "notes": "Specialized energy market consultant with verified principal"
+  }
+]
