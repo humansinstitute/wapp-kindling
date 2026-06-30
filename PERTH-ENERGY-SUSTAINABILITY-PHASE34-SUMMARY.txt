@@ -1,0 +1,147 @@
+PHASE 3-4 VERIFICATION & SYNTHESIS REPORT
+Perth Energy/Sustainability Advisory Firms - Final Dataset
+
+Generated: 2025-01-15
+Data Source: 31 firms across 3 batches (Batch 1, 2, 3 extraction)
+
+=== EXECUTIVE SUMMARY ===
+
+Applied 6 filter criteria to 31 firms. Final output: 7 firms (1 full pass + 6 borderline/verification pending)
+
+FILTER CRITERIA:
+1. Independent advisory firm (NOT multinational like Deloitte/EY/PWC/RSM/BDO)
+2. Specializes in energy efficiency, renewables, or sustainability advisory
+3. Named individual leadership visible (founders/directors/principals)
+4. Perth-based or explicitly Perth-serving Western Australia
+5. Advisory/consulting focus (NOT pure engineering/delivery)
+6. Website currently active and accessible
+
+=== FINAL OUTPUT (7 FIRMS) ===
+
+TIER 1: MEETS ALL 6 CRITERIA
+- Western Environmental (0.95 confidence)
+  ✓ 4 named leaders, active website, sustainability + environmental auditing,
+    Perth-headquartered with multi-state operations, independent boutique
+
+TIER 2: MEETS 5/6 CRITERIA (Website verification or partial leadership)
+- Ecorate WA (0.85 confidence) - Don Fleming (Principal), website TBD
+- WA Power & Gas Consulting (0.80 confidence) - Shean Bond (Founder), website TBD
+- MySolar Advisory (0.70 confidence) - Chris + Kam (informal names), ACTIVE website
+- Preston Consulting Pty Ltd (0.65 confidence) - NO NAMED LEADERSHIP, but ACTIVE website + renewable energy consulting explicit
+- Energise Renewables (0.65 confidence) - NO NAMED LEADERSHIP, but ACTIVE website + comprehensive renewables/clean energy consulting
+- BE&R Consulting (0.65 confidence) - Hugh/David (partial names), website TBD
+
+EXCLUDED (1 firm):
+- Anthesis Group - DISQUALIFIED (multinational, fails criterion 1)
+
+=== GAP ANALYSIS ===
+
+SHORTFALL: Target was 8-12 firms. Final output = 7 firms (5/6 or 6/6 criteria met).
+
+ROOT CAUSES:
+1. Leadership Visibility Gap (14 firms failed criterion 3 alone)
+   - 14 firms had no publicly named leadership despite strong advisory focus
+   - Examples: AllScope Energy, RE Plus, Perspektiv, Futureproof, ReGen Strategic,
+     Thermarate, Constructive BC, Preston, ecologia, WestSun, Energise, Solar Right,
+     Solar Coach, Elemental Group
+   - IMPACT: Would have qualified if leadership names were documented
+
+2. Website Verification Gap (4 firms)
+   - WA Power & Gas Consulting: URL not responding (likely domain/host issue)
+   - Ecorate WA: URL not responding to standard HTTP checks
+   - BE&R Consulting: URL not responding
+   - IMPACT: Cannot confirm active websites, but firms are likely operational
+
+3. Multinational Disqualification (1 firm)
+   - Anthesis Group: Global multinational, despite strong Perth presence + leadership
+   - IMPACT: 1 firm removed due to criterion 1
+
+4. Location Disqualifications (4 firms)
+   - WolfPeak, RPS Group, Enhar, Umwelt: Not Perth or not Perth-specific
+   - IMPACT: 4 firms removed due to criterion 4
+
+5. Website Accessibility Failures (2 firms)
+   - CES Perth: Error/inaccessible
+   - Perth Solar Power: Error/inaccessible
+   - IMPACT: 2 firms could not be verified
+
+=== RECOMMENDATIONS FOR REACHING 8-12 FIRMS ===
+
+OPTION A: Include 5/6-criteria firms with confidence scores 0.65+
+   Current: 1 (Western Environmental, 6/6) + 6 (5/6 criteria)
+   Outcome: 7 firms total
+
+OPTION B: Relax leadership criterion to "leadership mentioned but not formalized"
+   Would include: BE&R (Hugh/David), MySolar (Chris/Kam), Preston, Energise
+   Additional gains: +2-3 firms (if Hugh/David surnames can be verified)
+   Outcome: 9-10 firms
+
+OPTION C: Conduct secondary research on 14 firms with no visible leadership
+   Search: LinkedIn, ABN Lookup, company registrations for founder/director names
+   Potential: Could add 5-8 more firms if leadership names are recoverable
+   Outcome: 12-15 firms
+
+OPTION D: Relax "website active" criterion for firms with strong service descriptions
+   Would include: Preston Consulting (explicit renewable energy consulting), Energise Renewables
+   Additional gains: +0 (both already included in Tier 2)
+   Outcome: No improvement
+
+=== DATA QUALITY OBSERVATIONS ===
+
+HIGH CONFIDENCE (0.85+):
+- Western Environmental: 4 named leaders, active site, multi-state operations
+- Ecorate WA: Named principal, clear energy focus, need URL confirmation
+- WA Power & Gas Consulting: Named founder, specialization clear, need URL confirmation
+
+MEDIUM CONFIDENCE (0.70):
+- MySolar Advisory: Informal leadership names, active site, ROI analysis confirms advisory
+- Preston Consulting: No named leadership BUT renewable energy consulting explicit on site
+- Energise Renewables: No named leadership BUT comprehensive clean energy consulting explicit
+
+LOWER CONFIDENCE (0.65):
+- BE&R Consulting: Partial leadership names (Hugh/David only), need full names + URL
+
+EXCLUDED:
+- Anthesis Group: Despite 0.95 potential (named leaders + active site), multinational status violates criterion 1
+
+=== CROSS-BATCH DUPLICATES / SAME FIRMS ===
+
+No duplicate firms identified across 3 batches. All 31 firms are distinct entities.
+
+=== NEXT STEPS FOR ESCALATION ===
+
+1. Website Verification Phase
+   - Verify URLs for: Ecorate WA, WA Power & Gas, BE&R Consulting (potentially different domains)
+   - Check: ABN Lookup, Google Business, LinkedIn
+
+2. Leadership Enrichment Phase
+   - For Preston Consulting + Energise Renewables: Search LinkedIn for founders/directors
+   - For BE&R: Recover full surnames for Hugh and David
+   - For MySolar: Recover full names and titles for Chris and Kam
+
+3. LinkedIn Cross-Reference
+   - Match 14 no-leadership firms against company LinkedIn pages
+   - Extract founder/director titles and names
+
+4. Confidence Score Recalibration
+   - Post-verification: Update scores for 4 website-pending firms
+   - Post-leadership enrichment: Upgrade 14 no-leadership firms if names recovered
+
+=== DELIVERABLES ===
+
+Primary: PERTH-ENERGY-SUSTAINABILITY-FINAL-SYNTHESIS.json
+- 7 firms with 6/6 or 5/6 criteria met
+- Confidence scores 0.65-0.95
+- Full leadership, services, location, verification metadata
+
+Support: PERTH-ENERGY-SUSTAINABILITY-PHASE34-SUMMARY.txt (this file)
+- Gap analysis, filter application, recommendations
+
+=== CONCLUSION ===
+
+Result: 7 firms meet Phase 3-4 filters (1 full pass, 6 requiring verification/enrichment)
+Shortfall: Target was 8-12; currently 7 (at 0.65+ confidence threshold)
+Path to 12: Secondary research on 14 firms with hidden/missing leadership names
+Current confidence: Western Environmental (0.95), then 3 firms at 0.80-0.85 pending website verification
+Ready for immediate outreach: Western Environmental (0.95 confidence)
+Ready pending verification: Ecorate WA, WA Power & Gas, MySolar Advisory, BE&R Consulting

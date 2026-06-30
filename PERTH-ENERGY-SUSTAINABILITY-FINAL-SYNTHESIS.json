@@ -1,0 +1,244 @@
+[
+  {
+    "firm_name": "Western Environmental",
+    "website_url": "https://www.westenv.com.au/",
+    "website_status": "ACTIVE",
+    "leadership": [
+      {
+        "name": "James Gibson",
+        "title": "Managing Director"
+      },
+      {
+        "name": "Philip Brand",
+        "title": "Principal Scientist"
+      },
+      {
+        "name": "Peter McColl",
+        "title": "Principal Scientist"
+      },
+      {
+        "name": "David Reynolds",
+        "title": "Senior Principal"
+      }
+    ],
+    "services": [
+      "environmental_auditing",
+      "contaminated_land_management",
+      "sustainability_advisory",
+      "PFAS_remediation",
+      "ecology_assessment",
+      "permits_compliance",
+      "asbestos_hazmat"
+    ],
+    "location": "Perth, WA (multi-state operations)",
+    "business_model": "Independent boutique advisory",
+    "confidence_score": 0.95,
+    "source_verification": [
+      "batch2_extraction",
+      "website_direct_verification"
+    ],
+    "red_flags_or_notes": "Multi-state operations but Perth-headquartered. Environmental auditing is primary specialization with sustainability as secondary service area. Meets all 6 criteria including verified active website and strong leadership visibility.",
+    "filter_criteria_met": "6/6"
+  },
+  {
+    "firm_name": "Ecorate WA",
+    "website_url": "https://www.ecorate.com.au/ OR https://ecoratewe.com.au/",
+    "website_status": "PRESUMED_ACTIVE",
+    "leadership": [
+      {
+        "name": "Don Fleming",
+        "title": "Principal"
+      }
+    ],
+    "services": [
+      "energy_efficiency_assessments",
+      "NatHERs_ratings",
+      "building_energy_audits",
+      "advisory_consulting"
+    ],
+    "location": "Perth, Western Australia",
+    "business_model": "Independent boutique advisory",
+    "confidence_score": 0.85,
+    "source_verification": [
+      "batch1_extraction",
+      "website_status_requires_verification"
+    ],
+    "red_flags_or_notes": "Leadership named (Don Fleming, Principal) clearly visible in extraction. Specializes in energy efficiency - core energy advisory. Perth-based. Website verification needed - URL not returning standard response codes.",
+    "filter_criteria_met": "5/6 - website verification pending"
+  },
+  {
+    "firm_name": "WA Power & Gas Consulting",
+    "website_url": "https://wapower.com.au/ OR alternative TBD",
+    "website_status": "VERIFICATION_NEEDED",
+    "leadership": [
+      {
+        "name": "Shean Bond",
+        "title": "Founder"
+      }
+    ],
+    "services": [
+      "energy_analysis",
+      "power_consulting",
+      "gas_consulting",
+      "energy_advisory"
+    ],
+    "location": "Perth, Western Australia",
+    "business_model": "Independent boutique advisory",
+    "confidence_score": 0.80,
+    "source_verification": [
+      "batch1_extraction",
+      "website_status_requires_verification"
+    ],
+    "red_flags_or_notes": "Named founder (Shean Bond) confirms leadership visibility and independence. Energy analysis and consulting are core services. Perth-based. Website verification needed - standard URL not responding.",
+    "filter_criteria_met": "5/6 - website verification pending"
+  },
+  {
+    "firm_name": "MySolar Advisory",
+    "website_url": "https://mysolaradvisory.com.au/",
+    "website_status": "ACTIVE",
+    "leadership": [
+      {
+        "name": "Chris",
+        "title": "Contact (0427328555)"
+      },
+      {
+        "name": "Kam",
+        "title": "Contact (0430595926)"
+      }
+    ],
+    "services": [
+      "solar_audits",
+      "solar_feasibility_studies",
+      "EV_battery_design",
+      "solar_system_sizing",
+      "government_rebate_guidance",
+      "ROI_analysis",
+      "solar_advisory"
+    ],
+    "location": "Perth & Western Australia",
+    "business_model": "Independent boutique advisory",
+    "confidence_score": 0.70,
+    "source_verification": [
+      "batch2_extraction",
+      "website_direct_verification"
+    ],
+    "red_flags_or_notes": "Website verified ACTIVE. Leadership identified by first name + phone only (Chris, Kam) - no formal titles or full names documented. Specializes in solar/renewable energy advisory. Meets 5/6 criteria but leadership naming is partial/informal. Includes ROI analysis (financial advisory) supporting consulting vs. pure project delivery.",
+    "filter_criteria_met": "5/6 - partial leadership naming"
+  },
+  {
+    "firm_name": "Preston Consulting Pty Ltd",
+    "website_url": "https://prestonconsulting.com.au/",
+    "website_status": "ACTIVE",
+    "leadership": [
+      {
+        "name": "Not publicly listed on website",
+        "title": ""
+      }
+    ],
+    "services": [
+      "renewable_energy_consulting",
+      "environmental_approvals",
+      "strategic_project_management",
+      "mine_closure",
+      "greenhouse_gas_management",
+      "Indigenous_engagement",
+      "compliance_auditing"
+    ],
+    "location": "Perth, WA (Adelaide Terrace)",
+    "business_model": "Independent boutique advisory",
+    "confidence_score": 0.65,
+    "source_verification": [
+      "batch2_extraction",
+      "website_direct_verification"
+    ],
+    "red_flags_or_notes": "Website verified ACTIVE. Renewable energy consulting is explicitly listed service. Strategic focus on environmental/renewable approvals and GHG management indicates advisory consulting model. NO NAMED LEADERSHIP - fails criterion 3. Included as candidate for 5/6 criteria if leadership can be verified separately.",
+    "filter_criteria_met": "5/6 - no named leadership on site"
+  },
+  {
+    "firm_name": "Energise Renewables",
+    "website_url": "https://energise-renewables.com/",
+    "website_status": "ACTIVE",
+    "leadership": [
+      {
+        "name": "Not publicly listed on website",
+        "title": ""
+      }
+    ],
+    "services": [
+      "offshore_wind_consulting",
+      "onshore_wind_consulting",
+      "battery_storage_advisory",
+      "carbon_capture_consulting",
+      "power_to_x_advisory",
+      "solar_energy_consulting",
+      "wave_energy_consulting",
+      "clean_energy_consulting"
+    ],
+    "location": "Perth, WA (Esplanade)",
+    "business_model": "Independent boutique advisory",
+    "confidence_score": 0.65,
+    "source_verification": [
+      "batch2_extraction",
+      "website_direct_verification"
+    ],
+    "red_flags_or_notes": "Website verified ACTIVE. Comprehensive renewable energy and clean energy consulting services. Strategic advisory focus on multiple energy vectors (wind, solar, storage, etc.). NO NAMED LEADERSHIP visible - fails criterion 3. Included as candidate if leadership can be verified.",
+    "filter_criteria_met": "5/6 - no named leadership on site"
+  },
+  {
+    "firm_name": "Anthesis Group (Perth office)",
+    "website_url": "https://www.anthesis.com/ OR Perth office specific",
+    "website_status": "ACTIVE",
+    "leadership": [
+      {
+        "name": "Thomas Hodgson",
+        "title": "Listed in extraction"
+      },
+      {
+        "name": "Nick Taylor",
+        "title": "Listed in extraction"
+      }
+    ],
+    "services": [
+      "sustainability_advisory",
+      "ESG_consulting",
+      "environmental_strategy"
+    ],
+    "location": "Perth, WA (with global operations)",
+    "business_model": "Global multinational with Perth office",
+    "confidence_score": 0.30,
+    "source_verification": [
+      "batch1_extraction",
+      "global_company_research"
+    ],
+    "red_flags_or_notes": "DISQUALIFIED - Criterion 1 violation. Anthesis Group is a large global multinational firm, not an independent boutique. Despite named leadership (Thomas Hodgson, Nick Taylor) and active website, does not meet 'independent advisory firm' requirement. EXCLUDE from final list.",
+    "filter_criteria_met": "5/6 - but fails independence criterion 1"
+  },
+  {
+    "firm_name": "BE&R Consulting",
+    "website_url": "https://www.beandrconsulting.com.au/ OR alternative TBD",
+    "website_status": "VERIFICATION_NEEDED",
+    "leadership": [
+      {
+        "name": "Hugh",
+        "title": "Founder/Partner (name only)"
+      },
+      {
+        "name": "David",
+        "title": "Founder/Partner (name only)"
+      }
+    ],
+    "services": [
+      "energy_transition_consulting",
+      "advisory"
+    ],
+    "location": "Perth, Western Australia",
+    "business_model": "Independent boutique advisory",
+    "confidence_score": 0.65,
+    "source_verification": [
+      "batch1_extraction",
+      "website_status_requires_verification"
+    ],
+    "red_flags_or_notes": "Leadership named but INCOMPLETE (Hugh/David, no surnames documented). Specializes in energy transition consulting. Website verification needed. Meets 5/6 criteria with partial leadership information.",
+    "filter_criteria_met": "5/6 - partial leadership naming, website TBD"
+  }
+]
