@@ -27,5 +27,8 @@ tmp/
 temp/
 coverage/
 
+# Research output artifacts (Perth firm research, outreach/decision-maker data)
+research-output/
+
 # Local MCP config (contains session secrets)
 .mcp.json
