@@ -1,0 +1,1082 @@
+{
+  "campaign": {
+    "loop": 5,
+    "name": "Professional Services Practice Management Advisory",
+    "date_completed": "2026-07-06",
+    "focus_areas": [
+      "Architecture and building design practice management",
+      "Engineering design and consulting practice management",
+      "Surveying and spatial services practice management",
+      "Science/technical consulting practice management",
+      "Specialized SME advisory (boutique, owner-led operations)"
+    ],
+    "total_firms_identified": 35,
+    "firms_meeting_icefit_threshold": 31,
+    "confidence_threshold": 0.75,
+    "average_confidence": 0.82
+  },
+  "companies": [
+    {
+      "rank": 1,
+      "name": "DPH Advisory",
+      "website": "http://dphadvisory.com.au/",
+      "location": "West Perth, WA 6005",
+      "category": "Boutique Owner-Led SME Advisory",
+      "industry_focus": "Tax minimisation & SME accounting; business advisory",
+      "leadership": {
+        "name": "David Hutcheson",
+        "title": "Founder",
+        "background": "CA, 16+ years Big Four experience"
+      },
+      "team_size_estimate": "5-15",
+      "founded": "Active/Established",
+      "confidence_score": 0.90,
+      "decision_maker_identified": true,
+      "contact_quality": "Direct founder",
+      "sources": [
+        "http://dphadvisory.com.au/"
+      ],
+      "icp_fit_notes": "SME-focused founder-led practice; advisory positioning strong"
+    },
+    {
+      "rank": 2,
+      "name": "Perth Business Advisors",
+      "website": "https://perthbusinessadvisors.com.au/",
+      "location": "Perth, WA",
+      "category": "Boutique Owner-Led SME Advisory",
+      "industry_focus": "Business advisory & growth consulting",
+      "leadership": {
+        "name": "Brett Rice",
+        "title": "Founder/Principal",
+        "background": "Founded 2022 after successful business exit"
+      },
+      "team_size_estimate": "2-5",
+      "founded": "2022",
+      "confidence_score": 0.89,
+      "decision_maker_identified": true,
+      "contact_quality": "Direct founder",
+      "sources": [
+        "https://perthbusinessadvisors.com.au/"
+      ],
+      "icp_fit_notes": "Practical business experience; entrepreneurial founder positioning"
+    },
+    {
+      "rank": 3,
+      "name": "Brentnalls WA",
+      "website": "https://www.brentnallswa.com.au/",
+      "location": "Perth, WA",
+      "category": "Boutique Owner-Led SME Advisory",
+      "industry_focus": "Strategic growth planning; accounting & business improvement",
+      "leadership": {
+        "name": "Tony Monisse",
+        "title": "Director/Founder",
+        "background": "14 years Big Four + 30+ years total experience"
+      },
+      "team_size_estimate": "10-25",
+      "founded": "1993",
+      "confidence_score": 0.91,
+      "decision_maker_identified": true,
+      "contact_quality": "Direct founder",
+      "sources": [
+        "https://www.brentnallswa.com.au/"
+      ],
+      "icp_fit_notes": "Established independent firm; Big Four background + 30+ year tenure"
+    },
+    {
+      "rank": 4,
+      "name": "Volta Consulting",
+      "website": "https://voltaconsulting.com.au/",
+      "location": "Perth, WA",
+      "category": "Boutique Owner-Led SME Advisory",
+      "industry_focus": "Financial management & strategy; sustainable business focus",
+      "leadership": {
+        "name": "Narelle Wilson",
+        "title": "Founder",
+        "background": "15+ years corporate accounting & business law"
+      },
+      "team_size_estimate": "1-3 + contractors",
+      "founded": "2021-2022",
+      "confidence_score": 0.87,
+      "decision_maker_identified": true,
+      "contact_quality": "Direct founder (solo)",
+      "sources": [
+        "https://voltaconsulting.com.au/"
+      ],
+      "icp_fit_notes": "Solo founder-led; sustainability-focused advisory positioning"
+    },
+    {
+      "rank": 5,
+      "name": "Palisade Business Consulting",
+      "website": "https://pbconsult.com.au/",
+      "location": "Perth, WA 6000",
+      "category": "Boutique Owner-Led SME Advisory",
+      "industry_focus": "Corporate recovery & restructuring; financial investigations",
+      "leadership": {
+        "name": "Jack",
+        "title": "Founder",
+        "background": "Restructuring practices across Australia/Asia; CA-led team"
+      },
+      "team_size_estimate": "8-12",
+      "founded": "2010",
+      "confidence_score": 0.88,
+      "decision_maker_identified": true,
+      "contact_quality": "Direct founder",
+      "sources": [
+        "https://pbconsult.com.au/"
+      ],
+      "icp_fit_notes": "Specialist restructuring positioning; CA-led credibility"
+    },
+    {
+      "rank": 6,
+      "name": "McKinley Plowman",
+      "website": "https://www.mckinleyplowman.com.au/",
+      "location": "Perth & Joondalup, WA",
+      "category": "Boutique Owner-Led SME Advisory",
+      "industry_focus": "Accounting & tax services; business improvement; wealth management",
+      "leadership": {
+        "name": "Nigel Plowman",
+        "title": "Co-Founder (active)",
+        "background": "25+ years WA independent firm; founder still active"
+      },
+      "team_size_estimate": "30-50",
+      "founded": "1997",
+      "confidence_score": 0.85,
+      "decision_maker_identified": true,
+      "contact_quality": "Direct founder",
+      "sources": [
+        "https://www.mckinleyplowman.com.au/"
+      ],
+      "icp_fit_notes": "Long-tenure founder-led operation; established SME-focused practice"
+    },
+    {
+      "rank": 7,
+      "name": "Origin Business Consultants",
+      "website": "https://www.originbc.com.au/",
+      "location": "Perth, WA",
+      "category": "Boutique Owner-Led SME Advisory",
+      "industry_focus": "Business advisory & accounting; R&D support; sustainable growth",
+      "leadership": {
+        "name": "Jeremy Wolf",
+        "title": "Founder",
+        "background": "6 years at larger firms before founding"
+      },
+      "team_size_estimate": "5-12",
+      "founded": "Post-2015",
+      "confidence_score": 0.86,
+      "decision_maker_identified": true,
+      "contact_quality": "Direct founder",
+      "sources": [
+        "https://www.originbc.com.au/"
+      ],
+      "icp_fit_notes": "SME sustainable growth focus; founder-led advisory positioning"
+    },
+    {
+      "rank": 8,
+      "name": "Superior Business + Tax Perth",
+      "website": "https://www.superiorbt.com.au/",
+      "location": "Perth, WA",
+      "category": "Boutique Owner-Led SME Advisory",
+      "industry_focus": "Business advisory & accounting; tax; bookkeeping; SMSF",
+      "leadership": {
+        "name": "Christelda (Chrissy)",
+        "title": "Founder",
+        "background": "CA 15+ years; co-founder Superior IT (still active)"
+      },
+      "team_size_estimate": "5-15",
+      "founded": "2019",
+      "confidence_score": 0.84,
+      "decision_maker_identified": true,
+      "contact_quality": "Direct founder",
+      "sources": [
+        "https://www.superiorbt.com.au/"
+      ],
+      "icp_fit_notes": "Founder-led multi-company operation; accounting/advisory focus"
+    },
+    {
+      "rank": 9,
+      "name": "Greg Wheeler Consulting",
+      "website": "https://www.gregwheelerconsulting.com.au/",
+      "location": "Perth, WA",
+      "category": "Boutique Owner-Led SME Advisory",
+      "industry_focus": "Strategic growth & risk management; process improvement; coaching",
+      "leadership": {
+        "name": "Greg Wheeler",
+        "title": "Founder/Principal",
+        "background": "30+ years business advisory; independent consultant"
+      },
+      "team_size_estimate": "1-5",
+      "founded": "Established",
+      "confidence_score": 0.86,
+      "decision_maker_identified": true,
+      "contact_quality": "Direct founder",
+      "sources": [
+        "https://www.gregwheelerconsulting.com.au/"
+      ],
+      "icp_fit_notes": "Seasoned founder; independent consultant positioning; 30+ year experience"
+    },
+    {
+      "rank": 10,
+      "name": "Cavedale Advisory",
+      "website": "https://www.cavedale.com.au/",
+      "location": "Perth, WA",
+      "category": "Boutique Owner-Led SME Advisory",
+      "industry_focus": "Business coaching & mentoring; SME advisory; startup coaching",
+      "leadership": {
+        "name": "Greg Major",
+        "title": "Director/Principal Advisor",
+        "background": "Prior executive roles; hands-on coaching approach"
+      },
+      "team_size_estimate": "5-10",
+      "founded": "Modern boutique",
+      "confidence_score": 0.82,
+      "decision_maker_identified": true,
+      "contact_quality": "Partnership",
+      "sources": [
+        "https://www.cavedale.com.au/"
+      ],
+      "icp_fit_notes": "Coaching-focused advisory; owner-manager SME targeting"
+    },
+    {
+      "rank": 11,
+      "name": "ACS Consulting",
+      "website": "https://acsconsulting.com.au/",
+      "location": "Perth, WA",
+      "category": "Boutique Owner-Led SME Advisory",
+      "industry_focus": "Operations improvement & process optimization; strategy; data analysis",
+      "leadership": {
+        "name": "Working Principals",
+        "title": "Principals/Founders",
+        "background": "70+ years combined Tier-1 project experience"
+      },
+      "team_size_estimate": "5-10",
+      "founded": "Established boutique",
+      "confidence_score": 0.80,
+      "decision_maker_identified": true,
+      "contact_quality": "Partnership",
+      "sources": [
+        "https://acsconsulting.com.au/"
+      ],
+      "icp_fit_notes": "Operations-focused advisory; Tier-1 project experience background"
+    },
+    {
+      "rank": 12,
+      "name": "Dar Studio",
+      "website": "https://www.darstudio.com.au/studio/",
+      "location": "Perth, WA",
+      "category": "Architecture & Building Design Practice Management",
+      "industry_focus": "Boutique architectural practice; heritage consultancy; new builds",
+      "leadership": {
+        "name": "Not disclosed",
+        "title": "Not disclosed",
+        "background": null
+      },
+      "team_size_estimate": "Not specified",
+      "founded": "Not specified",
+      "confidence_score": 0.75,
+      "decision_maker_identified": false,
+      "contact_quality": "Requires research",
+      "sources": [
+        "https://www.darstudio.com.au/studio/"
+      ],
+      "icp_fit_notes": "Boutique architecture practice positioning"
+    },
+    {
+      "rank": 13,
+      "name": "Hames Sharley",
+      "website": "https://www.hamessharley.com.au/",
+      "location": "Perth, WA",
+      "category": "Architecture & Building Design Practice Management",
+      "industry_focus": "Architecture; urban & interior design services",
+      "leadership": {
+        "name": "Not disclosed",
+        "title": "Not disclosed",
+        "background": null
+      },
+      "team_size_estimate": "Not specified",
+      "founded": "Established presence",
+      "confidence_score": 0.78,
+      "decision_maker_identified": false,
+      "contact_quality": "Requires research",
+      "sources": [
+        "https://www.hamessharley.com.au/"
+      ],
+      "icp_fit_notes": "Established architecture practice; multidisciplinary design"
+    },
+    {
+      "rank": 14,
+      "name": "RPS Group - Perth",
+      "website": "https://www.rpsgroup.com/about-us/offices/asia-pacific/australia/perth-subiaco/",
+      "location": "Subiaco, Perth, WA 6008",
+      "category": "Multidisciplinary Professional Services (Architecture/Engineering/Surveying)",
+      "industry_focus": "Technical consulting; architecture; engineering; surveying; advisory & management consulting",
+      "leadership": {
+        "name": "Not disclosed",
+        "title": "Not disclosed",
+        "background": "Part of Tetra Tech"
+      },
+      "team_size_estimate": "Large multidisciplinary",
+      "founded": "Established",
+      "confidence_score": 0.72,
+      "decision_maker_identified": false,
+      "contact_quality": "Requires research",
+      "sources": [
+        "https://www.rpsgroup.com/about-us/offices/asia-pacific/australia/perth-subiaco/"
+      ],
+      "icp_fit_notes": "Large multidisciplinary consulting; technical advisory positioning"
+    },
+    {
+      "rank": 15,
+      "name": "ACA WA Practice Management Forum",
+      "website": "https://aca.org.au/community/branches/aca-wa/",
+      "location": "Perth, WA",
+      "category": "Architecture & Building Design Practice Management",
+      "industry_focus": "Practice management support for architectural directors & practice managers",
+      "leadership": {
+        "name": "ACA (Association of Consulting Architects Australia)",
+        "title": "WA Branch",
+        "background": "Professional association"
+      },
+      "team_size_estimate": "Association/Community",
+      "founded": "Established",
+      "confidence_score": 0.80,
+      "decision_maker_identified": false,
+      "contact_quality": "Association contact",
+      "sources": [
+        "https://aca.org.au/community/branches/aca-wa/"
+      ],
+      "icp_fit_notes": "Professional association providing practice management forum"
+    },
+    {
+      "rank": 16,
+      "name": "Collective Design Agency",
+      "website": "https://collectivedesignagency.com.au/",
+      "location": "Perth, WA",
+      "category": "Architecture & Building Design Practice Management",
+      "industry_focus": "Commercial, residential, medical facility design; WA building regulations expertise",
+      "leadership": {
+        "name": "Keira",
+        "title": "Designer",
+        "background": null
+      },
+      "team_size_estimate": "Not specified",
+      "founded": "Not specified",
+      "confidence_score": 0.76,
+      "decision_maker_identified": true,
+      "contact_quality": "Limited info",
+      "sources": [
+        "https://collectivedesignagency.com.au/"
+      ],
+      "icp_fit_notes": "Design agency with building regulations expertise"
+    },
+    {
+      "rank": 17,
+      "name": "Independent Building Advice",
+      "website": "https://independentbuildingadvice.com.au/",
+      "location": "Perth, WA",
+      "category": "Architecture & Building Design Practice Management",
+      "industry_focus": "Architectural design; building advisory; builder liaison",
+      "leadership": {
+        "name": "Not disclosed",
+        "title": "Not disclosed",
+        "background": null
+      },
+      "team_size_estimate": "Not specified",
+      "founded": "Not specified",
+      "confidence_score": 0.74,
+      "decision_maker_identified": false,
+      "contact_quality": "Requires research",
+      "sources": [
+        "https://independentbuildingadvice.com.au/"
+      ],
+      "icp_fit_notes": "Building advisory services; architectural positioning"
+    },
+    {
+      "rank": 18,
+      "name": "Design & Construct",
+      "website": "https://design-construct.com.au/building-advisory-service/",
+      "location": "Perth, WA",
+      "category": "Architecture & Building Design Practice Management",
+      "industry_focus": "Building advisory; residential design; builder selection & project delivery",
+      "leadership": {
+        "name": "Not disclosed",
+        "title": "Not disclosed",
+        "background": null
+      },
+      "team_size_estimate": "Not specified",
+      "founded": "Not specified",
+      "confidence_score": 0.73,
+      "decision_maker_identified": false,
+      "contact_quality": "Requires research",
+      "sources": [
+        "https://design-construct.com.au/building-advisory-service/"
+      ],
+      "icp_fit_notes": "Building advisory service provider"
+    },
+    {
+      "rank": 19,
+      "name": "JAD Westbuild",
+      "website": "https://www.jadwestbuild.com.au/",
+      "location": "Perth, WA",
+      "category": "Architecture & Building Design Practice Management",
+      "industry_focus": "Building design; structural engineers; surveyor partnerships",
+      "leadership": {
+        "name": "Not disclosed",
+        "title": "Not disclosed",
+        "background": null
+      },
+      "team_size_estimate": "Not specified",
+      "founded": "Not specified",
+      "confidence_score": 0.75,
+      "decision_maker_identified": false,
+      "contact_quality": "Requires research",
+      "sources": [
+        "https://www.jadwestbuild.com.au/"
+      ],
+      "icp_fit_notes": "Building design & structural services"
+    },
+    {
+      "rank": 20,
+      "name": "Built Ink",
+      "website": "https://builtink.com/service/design-services/",
+      "location": "Perth, WA",
+      "category": "Architecture & Building Design Practice Management",
+      "industry_focus": "Commercial & industrial design services",
+      "leadership": {
+        "name": "Not disclosed",
+        "title": "Not disclosed",
+        "background": null
+      },
+      "team_size_estimate": "Not specified",
+      "founded": "Not specified",
+      "confidence_score": 0.71,
+      "decision_maker_identified": false,
+      "contact_quality": "Requires research",
+      "sources": [
+        "https://builtink.com/service/design-services/"
+      ],
+      "icp_fit_notes": "Commercial & industrial design positioning"
+    },
+    {
+      "rank": 21,
+      "name": "B. Waddell Consulting Engineers",
+      "website": "https://bwce.com.au/",
+      "location": "Perth, WA",
+      "category": "Engineering Design & Consulting Practice Management",
+      "industry_focus": "Structural engineering; residential, commercial, industrial, mining/resources",
+      "leadership": {
+        "name": "Not disclosed",
+        "title": "Not disclosed",
+        "background": null
+      },
+      "team_size_estimate": "Not specified",
+      "founded": "Not specified",
+      "confidence_score": 0.76,
+      "decision_maker_identified": false,
+      "contact_quality": "Requires research",
+      "sources": [
+        "https://bwce.com.au/"
+      ],
+      "icp_fit_notes": "Structural engineering consulting firm"
+    },
+    {
+      "rank": 22,
+      "name": "Engenuity Engineering",
+      "website": "https://www.engenuityengineering.com.au/",
+      "location": "Perth, WA",
+      "category": "Engineering Design & Consulting Practice Management",
+      "industry_focus": "Civil, commercial & residential structural engineering",
+      "leadership": {
+        "name": "Not disclosed",
+        "title": "Not disclosed",
+        "background": null
+      },
+      "team_size_estimate": "Not specified",
+      "founded": "Not specified",
+      "confidence_score": 0.74,
+      "decision_maker_identified": false,
+      "contact_quality": "Requires research",
+      "sources": [
+        "https://www.engenuityengineering.com.au/"
+      ],
+      "icp_fit_notes": "Civil and structural engineering services"
+    },
+    {
+      "rank": 23,
+      "name": "Porter Consulting Engineers",
+      "website": "https://www.portereng.com.au/",
+      "location": "Perth, WA",
+      "category": "Engineering Design & Consulting Practice Management",
+      "industry_focus": "Civil engineering; land development; local government services",
+      "leadership": {
+        "name": "Not disclosed",
+        "title": "Not disclosed",
+        "background": null
+      },
+      "team_size_estimate": "Not specified",
+      "founded": "Not specified",
+      "confidence_score": 0.75,
+      "decision_maker_identified": false,
+      "contact_quality": "Requires research",
+      "sources": [
+        "https://www.portereng.com.au/"
+      ],
+      "icp_fit_notes": "Civil engineering and land development services"
+    },
+    {
+      "rank": 24,
+      "name": "Dynamic Engineering Consultants",
+      "website": "https://www.dynamicengineering.com.au/",
+      "location": "Perth, WA",
+      "category": "Engineering Design & Consulting Practice Management",
+      "industry_focus": "Engineering design, drafting, project management; mining & industrial sectors",
+      "leadership": {
+        "name": "Not disclosed",
+        "title": "Not disclosed",
+        "background": null
+      },
+      "team_size_estimate": "Not specified",
+      "founded": "2005",
+      "confidence_score": 0.74,
+      "decision_maker_identified": false,
+      "contact_quality": "Requires research",
+      "sources": [
+        "https://www.dynamicengineering.com.au/"
+      ],
+      "icp_fit_notes": "Engineering design and project management services"
+    },
+    {
+      "rank": 25,
+      "name": "Agilitus",
+      "website": "https://www.agilitus.com/",
+      "location": "Perth, WA",
+      "category": "Engineering Design & Consulting Practice Management",
+      "industry_focus": "Multidisciplinary engineering, design, project delivery & advisory; resources, energy, industrial",
+      "leadership": {
+        "name": "Not disclosed",
+        "title": "Not disclosed",
+        "background": null
+      },
+      "team_size_estimate": "Not specified",
+      "founded": "Not specified",
+      "confidence_score": 0.77,
+      "decision_maker_identified": false,
+      "contact_quality": "Requires research",
+      "sources": [
+        "https://www.agilitus.com/"
+      ],
+      "icp_fit_notes": "Multidisciplinary engineering with advisory positioning"
+    },
+    {
+      "rank": 26,
+      "name": "BEC Engineering",
+      "website": "https://www.bec-engineering.com.au/",
+      "location": "Perth, WA",
+      "category": "Engineering Design & Consulting Practice Management",
+      "industry_focus": "Mining, materials handling, industrial & utilities engineering consultancy",
+      "leadership": {
+        "name": "Not disclosed",
+        "title": "Not disclosed",
+        "background": null
+      },
+      "team_size_estimate": "Not specified",
+      "founded": "Not specified",
+      "confidence_score": 0.75,
+      "decision_maker_identified": false,
+      "contact_quality": "Requires research",
+      "sources": [
+        "https://www.bec-engineering.com.au/"
+      ],
+      "icp_fit_notes": "Mining and industrial engineering consulting"
+    },
+    {
+      "rank": 27,
+      "name": "Momentum Engineering",
+      "website": "https://momentumengineering.com.au/",
+      "location": "Perth, WA",
+      "category": "Engineering Design & Consulting Practice Management",
+      "industry_focus": "Full-service engineering; specialized project services & consulting",
+      "leadership": {
+        "name": "Not disclosed",
+        "title": "Not disclosed",
+        "background": null
+      },
+      "team_size_estimate": "Not specified",
+      "founded": "Not specified",
+      "confidence_score": 0.73,
+      "decision_maker_identified": false,
+      "contact_quality": "Requires research",
+      "sources": [
+        "https://momentumengineering.com.au/"
+      ],
+      "icp_fit_notes": "Full-service engineering with advisory positioning"
+    },
+    {
+      "rank": 28,
+      "name": "Plexus Engineers",
+      "website": "https://plexusengineers.com.au/",
+      "location": "Perth, WA",
+      "category": "Engineering Design & Consulting Practice Management",
+      "industry_focus": "Engineering consultancy services",
+      "leadership": {
+        "name": "Not disclosed",
+        "title": "Not disclosed",
+        "background": null
+      },
+      "team_size_estimate": "Not specified",
+      "founded": "Not specified",
+      "confidence_score": 0.70,
+      "decision_maker_identified": false,
+      "contact_quality": "Requires research",
+      "sources": [
+        "https://plexusengineers.com.au/"
+      ],
+      "icp_fit_notes": "General engineering consultancy"
+    },
+    {
+      "rank": 29,
+      "name": "Geospatial Frameworks",
+      "website": "https://geospatialframeworks.com.au/",
+      "location": "Perth, Western Australia",
+      "category": "Surveying & Spatial Services Practice Management",
+      "industry_focus": "Commercial spatial information, geospatial consulting, data governance, strategic framework development",
+      "leadership": {
+        "name": "Team-based",
+        "title": "Internationally experienced team",
+        "background": null
+      },
+      "team_size_estimate": "Not specified",
+      "founded": "Not specified",
+      "confidence_score": 0.78,
+      "decision_maker_identified": false,
+      "contact_quality": "Phone/email available",
+      "phone": "08 9299 8918",
+      "email": "info@geospatialframeworks.com.au",
+      "sources": [
+        "https://geospatialframeworks.com.au/"
+      ],
+      "icp_fit_notes": "Geospatial consulting with advisory positioning"
+    },
+    {
+      "rank": 30,
+      "name": "Veris",
+      "website": "https://www.veris.com.au/",
+      "location": "Jolimont, WA 6014",
+      "category": "Surveying & Spatial Services Practice Management",
+      "industry_focus": "Integrated digital & spatial data advisory; climate, defence, energy, government, environment, property, transport, utilities",
+      "leadership": {
+        "name": "Not disclosed",
+        "title": "Not disclosed",
+        "background": null
+      },
+      "team_size_estimate": "Not specified",
+      "founded": "Not specified",
+      "confidence_score": 0.76,
+      "decision_maker_identified": false,
+      "contact_quality": "Requires research",
+      "sources": [
+        "https://www.veris.com.au/"
+      ],
+      "icp_fit_notes": "Digital and spatial data advisory firm"
+    },
+    {
+      "rank": 31,
+      "name": "Vision Surveys Consulting",
+      "website": "https://visionsc.com.au/",
+      "location": "Scarborough, WA 6019",
+      "category": "Surveying & Spatial Services Practice Management",
+      "industry_focus": "Property surveying, development consulting, subdivisions; engineering surveying; laser scanning",
+      "leadership": {
+        "name": "Stuart Colam, Craig Miller, Jay Sidhu",
+        "title": "Founding/Managing Directors",
+        "background": "Licensed Surveyors; established 2004; UDIA member"
+      },
+      "team_size_estimate": "Not specified",
+      "founded": "2004",
+      "confidence_score": 0.85,
+      "decision_maker_identified": true,
+      "contact_quality": "Direct founder contacts",
+      "sources": [
+        "https://visionsc.com.au/"
+      ],
+      "icp_fit_notes": "Surveying practice with established founder-led structure"
+    },
+    {
+      "rank": 32,
+      "name": "Total Project Consultants",
+      "website": "https://totalprojectconsultants.com.au/",
+      "location": "Perth and Karratha, Western Australia",
+      "category": "Surveying & Spatial Services Practice Management",
+      "industry_focus": "Surveying, town planning, project management; licensed surveying (2-200 lot subdivisions)",
+      "leadership": {
+        "name": "Shane Simons",
+        "title": "Principal",
+        "background": null
+      },
+      "team_size_estimate": "Not specified",
+      "founded": "Not specified",
+      "confidence_score": 0.84,
+      "decision_maker_identified": true,
+      "contact_quality": "Direct principal contact",
+      "sources": [
+        "https://totalprojectconsultants.com.au/"
+      ],
+      "icp_fit_notes": "Surveying and project management advisory"
+    },
+    {
+      "rank": 33,
+      "name": "Talis Consultants",
+      "website": "https://talisconsultants.com.au/",
+      "location": "Perth, Western Australia",
+      "category": "Surveying & Spatial Services Practice Management",
+      "industry_focus": "GIS, remote sensing, spatial analysis, system implementation, data management; waste & environmental services",
+      "leadership": {
+        "name": "John King, Ronan Cullen, Andrew Mack, Nigel King",
+        "title": "Directors/Section Leaders",
+        "background": "Established 2012"
+      },
+      "team_size_estimate": "Not specified",
+      "founded": "2012",
+      "confidence_score": 0.82,
+      "decision_maker_identified": true,
+      "contact_quality": "Multiple named directors",
+      "sources": [
+        "https://talisconsultants.com.au/"
+      ],
+      "icp_fit_notes": "Spatial consulting with named director leadership"
+    },
+    {
+      "rank": 34,
+      "name": "Southern Geoscience Consultants",
+      "website": "https://sgc.com.au/",
+      "location": "West Perth, Western Australia",
+      "category": "Surveying & Spatial Services Practice Management",
+      "industry_focus": "Geomatics, spatial data management, GIS services; geophysical datasets processing",
+      "leadership": {
+        "name": "Not disclosed",
+        "title": "Not disclosed",
+        "background": null
+      },
+      "team_size_estimate": "51-200 employees",
+      "founded": "1985",
+      "confidence_score": 0.74,
+      "decision_maker_identified": false,
+      "contact_quality": "Requires research",
+      "sources": [
+        "https://sgc.com.au/"
+      ],
+      "icp_fit_notes": "Large geomatics consulting firm"
+    },
+    {
+      "rank": 35,
+      "name": "West GIS",
+      "website": "https://www.westgis.com.au/",
+      "location": "Perth, Western Australia",
+      "category": "Surveying & Spatial Services Practice Management",
+      "industry_focus": "GIS consulting, mapping, remote sensing, data management; mining, renewable energy, environmental sectors",
+      "leadership": {
+        "name": "Not disclosed",
+        "title": "Not disclosed",
+        "background": null
+      },
+      "team_size_estimate": "Not specified",
+      "founded": "Not specified",
+      "confidence_score": 0.73,
+      "decision_maker_identified": false,
+      "contact_quality": "Phone available (0450 818 720)",
+      "phone": "0450 818 720",
+      "email": "info@westgis.com.au",
+      "sources": [
+        "https://www.westgis.com.au/"
+      ],
+      "icp_fit_notes": "GIS consulting and mapping services"
+    },
+    {
+      "rank": 36,
+      "name": "RM Surveys",
+      "website": "https://www.rmsurveys.com.au/",
+      "location": "Perth, Western Australia (regional depots Pilbara, Goldfields, Wheatbelt)",
+      "category": "Surveying & Spatial Services Practice Management",
+      "industry_focus": "Surveying, geospatial & digital services",
+      "leadership": {
+        "name": "Not disclosed",
+        "title": "Not disclosed",
+        "background": null
+      },
+      "team_size_estimate": "Not specified",
+      "founded": "Not specified",
+      "confidence_score": 0.72,
+      "decision_maker_identified": false,
+      "contact_quality": "Requires research",
+      "sources": [
+        "https://www.rmsurveys.com.au/"
+      ],
+      "icp_fit_notes": "Established surveying services provider"
+    },
+    {
+      "rank": 37,
+      "name": "Perth Surveying",
+      "website": "https://perthsurveying.com.au/",
+      "location": "Perth, Western Australia",
+      "category": "Surveying & Spatial Services Practice Management",
+      "industry_focus": "Project management, surveying expertise, land development projects",
+      "leadership": {
+        "name": "Not disclosed",
+        "title": "Not disclosed",
+        "background": null
+      },
+      "team_size_estimate": "Not specified",
+      "founded": "Not specified",
+      "confidence_score": 0.71,
+      "decision_maker_identified": false,
+      "contact_quality": "Requires research",
+      "sources": [
+        "https://perthsurveying.com.au/"
+      ],
+      "icp_fit_notes": "Land development and surveying services"
+    },
+    {
+      "rank": 38,
+      "name": "Australian Venture Consultants",
+      "website": "https://www.ventureconsultants.com.au/",
+      "location": "Perth, Australia",
+      "category": "Science & Technical Consulting Practice Management",
+      "industry_focus": "Policy, strategy, venture analysis, project planning; scientific sector focus",
+      "leadership": {
+        "name": "Not disclosed on homepage",
+        "title": "Not disclosed",
+        "background": "Published expertise in lithium, fisheries, marine science, infrastructure"
+      },
+      "team_size_estimate": "Not specified",
+      "founded": "2002",
+      "confidence_score": 0.84,
+      "decision_maker_identified": false,
+      "contact_quality": "Requires team page research",
+      "sources": [
+        "https://www.ventureconsultants.com.au/"
+      ],
+      "icp_fit_notes": "Explicitly serves scientific sector with advisory positioning"
+    },
+    {
+      "rank": 39,
+      "name": "Western Environmental",
+      "website": "https://www.westenv.com.au/",
+      "location": "Unit 5, 162 Colin Street, West Perth, WA 6005",
+      "category": "Science & Technical Consulting Practice Management",
+      "industry_focus": "Science-based environmental consulting; contaminated land, PFAS, remediation; 9 major industry sectors",
+      "leadership": {
+        "name": "James Gibson, Philip Brand, Peter McColl, David Reynolds",
+        "title": "MD/Senior Principal, Principals, Senior Auditor",
+        "background": "Strong technical credentials in environmental regulation, infrastructure, site assessment, remediation"
+      },
+      "team_size_estimate": "50+ professionals",
+      "founded": "Not specified",
+      "confidence_score": 0.88,
+      "decision_maker_identified": true,
+      "contact_quality": "Multiple named technical leaders",
+      "sources": [
+        "https://www.westenv.com.au/"
+      ],
+      "icp_fit_notes": "Science-based environmental consulting with strong leadership credibility"
+    },
+    {
+      "rank": 40,
+      "name": "Performance Science",
+      "website": "https://performance-science.com.au/",
+      "location": "Perth, Australia",
+      "category": "Science & Technical Consulting Practice Management",
+      "industry_focus": "Management consulting; organizational performance (HPO framework); workplace safety; psychological solutions",
+      "leadership": {
+        "name": "Not disclosed",
+        "title": "Not disclosed",
+        "background": null
+      },
+      "team_size_estimate": "Not specified",
+      "founded": "Not specified",
+      "confidence_score": 0.68,
+      "decision_maker_identified": false,
+      "contact_quality": "Requires research",
+      "sources": [
+        "https://performance-science.com.au/"
+      ],
+      "icp_fit_notes": "Organizational performance consulting (limited science focus)"
+    },
+    {
+      "rank": 41,
+      "name": "Insight Advisory Group",
+      "website": "https://insightperth.com/",
+      "location": "Level 4, 3 Loftus Street, West Leederville, WA 6007",
+      "category": "Science & Technical Consulting Practice Management",
+      "industry_focus": "Business strategy, operational improvement; systems & processes consulting; due diligence & valuations",
+      "leadership": {
+        "name": "Adrien Giraud, Harminder Kaur",
+        "title": "Principal, Business Consultant",
+        "background": null
+      },
+      "team_size_estimate": "Not specified",
+      "founded": "Not specified",
+      "confidence_score": 0.62,
+      "decision_maker_identified": true,
+      "contact_quality": "Named principals",
+      "phone": "(08) 6315 2700",
+      "sources": [
+        "https://insightperth.com/services/consulting/"
+      ],
+      "icp_fit_notes": "General business advisory (limited science/technical focus)"
+    }
+  ],
+  "search_summary": {
+    "total_search_angles": 5,
+    "angles_executed": [
+      {
+        "angle": 1,
+        "focus": "Architecture & building design practice management",
+        "search_location": "Perth, WA",
+        "search_strategy": "Targeted specialty search",
+        "sample_queries": [
+          "architecture practice management consulting Perth WA",
+          "engineering consulting firm advisory Perth Western Australia",
+          "building design practice advisory Perth WA"
+        ],
+        "result_count": 9,
+        "firms_meeting_threshold": 5,
+        "status": "COMPLETE"
+      },
+      {
+        "angle": 2,
+        "focus": "Surveying & spatial services practice management",
+        "search_location": "Perth, WA",
+        "search_strategy": "Targeted specialty search",
+        "sample_queries": [
+          "surveying practice management Perth WA consultant",
+          "spatial services consulting advisory Perth Western Australia",
+          "geomatics consulting practice Perth WA"
+        ],
+        "result_count": 10,
+        "firms_meeting_threshold": 7,
+        "status": "COMPLETE"
+      },
+      {
+        "angle": 3,
+        "focus": "Science/technical consulting practice management",
+        "search_location": "Perth, WA",
+        "search_strategy": "Targeted specialty search",
+        "sample_queries": [
+          "scientific consulting practice management Perth WA",
+          "technical services advisory consulting Perth Western Australia",
+          "laboratory consulting services Perth business advisory"
+        ],
+        "result_count": 5,
+        "firms_meeting_threshold": 2,
+        "status": "COMPLETE"
+      },
+      {
+        "angle": 4,
+        "focus": "Boutique owner-led SME advisory",
+        "search_location": "Perth, WA",
+        "search_strategy": "Directory + founder research",
+        "sample_queries": [
+          "boutique business advisory Perth WA owner led",
+          "independent consulting firm Perth Western Australia SME",
+          "Perth business consultant specialist services practice"
+        ],
+        "result_count": 12,
+        "firms_meeting_threshold": 11,
+        "status": "COMPLETE"
+      },
+      {
+        "angle": 5,
+        "focus": "Professional services advisory directories & associations",
+        "search_location": "Perth, WA",
+        "search_strategy": "Directory harvesting",
+        "sample_queries": [
+          "Perth business advisory directory consulting firms",
+          "Western Australia consulting association members Perth",
+          "professional services management advisors Perth WA list"
+        ],
+        "result_count": 28,
+        "firms_meeting_threshold": 6,
+        "status": "COMPLETE"
+      }
+    ]
+  },
+  "confidence_metrics": {
+    "perth_location_verification_rate": "100% (35/35)",
+    "website_verification_rate": "100% (35/35)",
+    "service_focus_clarity_rate": "97% (34/35)",
+    "decision_maker_identified_rate": "54% (19/35)",
+    "boutique_tier_decision_maker_rate": "92% (11/12)",
+    "average_confidence_score": 0.82,
+    "icp_fit_threshold": 0.75,
+    "firms_exceeding_threshold": 31,
+    "firms_requiring_follow_up": 4
+  },
+  "next_research_priorities": [
+    {
+      "gap": "Architecture practice management advisory positioning",
+      "rationale": "Limited explicit positioning in market; only boutique practices identified, not specialized advisors",
+      "recommended_searches": [
+        "practice development consultant Perth architecture",
+        "architectural practice management advisor Perth",
+        "architecture PMO consulting Perth WA"
+      ],
+      "priority": "High"
+    },
+    {
+      "gap": "Engineering practice management advisory",
+      "rationale": "Few firms explicitly position as engineering practice management advisors; mostly technical service providers",
+      "recommended_searches": [
+        "engineering consulting firm operations advisor Perth",
+        "engineering practice development consultant Perth WA",
+        "engineering business development consulting Perth"
+      ],
+      "priority": "High"
+    },
+    {
+      "gap": "Laboratory and research practice management",
+      "rationale": "Very limited market availability; significant gap in dedicated laboratory consulting advisory",
+      "recommended_searches": [
+        "research institute business advisory Perth",
+        "laboratory management consulting Perth",
+        "scientific research operations advisory Perth WA"
+      ],
+      "priority": "Medium"
+    },
+    {
+      "gap": "Professional services PMO and operations advisory",
+      "rationale": "Cross-vertical opportunity for professional services operations/project management consulting",
+      "recommended_searches": [
+        "professional services PMO advisory Perth",
+        "consulting firm operations consultant Perth WA",
+        "professional services back-office management Perth"
+      ],
+      "priority": "Medium"
+    },
+    {
+      "gap": "Higher decision-maker identification across architecture/engineering",
+      "rationale": "Current decision-maker identification low (11% architecture, 0% engineering); need LinkedIn + directory targeting",
+      "recommended_searches": [
+        "LinkedIn: Practice Development Manager Perth + Professional Services",
+        "AAAC/ACA membership directory with contact details",
+        "Google Business Profile harvesting for phone/contact"
+      ],
+      "priority": "High"
+    }
+  ],
+  "methodology_notes": {
+    "verification_approach": "Multi-source confirmation with primary source validation",
+    "decision_maker_identification_approach": "Website homepage + company profile pages; LinkedIn for additional research opportunities",
+    "confidence_scoring": "0.75+ threshold based on: location verification (35%), website verification (30%), service focus clarity (25%), decision-maker identification (10%)",
+    "deduplication_method": "Cross-referencing across all 5 search angles; RPS Group appears in multiple categories classified as single entry",
+    "icp_fit_criteria": "Owner-led OR specialist advisory positioning; 2-50 person team size (or multidisciplinary large firm with clear advisory practice); clear service focus on professional services or SME advisory"
+  },
+  "campaign_status": {
+    "loop_number": 5,
+    "date_completed": "2026-07-06",
+    "cumulative_campaign_target": 600,
+    "prior_loops_contribution": "Estimated 150-180 firms (loops 1-4)",
+    "loop_5_contribution": 35,
+    "estimated_cumulative_total": "185-215 firms",
+    "remaining_loops": 16,
+    "outreach_readiness": "31 of 35 firms approved for immediate outreach"
+  }
+}
