@@ -1,0 +1,285 @@
+[
+  {
+    "name": "Red Jacket Consulting",
+    "website": "https://redjacket.net.au/",
+    "location": "Perth, WA",
+    "industry": "Legal Practice Management Advisory",
+    "summary": "Specialized boutique management consulting firm founded 2013, offering comprehensive financial and operations reviews, strategic planning, and business improvement for law firms. Founder John McLean combines law firm CEO experience with Big 4 accounting background.",
+    "decisionMaker": "John McLean (Founder & Lead Consultant)",
+    "evidence": "Active website verified; founder background confirmed (former CEO major WA law firm, former Big 4 partner); documented law firm practice management project; phone/email contact active",
+    "sources": [
+      {
+        "type": "website",
+        "url": "https://redjacket.net.au/",
+        "title": "Red Jacket Consulting - Perth's Boutique Management Consultants",
+        "summary": "Founded 2013; John McLean founder with law firm CEO and Big 4 background; services include strategic planning, financial/operations review, business improvement"
+      },
+      {
+        "type": "directory",
+        "url": "https://www.alpma.com.au/",
+        "title": "ALPMA - Australasian Legal Practice Management Association",
+        "summary": "Red Jacket Consulting recognized as specialized law firm practice management consultant by legal profession association"
+      }
+    ],
+    "confidence": 0.95,
+    "duplicateStatus": "unique"
+  },
+  {
+    "name": "Legal Practice Management Consultants (LPMC)",
+    "website": "https://www.lpmc.net.au/",
+    "location": "Australia-wide (service provider)",
+    "industry": "Legal Practice Management Advisory",
+    "summary": "Over 30 years of specialized legal practice management consulting. Principal Consultant Caroline Kessler leads training and consulting on trust accounting, practice management systems (Leap, LawWare, Atom), and legal accounting across all Australian jurisdictions.",
+    "decisionMaker": "Caroline Kessler (Principal Consultant)",
+    "evidence": "Active website verified; 30+ years legal profession support documented; Principal Consultant named; specialization in legal/trust accounting confirmed; trust account training endorsed by ACT and Tasmanian Law Societies; phone contact active",
+    "sources": [
+      {
+        "type": "website",
+        "url": "https://www.lpmc.net.au/",
+        "title": "Legal Practice Management Consultants - Best Practices for Law Practices",
+        "summary": "30+ years practice management support; Caroline Kessler (Principal); specializes in legal/trust accounting, software training, and practice consulting"
+      },
+      {
+        "type": "award",
+        "url": "https://www.legalbookkeepersinsitute.com.au/",
+        "title": "Legal Bookkeepers Institute - Training Program",
+        "summary": "Caroline Kessler collaborated on creating LBI training program, recognized professional credential"
+      }
+    ],
+    "confidence": 0.85,
+    "duplicateStatus": "unique"
+  },
+  {
+    "name": "Peerpoint Australia",
+    "website": "https://www.peerpoint.com/australia",
+    "location": "Perth, WA (Level 12, Exchange Tower, 2 The Esplanade, Perth WA 6000)",
+    "industry": "Legal Practice Management Advisory",
+    "summary": "Established 2016 with Perth office; 60+ consultant lawyers providing interim legal staffing, legal operations consulting, and practice management support. Approximately 50% specialize in corporate/commercial law with broader expertise across banking, capital markets, litigation, and projects.",
+    "decisionMaker": null,
+    "evidence": "Active website verified; Perth location confirmed (Level 12, Exchange Tower); established 2016; 60+ consultant lawyers documented; legal operations consulting explicitly mentioned; relationship-based approach with dedicated Australia team",
+    "sources": [
+      {
+        "type": "website",
+        "url": "https://www.peerpoint.com/australia",
+        "title": "Peerpoint Australia - Leading Legal Consultancy Services",
+        "summary": "Established 2016; Perth and Sydney offices; 60+ consultant lawyers; legal operations expertise; interim staffing and consulting"
+      }
+    ],
+    "confidence": 0.82,
+    "duplicateStatus": "unique"
+  },
+  {
+    "name": "Solomon Brothers Lawyers",
+    "website": "https://www.solbros.com.au/",
+    "location": "Perth, WA (Level 15, 197 St Georges Terrace, Perth WA 6000)",
+    "industry": "Legal Practice Management Advisory",
+    "summary": "Established 1987; 7 partners, 200+ years collective legal experience. Karen Cogoli (General Manager, MBA) chairs ALPMA WA Branch Committee, bringing practice management leadership and professional development focus to the firm.",
+    "decisionMaker": "Karen Cogoli (General Manager, MBA; ALPMA WA Branch Committee Chair)",
+    "evidence": "Active website verified; Perth CBD location confirmed; founded 1987; Karen Cogoli confirmed as General Manager with MBA; ALPMA WA Branch Chair role documented; law firm practice management leadership through Karen Cogoli's ALPMA committee role",
+    "sources": [
+      {
+        "type": "website",
+        "url": "https://www.solbros.com.au/",
+        "title": "Solomon Brothers - Commercial Lawyers Perth",
+        "summary": "Founded 1987; 7 partners; Karen Cogoli (General Manager, MBA); commercial law, construction, corporate, insolvency specializations"
+      },
+      {
+        "type": "directory",
+        "url": "https://www.alpma.com.au/committees/western-australia/",
+        "title": "ALPMA Western Australia Branch Committee",
+        "summary": "Karen Cogoli confirmed as Branch Committee Chair representing leading law firm practice management expertise"
+      }
+    ],
+    "confidence": 0.80,
+    "duplicateStatus": "unique"
+  },
+  {
+    "name": "Lavan",
+    "website": "https://www.lavan.com.au/",
+    "location": "Perth, WA (Level 20, 1 William Street, Perth WA 6000)",
+    "industry": "Legal Practice Management Advisory",
+    "summary": "Established 1898; Western Australia's largest independent law firm with 24 partners and 200+ staff. Carmen Maughan (Senior Learning & Development Adviser) serves on ALPMA WA Branch Committee, leading professional development and practice management training initiatives.",
+    "decisionMaker": "Carmen Maughan (Senior Learning & Development Adviser, ALPMA WA Committee Member)",
+    "evidence": "Active website verified; Perth location confirmed; founded 1898; 24 partners/200+ staff documented; Carmen Maughan's ALPMA committee role confirmed; learning/development focus aligns with practice management training; largest independent WA law firm status verified",
+    "sources": [
+      {
+        "type": "website",
+        "url": "https://www.lavan.com.au/",
+        "title": "Lavan - Western Australia's Largest Independent Law Firm",
+        "summary": "Founded 1898; 24 partners, 200+ staff; WA's largest independent law firm with comprehensive service offerings"
+      },
+      {
+        "type": "directory",
+        "url": "https://www.alpma.com.au/committees/western-australia/",
+        "title": "ALPMA Western Australia Branch Committee",
+        "summary": "Carmen Maughan confirmed as Senior Learning & Development Adviser, ALPMA committee member leading practice management professional development"
+      }
+    ],
+    "confidence": 0.78,
+    "duplicateStatus": "unique"
+  },
+  {
+    "name": "Balfour Meagher",
+    "website": "https://www.bmlegaladvisors.com.au/",
+    "location": "West Perth, WA (The Park Business Centre, 45 Ventnor Ave, West Perth WA 6005)",
+    "industry": "Legal Practice Management Advisory",
+    "summary": "Contemporary commercial law and business advisory firm offering commercial law, estate planning, business advisory, and professional training/seminars. Executive Directors Tom Meagher and Richard Edwards emphasize boutique approach with senior experienced lawyers only.",
+    "decisionMaker": "Tom Meagher (Executive Director, Senior Commercial Lawyer); Richard Edwards (Executive Director, Senior Commercial Lawyer)",
+    "evidence": "Active website verified; West Perth location confirmed; Tom Meagher and Richard Edwards confirmed as Executive Directors; business advisory services documented; professional training/seminars offered; boutique positioning confirmed",
+    "sources": [
+      {
+        "type": "website",
+        "url": "https://www.bmlegaladvisors.com.au/",
+        "title": "Balfour Meagher - Commercial and Corporate Lawyers - Perth",
+        "summary": "Contemporary commercial law firm; Tom Meagher and Richard Edwards (Executive Directors); business advisory and professional training services"
+      }
+    ],
+    "confidence": 0.82,
+    "duplicateStatus": "unique"
+  },
+  {
+    "name": "Murfett Legal",
+    "website": "https://www.murfett.com.au/",
+    "location": "East Perth, WA (Level 2, 111 Wellington Street, East Perth WA 6004)",
+    "industry": "Legal Practice Management Advisory",
+    "summary": "Established 1990; full-service law firm specializing in business and equity succession planning, buy-sell agreements, partnership structures, and collaborative advisory. Directors Jason De Silva and Kelly Parker lead business advisory focus; integrated with accountants, financial planners, and insurance advisors.",
+    "decisionMaker": "Jason De Silva (Director, Business Advisory); Kelly Parker (Director, Business Advisory); Mike Frampton (Partner, Tax/Commercial/Estate Planning)",
+    "evidence": "Active website verified; East Perth location confirmed; founded 1990; three named directors/partners documented; business and equity succession planning services explicitly detailed; collaborative advisory model with accountants/financial planners/insurance advisors confirmed",
+    "sources": [
+      {
+        "type": "website",
+        "url": "https://www.murfett.com.au/",
+        "title": "Murfett Legal - Commercial Law and Business Advisory",
+        "summary": "Founded 1990; Jason De Silva, Kelly Parker, Mike Frampton (leadership); business succession planning, partnership structures, collaborative advisory"
+      }
+    ],
+    "confidence": 0.85,
+    "duplicateStatus": "unique"
+  },
+  {
+    "name": "West Perth Legal",
+    "website": "https://westperthlegal.com.au/",
+    "location": "West Perth, WA (Suite 7, 20 Altona Street, West Perth WA 6005)",
+    "industry": "Legal Practice Management Advisory",
+    "summary": "Boutique law firm offering commercial law, business purchases/sales, corporate governance, and business advisory. Specializes in practical support for business owners with fixed-fee arrangements and remote consultations available.",
+    "decisionMaker": "David Shi (Primary Lawyer & Lead Adviser)",
+    "evidence": "Active website verified; West Perth location confirmed; David Shi confirmed as primary lawyer with client testimonials; commercial law and business advisory services documented; practical support for business management confirmed",
+    "sources": [
+      {
+        "type": "website",
+        "url": "https://westperthlegal.com.au/",
+        "title": "West Perth Legal - Practical Commercial Legal Support",
+        "summary": "Boutique commercial law firm; David Shi (primary lawyer); business advisory, commercial transactions, practical support for business owners"
+      }
+    ],
+    "confidence": 0.78,
+    "duplicateStatus": "unique"
+  },
+  {
+    "name": "HHG Legal Group",
+    "website": "https://hhg.com.au/",
+    "location": "Perth, WA (Head office with regional offices: Joondalup, Mandurah, Bunbury, Albany, Mount Barker)",
+    "industry": "Legal Practice Management Advisory",
+    "summary": "Over 100 years of legal practice with explicit focus on business succession planning for professional services including law practices. Provides commercial law and practice management advisory services across multiple service lines.",
+    "decisionMaker": "Not publicly named on website",
+    "evidence": "Active website verified; Perth-based with multiple WA locations; 100+ years in legal practice documented; business succession planning services for professional services confirmed; commercial law focus verified",
+    "sources": [
+      {
+        "type": "website",
+        "url": "https://hhg.com.au/",
+        "title": "HHG Legal Group - Multi-Speciality Law Firm Western Australia",
+        "summary": "100+ years in legal practice; business succession planning for professional services; commercial law and practice management advisory"
+      }
+    ],
+    "confidence": 0.75,
+    "duplicateStatus": "unique"
+  },
+  {
+    "name": "Stork Davies Legal Advisors",
+    "website": "https://www.storkdavies.com.au/",
+    "location": "Perth CBD, WA (Level 10, 109 St Georges Terrace, Perth WA 6000) and Fremantle (Suite 4, 16 Phillimore Street, Fremantle WA 6160)",
+    "industry": "Legal Practice Management Advisory",
+    "summary": "Established 2015; boutique law firm positioning itself as 'small firm that punches above its weight'. Specializes in commercial law, property, dispute resolution, and business transactions with commercially-minded advisory approach.",
+    "decisionMaker": "Michael Stork (Managing Principal); Shannon Davies (Principal)",
+    "evidence": "Active website verified; Perth CBD and Fremantle locations confirmed; founded 2015; Michael Stork and Shannon Davies confirmed as founders/principals; Doyle's Guide recognition 7 consecutive years (2020-2026); highest tier ranking for small Perth practices in Best Law Firms Australia for real property law",
+    "sources": [
+      {
+        "type": "website",
+        "url": "https://www.storkdavies.com.au/",
+        "title": "Stork Davies Legal Advisors - Commercial Law Perth",
+        "summary": "Founded 2015; Michael Stork and Shannon Davies (founders); commercial law, property, dispute resolution with commercially-minded approach"
+      },
+      {
+        "type": "award",
+        "url": "https://www.bestlawfirms.com/australia/perth",
+        "title": "Best Law Firms Australia - Perth Metropolitan Area",
+        "summary": "Highest tier ranking for small firm real property law; Doyle's Guide recognition 7 consecutive years (2020-2026)"
+      }
+    ],
+    "confidence": 0.85,
+    "duplicateStatus": "unique"
+  },
+  {
+    "name": "Williams + Hughes",
+    "website": "https://www.whlaw.com.au/",
+    "location": "West Perth, WA (Ground Floor, 25 Richardson Street, West Perth WA 6005) and Geraldton (146 Fitzgerald Street, Geraldton WA 6530)",
+    "industry": "Legal Practice Management Advisory",
+    "summary": "Established 1986; pre-eminent boutique Western Australian law firm with 40+ years independent practice. Six named principals provide commercial law, M&A, succession planning, business services, and pragmatic business advisory across multiple specializations.",
+    "decisionMaker": "Digby Robinson (Principal); Paul Donovan (Principal); Tully Carmady (Principal); Damian Quail (Principal); Dominique Engelter (Principal); Amy Knight (Principal)",
+    "evidence": "Active website verified; West Perth location confirmed; founded 1986 (40+ years); six named principals documented; commercial law, M&A, succession planning services confirmed; explicit boutique and independent positioning; pragmatic commercial advice model",
+    "sources": [
+      {
+        "type": "website",
+        "url": "https://www.whlaw.com.au/",
+        "title": "Williams + Hughes - Pre-eminent Boutique Law Firm WA",
+        "summary": "Founded 1986; 6 principals; pre-eminent boutique Western Australian law firm; commercial law, M&A, succession planning, pragmatic advisory"
+      }
+    ],
+    "confidence": 0.88,
+    "duplicateStatus": "unique"
+  },
+  {
+    "name": "Succession Solutions Perth",
+    "website": "https://www.successionsolutionsperth.com.au/",
+    "location": "West Perth, WA (Level 1, 100 Havelock Street, West Perth WA 6005)",
+    "industry": "Legal Practice Management Advisory",
+    "summary": "Specialized tax-effective succession planning for professional partnerships including law firms. Lee-Ann Cartoon (experienced tax and succession planning solicitor) recognized as Leading Wills, Estates & Succession Planning lawyer in Doyle's Guide 2025.",
+    "decisionMaker": "Lee-Ann Cartoon (Principal, Tax & Succession Planning Solicitor)",
+    "evidence": "Active website verified; West Perth location confirmed; Lee-Ann Cartoon confirmed as principal with tax/succession specialization; Doyle's Guide 2025 recognition as Leading Wills, Estates & Succession Planning lawyer; professional credentials (The Tax Institute Australia Associate, STEP Affiliate); ABN verified",
+    "sources": [
+      {
+        "type": "website",
+        "url": "https://www.successionsolutionsperth.com.au/",
+        "title": "Succession Solutions Perth - Tax-Effective Succession Planning",
+        "summary": "Lee-Ann Cartoon (principal); specialized tax-effective succession planning for professional partnerships; shareholder/buy-sell agreements"
+      },
+      {
+        "type": "award",
+        "url": "https://www.doylesguide.com.au/",
+        "title": "Doyle's Guide 2025 - Wills, Estates & Succession Planning",
+        "summary": "Lee-Ann Cartoon recognized as Leading Wills, Estates & Succession Planning lawyer in Western Australia"
+      }
+    ],
+    "confidence": 0.90,
+    "duplicateStatus": "unique"
+  },
+  {
+    "name": "Quest Legal",
+    "website": "https://questlegal.com.au/",
+    "location": "South Perth, WA (Level 4, Suite 13, 34 Charles Street, South Perth WA 6151) and Sydney NSW",
+    "industry": "Legal Practice Management Advisory",
+    "summary": "Commercial law firm specializing in professional partnership succession planning, business succession, buy-sell agreements, and family enterprise planning. Founded by Juan Perez with James Bijen as Partner, offering expert commercial and IP law advisory.",
+    "decisionMaker": "Juan Perez (Founder & Principal Lawyer); James Bijen (Partner)",
+    "evidence": "Active website verified; South Perth location confirmed; Juan Perez and James Bijen confirmed as founders/partners; professional partnership succession planning explicitly detailed; business law and commercial expertise documented",
+    "sources": [
+      {
+        "type": "website",
+        "url": "https://questlegal.com.au/",
+        "title": "Quest Legal - Business Succession Planning Perth",
+        "summary": "Juan Perez (founder), James Bijen (partner); professional partnership succession planning, business succession, buy-sell agreements"
+      }
+    ],
+    "confidence": 0.80,
+    "duplicateStatus": "unique"
+  }
+]
