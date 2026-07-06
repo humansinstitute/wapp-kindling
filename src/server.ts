@@ -5454,7 +5454,11 @@ function topTargetAssessmentRows() {
     FROM service_fit_assessments sfa
     JOIN companies c ON c.id = sfa.company_id
     JOIN service_offerings so ON so.id = sfa.service_offering_id
-    WHERE c.data_ring NOT IN ('contacted', 'parked')
+    WHERE c.data_ring NOT IN ('contacted', 'parked', 'processed')
+      -- Any company we've already engaged (contacted / rejected / meeting / on_deck
+      -- recirculation) is "Processed" and must drop off the active deck. Undo simply
+      -- deletes the outreach_results row, which returns the company here automatically.
+      AND NOT EXISTS (SELECT 1 FROM outreach_results o WHERE o.company_id = c.id)
     ORDER BY sfa.updated_at DESC, sfa.score DESC
   `).all() as Record<string, unknown>[];
 }
