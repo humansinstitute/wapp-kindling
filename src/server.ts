@@ -977,13 +977,20 @@ function schedulerCompanyCounts() {
   const row = db.query(`
     SELECT
       COUNT(*) AS total_count,
-      SUM(CASE WHEN data_ring != 'parked' THEN 1 ELSE 0 END) AS active_pool_count,
+      -- Gate counts drive acquisition/enrichment replenishment, so they must
+      -- count only ACTIVE fuel. 'parked'/'processed' are dead (never come back
+      -- on their own) and 'contacted' is already being worked, so none of them
+      -- count toward the "do we have enough" floors. As targets get worked or
+      -- rejected these counts drop, which is what makes the funnel self-refill.
+      SUM(CASE WHEN data_ring NOT IN ('parked', 'processed') THEN 1 ELSE 0 END) AS active_pool_count,
       SUM(CASE
+        WHEN data_ring IN ('parked', 'processed', 'contacted') THEN 0
         WHEN enrichment_status = 'complete'
-          OR data_ring IN ('enhanced', 'ranked', 'scored', 'outreach_ready', 'outreach', 'contacted')
+          OR data_ring IN ('enhanced', 'ranked', 'scored', 'outreach_ready', 'outreach')
         THEN 1 ELSE 0 END) AS enriched_count,
       SUM(CASE
-        WHEN EXISTS (SELECT 1 FROM service_fit_assessments sfa WHERE sfa.company_id = companies.id)
+        WHEN data_ring NOT IN ('parked', 'processed', 'contacted')
+          AND EXISTS (SELECT 1 FROM service_fit_assessments sfa WHERE sfa.company_id = companies.id)
         THEN 1 ELSE 0 END) AS scored_count,
       SUM(CASE
         WHEN data_ring IN ('outreach_ready', 'outreach', 'contacted')
@@ -1039,7 +1046,10 @@ function acquisitionSegmentGeographyKey(segmentId: string | null, geographyText:
 }
 
 function countAcquisitionCoverageCompanies(filters: { segmentId?: string | null; geographyText?: string | null } = {}): AcquisitionCoverageCounts {
-  const clauses = ["c.data_ring != 'parked'"];
+  // 'processed' (rejected/dropped) is dead like 'parked' — exclude it from the
+  // acquisition pool so rejected companies leave a real deficit and the funnel
+  // acquires fresh replacements.
+  const clauses = ["c.data_ring NOT IN ('parked', 'processed')"];
   const values: string[] = [];
   const segmentId = String(filters.segmentId ?? "").trim();
   if (segmentId) {
@@ -1107,6 +1117,9 @@ function countAcquisitionCoverageCompanies(filters: { segmentId?: string | null;
     enriched: Number(row?.enriched_count ?? 0),
     scored: Number(row?.scored_count ?? 0),
     outreachReady: Number(row?.outreach_ready_count ?? 0),
+    // processed is excluded from the acquisition pool by the WHERE clause above,
+    // so it is always 0 here; the dashboard reports it via countCoverageCompanies.
+    processed: 0,
     parked: Number(row?.parked_count ?? 0),
     stale: Number(row?.stale_count ?? 0),
   };
@@ -1334,7 +1347,7 @@ function selectEnrichmentDryRun(settings = getSchedulerSettings()) {
       AND wq.status IN ('queued', 'failed')
       AND (wq.next_run_after_at IS NULL OR wq.next_run_after_at <= ?1)
       AND COALESCE(wq.locked_by_run_id, '') = ''
-      AND c.data_ring NOT IN ('parked', 'contacted')
+      AND c.data_ring NOT IN ('parked', 'contacted', 'processed')
     ORDER BY CASE WHEN wq.status = 'queued' THEN 0 ELSE 1 END,
       wq.priority ASC,
       COALESCE(wq.next_run_after_at, 0) ASC,
@@ -1372,7 +1385,7 @@ function selectEnrichmentDryRun(settings = getSchedulerSettings()) {
     LEFT JOIN target_segments ts ON ts.id = cseg.segment_id
     LEFT JOIN sources s ON s.company_id = c.id
     WHERE c.enrichment_status IN ('not_started', 'failed')
-      AND c.data_ring NOT IN ('parked', 'contacted')
+      AND c.data_ring NOT IN ('parked', 'contacted', 'processed')
       AND NOT EXISTS (
         SELECT 1
         FROM enrichment_requests er
@@ -1436,7 +1449,7 @@ function selectScoringCandidateRows(marketProfileVersionId: string, offeringCoun
     LEFT JOIN company_segments cseg ON cseg.company_id = c.id
     LEFT JOIN target_segments ts ON ts.id = cseg.segment_id
     WHERE (c.enrichment_status = 'complete' OR c.data_ring IN ('enhanced', 'ranked', 'stale'))
-      AND c.data_ring NOT IN ('scored', 'outreach_ready', 'outreach', 'contacted', 'parked')
+      AND c.data_ring NOT IN ('scored', 'outreach_ready', 'outreach', 'contacted', 'parked', 'processed')
       AND (
         SELECT COUNT(DISTINCT sfa.service_offering_id)
         FROM service_fit_assessments sfa
@@ -1483,7 +1496,7 @@ function selectOutreachDryRun(settings = getSchedulerSettings()) {
       FROM target_list_items tli
       JOIN companies c ON c.id = tli.company_id
       WHERE tli.target_list_run_id = ?1
-        AND c.data_ring NOT IN ('contacted', 'parked')
+        AND c.data_ring NOT IN ('contacted', 'parked', 'processed')
         AND EXISTS (SELECT 1 FROM service_fit_assessments sfa WHERE sfa.company_id = tli.company_id)
         AND NOT EXISTS (SELECT 1 FROM outreach_drafts od WHERE od.company_id = tli.company_id)
         AND NOT EXISTS (
@@ -1531,7 +1544,7 @@ function selectOutreachDryRun(settings = getSchedulerSettings()) {
     SELECT c.*
     FROM companies c
     WHERE EXISTS (SELECT 1 FROM service_fit_assessments sfa WHERE sfa.company_id = c.id)
-      AND c.data_ring NOT IN ('contacted', 'parked')
+      AND c.data_ring NOT IN ('contacted', 'parked', 'processed')
       AND NOT EXISTS (SELECT 1 FROM outreach_drafts od WHERE od.company_id = c.id)
     ORDER BY c.confidence DESC,
       c.updated_at ASC,
@@ -3448,7 +3461,10 @@ function persistServiceFitAssessment(input: { body: Record<string, unknown>; run
     JSON.stringify(assessmentJson),
     now,
   );
-  db.query("UPDATE companies SET data_ring = 'scored', updated_at = ?1 WHERE id = ?2").run(now, payload.companyId);
+  // Never resurrect a terminal company into 'scored'. A late/duplicate scoring
+  // callback for a company we've already contacted, processed (rejected) or
+  // parked must not pull it back onto the active deck.
+  db.query("UPDATE companies SET data_ring = 'scored', updated_at = ?1 WHERE id = ?2 AND data_ring NOT IN ('contacted', 'processed', 'parked')").run(now, payload.companyId);
   db.query("UPDATE work_queue SET status = 'complete', error = '', updated_at = ?1 WHERE id = ?2 AND kind = 'service_fit_assessment'")
     .run(now, String(input.run.local_request_id ?? ""));
   if (!existing) {
@@ -3669,6 +3685,7 @@ type CoverageCompanyCounts = {
   enriched: number;
   scored: number;
   outreachReady: number;
+  processed: number;
   parked: number;
   stale: number;
 };
@@ -3682,6 +3699,7 @@ function emptyCoverageCompanyCounts(): CoverageCompanyCounts {
     enriched: 0,
     scored: 0,
     outreachReady: 0,
+    processed: 0,
     parked: 0,
     stale: 0,
   };
@@ -3724,12 +3742,14 @@ function countCoverageCompanies(filters: { segmentId?: string | null; geographyT
         ELSE 0
       END) AS weak_source_count,
       SUM(CASE
+        WHEN c.data_ring IN ('parked', 'processed') THEN 0
         WHEN c.enrichment_status = 'complete'
           OR c.data_ring IN ('enhanced', 'agent', 'enriched', 'ranked', 'scored', 'outreach_ready', 'outreach', 'contacted')
         THEN 1 ELSE 0
       END) AS enriched_count,
       SUM(CASE
-        WHEN EXISTS (SELECT 1 FROM service_fit_assessments sfa WHERE sfa.company_id = c.id)
+        WHEN c.data_ring NOT IN ('parked', 'processed')
+          AND EXISTS (SELECT 1 FROM service_fit_assessments sfa WHERE sfa.company_id = c.id)
         THEN 1 ELSE 0
       END) AS scored_count,
       SUM(CASE
@@ -3737,6 +3757,7 @@ function countCoverageCompanies(filters: { segmentId?: string | null; geographyT
           OR EXISTS (SELECT 1 FROM outreach_drafts od WHERE od.company_id = c.id)
         THEN 1 ELSE 0
       END) AS outreach_ready_count,
+      SUM(CASE WHEN c.data_ring = 'processed' THEN 1 ELSE 0 END) AS processed_count,
       SUM(CASE WHEN c.data_ring = 'parked' THEN 1 ELSE 0 END) AS parked_count,
       SUM(CASE WHEN c.data_ring = 'stale' THEN 1 ELSE 0 END) AS stale_count
     FROM companies c
@@ -3750,6 +3771,7 @@ function countCoverageCompanies(filters: { segmentId?: string | null; geographyT
     enriched: Number(row?.enriched_count ?? 0),
     scored: Number(row?.scored_count ?? 0),
     outreachReady: Number(row?.outreach_ready_count ?? 0),
+    processed: Number(row?.processed_count ?? 0),
     parked: Number(row?.parked_count ?? 0),
     stale: Number(row?.stale_count ?? 0),
   };
@@ -3763,6 +3785,7 @@ function addCoverageCounts(target: CoverageCompanyCounts, source: CoverageCompan
   target.enriched += source.enriched;
   target.scored += source.scored;
   target.outreachReady += source.outreachReady;
+  target.processed += source.processed;
   target.parked += source.parked;
   target.stale += source.stale;
 }
@@ -5097,7 +5120,7 @@ function initialRankingCandidateRows(limit: number | null = null) {
       ), 0) AS best_segment_confidence
     FROM companies c
     WHERE (c.data_ring IN ('enhanced', 'ranked') OR c.enrichment_status = 'complete')
-      AND c.data_ring NOT IN ('scored', 'outreach_ready', 'contacted', 'parked')
+      AND c.data_ring NOT IN ('scored', 'outreach_ready', 'contacted', 'parked', 'processed')
     ORDER BY c.updated_at DESC, lower(c.name) ASC
     ${limitClause}
   `).all() as Record<string, unknown>[];
@@ -8863,9 +8886,11 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     if (!companyId) return json({ error: "companyId is required" }, 400);
     const existing = db.query("SELECT prev_data_ring FROM outreach_results WHERE company_id = ?1").get(companyId) as Record<string, unknown> | null;
     db.query("DELETE FROM outreach_results WHERE company_id = ?1").run(companyId);
-    // If we'd flipped the company to 'contacted', put its ring back.
+    // If we'd flipped the company into a terminal ring ('contacted' when sent,
+    // 'processed' when rejected/dropped), put its previous ring back so it
+    // returns to the active call list.
     const company = db.query("SELECT data_ring FROM companies WHERE id = ?1").get(companyId) as Record<string, unknown> | null;
-    if (company && String(company.data_ring ?? "") === "contacted") {
+    if (company && ["contacted", "processed"].includes(String(company.data_ring ?? ""))) {
       const restore = String(existing?.prev_data_ring ?? "") || "scored";
       db.query("UPDATE companies SET data_ring = ?2, updated_at = ?3 WHERE id = ?1").run(companyId, restore, Date.now());
     }
@@ -8880,13 +8905,21 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     const body = await readJson(req);
     const companyId = String(body.companyId ?? "").trim();
     if (!companyId) return json({ error: "companyId is required" }, 400);
-    const company = db.query("SELECT id, name FROM companies WHERE id = ?1").get(companyId) as Record<string, unknown> | null;
+    const company = db.query("SELECT id, name, data_ring FROM companies WHERE id = ?1").get(companyId) as Record<string, unknown> | null;
     if (!company) return json({ error: "company not found" }, 404);
     const reason = String(body.reason ?? "").trim();
     const reasonCategory = normalizeReasonCategory(body.reasonCategory);
     const row = upsertOutreachResult(companyId, {
       state: "rejected", reason, reason_category: reasonCategory, dismissed_from: "call_list",
     });
+    // Move to the terminal "processed" ring so it leaves the active target pool
+    // and stops inflating the loop gate counts. Remember the previous ring so
+    // "undo" can restore it.
+    const prevRing = String(company.data_ring ?? "");
+    if (prevRing && prevRing !== "processed") {
+      db.query("UPDATE outreach_results SET prev_data_ring = COALESCE(prev_data_ring, ?2) WHERE company_id = ?1").run(companyId, prevRing);
+    }
+    db.query("UPDATE companies SET data_ring = 'processed', updated_at = ?2 WHERE id = ?1").run(companyId, Date.now());
     recordActivity("company", companyId, `user:${session.pubkey.slice(0, 16)}`, "outreach_dismissed", `Dismissed from call list (${reasonCategory})`, { reason, reasonCategory });
     return json({ result: mapOutreachResult(row) });
   }
@@ -8922,6 +8955,15 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
       const row = upsertOutreachResult(companyId, {
         ...base, state: "rejected", outcome: "dropped", response_at: now, reason, reason_category: reasonCategory, dismissed_from: "waiting",
       });
+      // Terminal: move off the active pool into the "processed" ring. The
+      // prev_data_ring was already stamped when outreach was sent (send flow),
+      // so undo can still restore it.
+      const dropRing = db.query("SELECT data_ring FROM companies WHERE id = ?1").get(companyId) as Record<string, unknown> | null;
+      const prevRing = String(dropRing?.data_ring ?? "");
+      if (prevRing && prevRing !== "processed" && prevRing !== "contacted") {
+        db.query("UPDATE outreach_results SET prev_data_ring = COALESCE(prev_data_ring, ?2) WHERE company_id = ?1").run(companyId, prevRing);
+      }
+      db.query("UPDATE companies SET data_ring = 'processed', updated_at = ?2 WHERE id = ?1").run(companyId, now);
       recordActivity("company", companyId, `user:${session.pubkey.slice(0, 16)}`, "outreach_dropped", `Dropped after outreach (${reasonCategory})`, { reason, reasonCategory, channel, notes });
       return json({ result: mapOutreachResult(row) });
     }

@@ -675,6 +675,19 @@ for (const migration of [
   "UPDATE companies SET data_ring = 'ranked' WHERE data_ring = 'matched'",
   "UPDATE companies SET data_ring = 'outreach_ready' WHERE data_ring = 'outreach'",
   "UPDATE companies SET data_ring = 'found' WHERE data_ring IS NULL OR data_ring = ''",
+  // Backfill: any company that has been rejected/dropped moves into the terminal
+  // 'processed' ring so it leaves the active target pool and stops inflating the
+  // loop gate counts. Stamp prev_data_ring first (for undo) where it is not set,
+  // then flip the ring. Idempotent: already-'processed' rows are skipped.
+  `UPDATE outreach_results
+     SET prev_data_ring = (SELECT c.data_ring FROM companies c WHERE c.id = outreach_results.company_id)
+   WHERE state = 'rejected'
+     AND COALESCE(prev_data_ring, '') = ''
+     AND (SELECT c.data_ring FROM companies c WHERE c.id = outreach_results.company_id) NOT IN ('processed', 'parked')`,
+  `UPDATE companies
+     SET data_ring = 'processed'
+   WHERE data_ring NOT IN ('processed', 'parked')
+     AND id IN (SELECT company_id FROM outreach_results WHERE state = 'rejected')`,
   `INSERT OR IGNORE INTO work_queue(
     id, kind, target_type, target_id, segment_id, segment, priority, status, reason, attempts,
     next_run_after_at, locked_by_run_id, error, context_json, created_at, updated_at
@@ -852,6 +865,7 @@ export const COMPANY_DATA_RINGS = [
   "scored",
   "outreach_ready",
   "contacted",
+  "processed",
   "parked",
   "stale",
 ] as const;
@@ -872,6 +886,8 @@ const COMPANY_DATA_RING_ALIASES: Record<string, CompanyDataRing> = {
   outreach: "outreach_ready",
   outreach_ready: "outreach_ready",
   contacted: "contacted",
+  processed: "processed",
+  rejected: "processed",
   parked: "parked",
   stale: "stale",
 };
