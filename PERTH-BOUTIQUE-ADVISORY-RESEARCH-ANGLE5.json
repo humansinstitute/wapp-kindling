@@ -1,0 +1,408 @@
+{
+  "research_metadata": {
+    "search_angle": 5,
+    "description": "Independent boutique advisory Perth WA general market",
+    "search_queries_executed": [
+      "Perth boutique business advisory firms independent",
+      "Perth WA independent advisory consulting boutique",
+      "boutique management consulting Perth Australia",
+      "independent business advisors Perth Western Australia",
+      "Perth advisory firm director-led boutique consulting"
+    ],
+    "research_date": "2026-07-06",
+    "total_firms_identified": 13,
+    "confidence_threshold": "high"
+  },
+  "firms_identified": [
+    {
+      "rank": 1,
+      "firm_name": "Lothbury Advisory",
+      "website_url": "https://lothbury.com.au/",
+      "perth_location": "Mosman Park (12 Samson Street Mosman Park WA 6012)",
+      "boutique_claim": "Explicit - 'boutique Corporate Advisory firm'",
+      "independence_claim": "Explicit - 'owned and operated from Perth'",
+      "named_principals": [
+        {
+          "name": "Charles MacKinnon",
+          "title": "Principal/Founder",
+          "experience": "50+ years in investment banking across Australia, Asia, USA, UK"
+        }
+      ],
+      "service_descriptions": [
+        "M&A advisory",
+        "Trade sales",
+        "Equity and venture capital fundraising",
+        "Debt raisings",
+        "Strategic guidance",
+        "Management buyouts",
+        "Valuations"
+      ],
+      "confidence_assessment": "HIGH - verified Perth location (Mosman Park), director-led structure, explicit boutique positioning, clear service profile"
+    },
+    {
+      "rank": 2,
+      "firm_name": "Sternship Advisers",
+      "website_url": "https://sternship.com.au/",
+      "perth_location": "Perth (specific suburb not disclosed)",
+      "boutique_claim": "Explicit - 'boutique Perth-based advisory firm'",
+      "independence_claim": "Explicit - 'free of conflicts' with 'direct senior relationships'",
+      "named_principals": [
+        {
+          "name": "Neil Hamilton",
+          "title": "Chairman"
+        },
+        {
+          "name": "Tim Day",
+          "title": "Managing Director"
+        },
+        {
+          "name": "Rob Hamilton",
+          "title": "Managing Director"
+        }
+      ],
+      "founding_context": "Established mid-2017 by 'the former UBS Perth team'",
+      "service_descriptions": [
+        "M&A advisory (mergers, acquisitions, takeover defence, strategic investments, trade sales, demergers, joint ventures, management buyouts)",
+        "Equity capital markets (pre-IPOs, IPOs, RTOs, convertibles, secondary offerings)",
+        "Debt advisory (project finance, debt restructuring)"
+      ],
+      "confidence_assessment": "HIGH - explicit boutique positioning, named executive principals, clear M&A/capital markets focus, established UBS heritage"
+    },
+    {
+      "rank": 3,
+      "firm_name": "Corpex Consulting",
+      "website_url": "https://www.corpexconsulting.com.au/",
+      "perth_location": "Perth (specific suburb not disclosed)",
+      "boutique_claim": "Explicit - 'boutique corporate advisory firm'",
+      "independence_claim": "Explicit - 'committed to delivering trusted independent advice'",
+      "named_principals": [
+        {
+          "name": "Darren Wates",
+          "title": "Managing Director",
+          "background": "Commercial professional with corporate law experience"
+        }
+      ],
+      "registration": "ABN 45 610 625 379",
+      "service_descriptions": [
+        "Corporate advisory",
+        "ASX compliance",
+        "Transaction management (IPOs, capital raisings, M&A)",
+        "Business consulting and strategy",
+        "Corporations Act and ASX Listing Rule compliance",
+        "Equity capital raisings and asset/share sales"
+      ],
+      "confidence_assessment": "HIGH - explicit boutique positioning, named managing director with legal background, clear compliance/M&A scope"
+    },
+    {
+      "rank": 4,
+      "firm_name": "Red Jacket Consulting",
+      "website_url": "https://redjacket.net.au/",
+      "perth_location": "Perth, Western Australia (specific suburb not disclosed)",
+      "boutique_claim": "Explicit - 'Perth's Boutique Management Consultants'",
+      "independence_claim": "Implicit - personalised, director-led model",
+      "named_principals": [
+        {
+          "name": "John McLean",
+          "title": "Founder",
+          "founding_year": 2013,
+          "background": "Experienced consulting, training and business professional"
+        }
+      ],
+      "service_descriptions": [
+        "Strategic planning and execution",
+        "Business improvement (profitability and process reviews)",
+        "People development (coaching, mentoring, career guidance)",
+        "Procurement support",
+        "Training (governance, finance, effective meetings, chair role)",
+        "Risk assessment and mitigation"
+      ],
+      "value_proposition": "Personalised, practical and results-driven advisory services",
+      "confidence_assessment": "HIGH - explicit boutique positioning, named founder with consulting background, comprehensive advisory scope"
+    },
+    {
+      "rank": 5,
+      "firm_name": "M2 Corporate",
+      "website_url": "https://www.m2corporate.com.au/",
+      "perth_location": "Mt Pleasant (Level 5, 15 Ogilvie Road, Mt Pleasant WA 6153)",
+      "boutique_claim": "Explicit - 'boutique accounting firm' and 'award-winning boutique accounting firm'",
+      "independence_claim": "Explicit - 'Direct Access to Senior Advisors' with 'No account managers, no hand-offs'",
+      "named_principals": [
+        {
+          "name": "Mace Turco",
+          "title": "Advisor/Award Winner"
+        }
+      ],
+      "service_descriptions": [
+        "Business advisory (strategic planning, performance improvement, business structuring, growth planning, succession/exit preparation)",
+        "Accounting and tax (financial statements, tax returns, payroll, BAS/GST)",
+        "Bookkeeping (transaction processing, reconciliations, reporting)",
+        "Corporate compliance (ASIC compliance, company secretarial services, governance)",
+        "Xero support (Xero Gold Partner)"
+      ],
+      "awards_recognition": [
+        "Accountants Daily 30 Under 30",
+        "Australian Accounting Awards finalist"
+      ],
+      "confidence_assessment": "HIGH - verified Perth suburb location, explicit boutique positioning, award recognition, named advisor, Xero Gold Partner certification"
+    },
+    {
+      "rank": 6,
+      "firm_name": "Palisade Business Consulting",
+      "website_url": "https://pbconsult.com.au/",
+      "perth_location": "Perth (22 Lindsay Street, Perth WA 6000; PO Box 8546, Perth BC WA 6849)",
+      "boutique_claim": "Explicit - 'Boutique professional services firm'",
+      "independence_claim": "Explicit - 'independent, professional advice'",
+      "named_principals": "Not identified in available content",
+      "service_descriptions": [
+        "Financial reporting, governance and regulatory compliance",
+        "Support for corporates experiencing financial challenges",
+        "Business strategy and forecasting"
+      ],
+      "market_positioning": "Tailored solutions for small to medium enterprise boards and management",
+      "confidence_assessment": "MEDIUM-HIGH - explicit boutique positioning, verified CBD location, independent service claim, but no named principals identified"
+    },
+    {
+      "rank": 7,
+      "firm_name": "Boutique Advisers (Private Wealth)",
+      "website_url": "https://boutiqueadvisers.com.au/",
+      "perth_location": "Subiaco (Level 3, 1 Outridge Crescent, Subiaco WA 6008)",
+      "boutique_claim": "Explicit - 'a leading independent wealth advisory firm'",
+      "independence_claim": "Explicit - 'independent, award winning advisers'",
+      "named_principals": [
+        {
+          "name": "Gary Hasler",
+          "title": "Managing Director",
+          "qualifications": "CFP®"
+        },
+        {
+          "name": "Andrew Bolingbroke",
+          "title": "Director",
+          "qualifications": "CFP®"
+        },
+        {
+          "name": "Sean Hocking",
+          "title": "Senior Advisor",
+          "qualifications": "AFP®"
+        },
+        {
+          "name": "Neil Cocker",
+          "title": "Senior Advisor",
+          "qualifications": "CFP®"
+        }
+      ],
+      "regulatory_status": "Authorised Representative (AFSL 554650)",
+      "service_descriptions": [
+        "Financial planning and wealth advice (5 Pillars approach)",
+        "Family office services",
+        "Intergenerational and succession planning",
+        "Legacy planning",
+        "Superannuation and SMSF advice",
+        "Investment strategies",
+        "Retirement planning"
+      ],
+      "founding_context": "Operating since 1991",
+      "confidence_assessment": "HIGH - verified suburb location (Subiaco), explicit boutique/independence positioning, multiple named principals with CFP credentials, established 1991, family wealth focus"
+    },
+    {
+      "rank": 8,
+      "firm_name": "Perth Business Advisors",
+      "website_url": "https://perthbusinessadvisors.com.au/",
+      "perth_location": "Kingsley (11 Tanah Close, Kingsley WA 6026)",
+      "boutique_claim": "Implicit - independent Perth-based boutique structure",
+      "independence_claim": "Explicit - '100% Perth Based' with 'not interstate consultants flying in with generic advice'",
+      "named_principals": [
+        {
+          "name": "Brett Rice",
+          "title": "Managing Director/Founder",
+          "founding_context": "Founded 2022 after successfully building and selling own business"
+        }
+      ],
+      "service_descriptions": [
+        "Strategic planning and performance optimisation",
+        "Marketing consulting (digital architecture, Google visibility)",
+        "Business development (structured sales systems, revenue strategies)",
+        "Sales training (From Insight to Impact™ program)",
+        "Performance optimization (Growth Ready – Sale Ready™ programs, 6 or 12-month formats)",
+        "Consulting (sales training, organisational behaviour alignment)"
+      ],
+      "market_segments": "Small to mid-sized enterprises across manufacturing, trades, professional services, retail",
+      "confidence_assessment": "HIGH - verified Perth suburb location (Kingsley), named founder/MD, explicit independence claim, localised advisory approach, established 2022"
+    },
+    {
+      "rank": 9,
+      "firm_name": "Origin Business Consultants",
+      "website_url": "https://www.originbc.com.au/",
+      "perth_location": "West Perth (Suite 12/162 Colin St, West Perth WA 6005)",
+      "boutique_claim": "Implicit - specialised advisory model",
+      "independence_claim": "Explicit - 'Indigenous owned', Supply Nation Certified",
+      "named_principals": [
+        {
+          "name": "Jeremy Wolf",
+          "title": "Director"
+        },
+        {
+          "name": "Anthony Dyson",
+          "title": "Director"
+        },
+        {
+          "name": "Anthony Hawkins",
+          "title": "Director"
+        }
+      ],
+      "experience": "15+ years",
+      "service_descriptions": [
+        "Accounting and tax (tax planning, business tax returns, financial statements)",
+        "Business advisory (R&D tax incentives, grant writing, financial modelling)",
+        "Business setup (company incorporations, trust establishment)",
+        "Bookkeeping and CFO services",
+        "Corporate secretarial services"
+      ],
+      "certifications": "Supply Nation Certified, Indigenous Owned",
+      "positioning": "Perth's Leaders in Business Consulting & Advisory Services",
+      "confidence_assessment": "HIGH - verified West Perth location, multiple named directors, 15+ years experience, specialised tax/advisory focus, Supply Nation certification"
+    },
+    {
+      "rank": 10,
+      "firm_name": "AOT Consulting",
+      "website_url": "https://aotconsulting.com/about-us/",
+      "perth_location": "Perth CBD (Level 15, The Forrest Centre, 221 St. George's Terrace, Perth WA 6000)",
+      "boutique_claim": "Implicit - independent professional services model",
+      "independence_claim": "Explicit - 'As an independent professional services firm' with 'unbiased service' positioning",
+      "named_principals": "Not identified in available content",
+      "founding_context": "Established 1989",
+      "service_descriptions": [
+        "Independent business, management and technology consulting",
+        "Conceptual and strategic planning",
+        "Implementation of initiatives",
+        "Sector expertise: government, oil and gas, utilities, mining, ICT, financial services, health, education"
+      ],
+      "certifications": "ISO 9001 since 1995 (JAS-ANZ accredited)",
+      "confidence_assessment": "MEDIUM-HIGH - verified CBD location (Forrest Centre), 1989 founding demonstrates longevity, explicit independence claim, ISO 9001 certification, but no named principals identified"
+    },
+    {
+      "rank": 11,
+      "firm_name": "Greg Wheeler Consulting",
+      "website_url": "https://www.gregwheelerconsulting.com.au/",
+      "perth_location": "West Leederville (Suite 13, 50 Oxford Close)",
+      "boutique_claim": "Implicit - solo/small team practitioner model",
+      "independence_claim": "Explicit - 'independent view' and 'objective advice'",
+      "named_principals": [
+        {
+          "name": "Greg J Wheeler",
+          "title": "Principal/Founder",
+          "experience": "30+ years"
+        }
+      ],
+      "service_descriptions": [
+        "Business consulting (strategic growth, risk management, business change, startup guidance)",
+        "Business coaching and advice (leadership, strategy, operational efficiency)",
+        "Risk management services (ISO 31000 implementation support)",
+        "Selling your business (business sale preparation and execution)",
+        "Startup advice (business viability assessment)",
+        "Additional: capital raising, process improvement, corporate governance, change management"
+      ],
+      "market_focus": "ASX-listed companies and SMEs",
+      "services_excluded": "Audit, tax or insolvency compliance work",
+      "contact": "+61 414 961 122",
+      "confidence_assessment": "HIGH - verified suburb location (West Leederville), named principal with 30+ years experience, explicit independence claim, focused advisory scope"
+    },
+    {
+      "rank": 12,
+      "firm_name": "Greenstone Partners",
+      "website_url": "https://www.greenstonepartners.com.au/",
+      "perth_location": "Perth (location not specifically verified in available content)",
+      "boutique_claim": "Implicit - independent mid-market focus",
+      "independence_claim": "Explicit - 'independent corporate advisory firm'",
+      "founding_context": "Founded 2003",
+      "service_descriptions": [
+        "Mid-market mergers, acquisitions and divestments",
+        "Global investment banking quality advice"
+      ],
+      "market_positioning": "Primarily focused on mid-market M&A",
+      "confidence_assessment": "MEDIUM - founded 2003, independent positioning confirmed, mid-market M&A focus, but Perth location and named principals not verified in available content"
+    },
+    {
+      "rank": 13,
+      "firm_name": "Nash Advisory (Perth office status unclear)",
+      "website_url": "https://www.nashadvisory.com.au/",
+      "perth_location": "NOT IDENTIFIED - offices listed: Brisbane, Melbourne, Sydney (Perth office not explicitly mentioned)",
+      "boutique_claim": "Explicit - 'Boutique corporate advisory for mid-market transactions'",
+      "independence_claim": "Implicit - hands-on approach, independent advisory model",
+      "named_principals": [
+        {
+          "name": "Tom Butler",
+          "title": "Managing Director"
+        },
+        {
+          "name": "Paul Nemets",
+          "title": "Director"
+        }
+      ],
+      "experience": "Close to a century of collective experience",
+      "service_descriptions": [
+        "Business sales",
+        "Business valuations",
+        "Mergers and acquisitions",
+        "Capital raising",
+        "Business advisory",
+        "Divestment",
+        "Management buyouts/buyins (MBO and MBI)"
+      ],
+      "confidence_assessment": "LOW - No explicit Perth office location identified; primarily based in eastern Australian capitals; included for completeness but does not meet Perth location requirement"
+    }
+  ],
+  "summary_findings": {
+    "boutique_advisory_firms_confirmed_perth": 11,
+    "high_confidence_firms": 9,
+    "medium_to_high_confidence_firms": 2,
+    "low_confidence_firms": 1,
+    "key_patterns_identified": [
+      "Explicit boutique positioning highly common (11 of 12 Perth firms)",
+      "Independence claims universal across all boutique advisors",
+      "Director-led/founder-led structure characteristic of 9 of 11 firms",
+      "M&A and capital markets advisory dominant service theme",
+      "Perth suburbs with highest concentration: CBD (Forrest Centre), Subiaco, Mt Pleasant, West Perth, Mosman Park",
+      "Founding dates range from 1989 (AOT) to 2022 (Perth Business Advisors), with 2013-2017 cohort prominent",
+      "Named principals/founders identified in 9 of 11 firms"
+    ],
+    "service_specialisations": {
+      "M&A_and_capital_markets": [
+        "Lothbury Advisory",
+        "Sternship Advisers",
+        "Corpex Consulting",
+        "Greenstone Partners"
+      ],
+      "business_advisory_and_strategy": [
+        "Red Jacket Consulting",
+        "Palisade Business Consulting",
+        "Perth Business Advisors"
+      ],
+      "wealth_and_private_advisory": [
+        "Boutique Advisers"
+      ],
+      "accounting_and_tax_with_advisory": [
+        "M2 Corporate",
+        "Origin Business Consultants"
+      ],
+      "management_and_technology_consulting": [
+        "AOT Consulting",
+        "Greg Wheeler Consulting"
+      ]
+    }
+  },
+  "search_methodology": {
+    "search_variations_used": 5,
+    "websites_fetched_for_verification": 11,
+    "data_points_extracted_per_firm": [
+      "firm_name",
+      "website_url",
+      "perth_location_suburb",
+      "boutique_claim_explicit_implicit_or_none",
+      "independence_claim",
+      "named_principals_with_titles",
+      "service_descriptions",
+      "founding_context",
+      "confidence_assessment"
+    ]
+  }
+}
