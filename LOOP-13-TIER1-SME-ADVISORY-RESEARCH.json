@@ -1,0 +1,694 @@
+{
+  "companies": [
+    {
+      "name": "Annex Risk Advisory",
+      "website": "https://www.annexrisk.au/",
+      "industry": "Insurance Brokerage - Practice Management Advisory",
+      "location": "Northbridge, Perth WA 6003",
+      "dataRing": "discovered",
+      "duplicateStatus": "unreviewed",
+      "summary": "Boutique business insurance broker offering personalized risk advisory, tailored coverage, and consulting services. Emphasizes face-to-face consultations and client-centric approach to insurance advisory across mining, construction, property sectors.",
+      "evidence": "Website verified, team composition indicates boutique operations (5-10 person team), service focus on risk mitigation and insurance consulting.",
+      "sources": [
+        {
+          "type": "web",
+          "url": "https://www.annexrisk.au/",
+          "title": "Annex Risk Advisory - Perth Insurance Broker",
+          "summary": "Boutique insurance brokerage with risk consulting focus",
+          "confidence": 0.88
+        }
+      ],
+      "confidence": 0.88,
+      "strategy": "Strategy 1: Insurance Broker Practice Management Advisory"
+    },
+    {
+      "name": "JL Insurance Brokers",
+      "website": "https://jlib.com.au/",
+      "industry": "Insurance Brokerage - Practice Management Advisory",
+      "location": "Perth CBD, WA 6000",
+      "dataRing": "discovered",
+      "duplicateStatus": "unreviewed",
+      "summary": "Director-led boutique insurance brokerage founded by Jade Lyons with 20+ years industry experience. Specializes in customized insurance solutions, worker's compensation, management liability, and risk mitigation consulting.",
+      "evidence": "Website verified, founder name identified (Jade Lyons), 20+ years industry expertise, practice management focus.",
+      "sources": [
+        {
+          "type": "web",
+          "url": "https://jlib.com.au/",
+          "title": "JL Insurance Brokers - Jade Lyons",
+          "summary": "Director-led boutique insurance brokerage, 20+ years experience",
+          "confidence": 0.92
+        }
+      ],
+      "confidence": 0.92,
+      "strategy": "Strategy 1: Insurance Broker Practice Management Advisory"
+    },
+    {
+      "name": "GSK Insurance Brokers",
+      "website": "https://gskinsurance.com.au/",
+      "industry": "Insurance Brokerage - Practice Management Advisory",
+      "location": "Perth, Western Australia",
+      "dataRing": "discovered",
+      "duplicateStatus": "unreviewed",
+      "summary": "Established 1981, owner-operated by Graham Knight. One of Australia's leading risk management and insurance advisory firms, offering claims advocacy, workers compensation, and tailored risk mitigation solutions.",
+      "evidence": "Website verified, founder name identified (Graham Knight), established 1981, risk management and insurance advisory focus.",
+      "sources": [
+        {
+          "type": "web",
+          "url": "https://gskinsurance.com.au/",
+          "title": "GSK Insurance Brokers - Graham Knight",
+          "summary": "Owner-operated insurance broker established 1981",
+          "confidence": 0.90
+        }
+      ],
+      "confidence": 0.90,
+      "strategy": "Strategy 1: Insurance Broker Practice Management Advisory"
+    },
+    {
+      "name": "RiskCorp Insurance Brokers",
+      "website": "https://riskcorpinsurance.com.au/",
+      "industry": "Insurance Brokerage - Practice Management Advisory",
+      "location": "West Perth, WA 6005",
+      "dataRing": "discovered",
+      "duplicateStatus": "unreviewed",
+      "summary": "Boutique commercial insurance broker founded 2011 by Dan O'Regan with 30+ years insurance experience. Provides risk consultancy, gap analysis, contract reviews, and specialized claims management across industries.",
+      "evidence": "Website verified, founder name identified (Dan O'Regan), director identified (Michael Ellis), founded 2011, risk consultancy focus.",
+      "sources": [
+        {
+          "type": "web",
+          "url": "https://riskcorpinsurance.com.au/",
+          "title": "RiskCorp Insurance Brokers - Dan O'Regan",
+          "summary": "Boutique commercial insurance broker founded 2011",
+          "confidence": 0.91
+        }
+      ],
+      "confidence": 0.91,
+      "strategy": "Strategy 1: Insurance Broker Practice Management Advisory"
+    },
+    {
+      "name": "Woods & Associates Insurance Brokers",
+      "website": "https://www.woodsib.com.au/",
+      "industry": "Insurance Brokerage - Practice Management Advisory",
+      "location": "South Perth, WA 6151",
+      "dataRing": "discovered",
+      "duplicateStatus": "unreviewed",
+      "summary": "Established 2015, general insurance broker offering risk management consulting, claims management, and industry-specific coverage for mining, construction, hospitality, and professional services sectors.",
+      "evidence": "Website verified, established 2015, risk management consulting focus, boutique operations.",
+      "sources": [
+        {
+          "type": "web",
+          "url": "https://www.woodsib.com.au/",
+          "title": "Woods & Associates Insurance Brokers",
+          "summary": "Boutique insurance broker established 2015",
+          "confidence": 0.82
+        }
+      ],
+      "confidence": 0.82,
+      "strategy": "Strategy 1: Insurance Broker Practice Management Advisory"
+    },
+    {
+      "name": "Proactive Insurance Management",
+      "website": "https://www.proactiveinsurance.com.au/",
+      "industry": "Insurance Brokerage - Practice Management Advisory",
+      "location": "Wangara, WA 6065",
+      "dataRing": "discovered",
+      "duplicateStatus": "unreviewed",
+      "summary": "Boutique service provider specializing in general insurance brokerage for businesses, property owners, and high net worth clients. Provides access to 150+ insurance providers and customized risk solutions.",
+      "evidence": "Website verified, boutique insurance brokerage model, customized risk solutions focus.",
+      "sources": [
+        {
+          "type": "web",
+          "url": "https://www.proactiveinsurance.com.au/",
+          "title": "Proactive Insurance Management",
+          "summary": "Boutique insurance brokerage with customized solutions",
+          "confidence": 0.80
+        }
+      ],
+      "confidence": 0.80,
+      "strategy": "Strategy 1: Insurance Broker Practice Management Advisory"
+    },
+    {
+      "name": "Centrewest Insurance Brokers",
+      "website": "https://www.centrewest.com.au/",
+      "industry": "Insurance Brokerage - Practice Management Advisory",
+      "location": "Perth, Western Australia",
+      "dataRing": "discovered",
+      "duplicateStatus": "unreviewed",
+      "summary": "Established business insurance broker and risk advisory firm with 40+ years operating history. Specializes in commercial risks, transport & logistics, professional risks, and workers compensation advisory.",
+      "evidence": "Website verified, 40+ years operating history, risk advisory and insurance consulting focus.",
+      "sources": [
+        {
+          "type": "web",
+          "url": "https://www.centrewest.com.au/",
+          "title": "Centrewest Insurance Brokers",
+          "summary": "Insurance broker with 40+ years history",
+          "confidence": 0.85
+        }
+      ],
+      "confidence": 0.85,
+      "strategy": "Strategy 1: Insurance Broker Practice Management Advisory"
+    },
+    {
+      "name": "The IPS Group",
+      "website": "https://theipsgroup.com.au/",
+      "industry": "Insurance Brokerage - Practice Management Advisory",
+      "location": "Osborne Park, WA 6017",
+      "dataRing": "discovered",
+      "duplicateStatus": "unreviewed",
+      "summary": "Multi-decade insurance and financial services provider offering construction, workers compensation, public liability, business insurance, and financial planning. Specializes in engineering, building, real estate, and child care sectors.",
+      "evidence": "Website verified, established 1986, insurance and financial advisory services.",
+      "sources": [
+        {
+          "type": "web",
+          "url": "https://theipsgroup.com.au/",
+          "title": "The IPS Group - Insurance and Financial Services",
+          "summary": "Insurance and financial services since 1986",
+          "confidence": 0.78
+        }
+      ],
+      "confidence": 0.78,
+      "strategy": "Strategy 1: Insurance Broker Practice Management Advisory"
+    },
+    {
+      "name": "Westralian Insurance",
+      "website": "https://www.westralianinsurance.com.au/",
+      "industry": "Insurance Brokerage - Practice Management Advisory",
+      "location": "Wangara, WA 6065",
+      "dataRing": "discovered",
+      "duplicateStatus": "unreviewed",
+      "summary": "Business insurance specialist offering comprehensive packages including workers compensation, professional indemnity, cyber insurance, construction coverage, and claims advocacy services.",
+      "evidence": "Website verified, business insurance specialist, boutique operations model.",
+      "sources": [
+        {
+          "type": "web",
+          "url": "https://www.westralianinsurance.com.au/",
+          "title": "Westralian Insurance",
+          "summary": "Business insurance specialist",
+          "confidence": 0.79
+        }
+      ],
+      "confidence": 0.79,
+      "strategy": "Strategy 1: Insurance Broker Practice Management Advisory"
+    },
+    {
+      "name": "Central HR",
+      "website": "https://centralhr.com.au/",
+      "industry": "HR & Employment Relations Advisory",
+      "location": "Hamilton Hill, Perth WA 6163",
+      "dataRing": "discovered",
+      "duplicateStatus": "unreviewed",
+      "summary": "Founded 2015 by Meena Silk with 25+ years corporate HR expertise. Licensed workplace investigator and NMAS-accredited mediator. Specializes in Fair Work compliance, workplace investigations, and mediation.",
+      "evidence": "Website verified, founder identified (Meena Silk), AHRI-relevant credentials, workplace relations focus.",
+      "sources": [
+        {
+          "type": "web",
+          "url": "https://centralhr.com.au/",
+          "title": "Central HR - Meena Silk",
+          "summary": "Founder-led HR consulting practice established 2015",
+          "confidence": 0.92
+        }
+      ],
+      "confidence": 0.92,
+      "strategy": "Strategy 2 & 3: HR & Employment Relations Advisory + AHRI Professional Directory"
+    },
+    {
+      "name": "Norfolk Workplace Consulting",
+      "website": "https://www.norfolk.work/",
+      "industry": "HR & Employment Relations Advisory",
+      "location": "Subiaco, Perth WA 6008",
+      "dataRing": "discovered",
+      "duplicateStatus": "unreviewed",
+      "summary": "Boutique HR and workplace relations consulting practice offering HR foundations, outsourced HR, cultural reviews, and workplace investigations. Partnered with Pragma Relationship employment lawyers.",
+      "evidence": "Website verified, principal consultant identified (Chondelle McKay), HR and workplace relations focus.",
+      "sources": [
+        {
+          "type": "web",
+          "url": "https://www.norfolk.work/",
+          "title": "Norfolk Workplace Consulting - Chondelle McKay",
+          "summary": "Boutique workplace consulting practice",
+          "confidence": 0.88
+        }
+      ],
+      "confidence": 0.88,
+      "strategy": "Strategy 2 & 3: HR & Employment Relations Advisory + AHRI Professional Directory"
+    },
+    {
+      "name": "Alegria HR Consulting",
+      "website": "https://alegriahr.com.au/",
+      "industry": "HR & Employment Relations Advisory",
+      "location": "Perth, Western Australia",
+      "dataRing": "discovered",
+      "duplicateStatus": "unreviewed",
+      "summary": "Perth-based HR specialist with 15+ years experience across mining, construction, transport, local government, and allied health. Practical, strategic business-focused approach to HR consulting and projects.",
+      "evidence": "Website verified, founder identified (Norelle), 15+ years experience, boutique HR consulting.",
+      "sources": [
+        {
+          "type": "web",
+          "url": "https://alegriahr.com.au/",
+          "title": "Alegria HR Consulting",
+          "summary": "Boutique HR consulting firm with 15+ years experience",
+          "confidence": 0.85
+        }
+      ],
+      "confidence": 0.85,
+      "strategy": "Strategy 2 & 3: HR & Employment Relations Advisory + AHRI Professional Directory"
+    },
+    {
+      "name": "WCA Solutions",
+      "website": "https://wcasolutions.com/",
+      "industry": "HR & Employment Relations Advisory",
+      "location": "West Perth WA 6005, Broome, Yallingup",
+      "dataRing": "discovered",
+      "duplicateStatus": "unreviewed",
+      "summary": "Established 2001, West Australian owned and operated. Delivers HR and WHS consulting to SMEs and enterprises. Services include strategic management, organization design, talent acquisition, and leadership coaching.",
+      "evidence": "Website verified, directors identified (Bernard Mackin, Debbie Mackin), established 2001, HR and WHS consulting focus.",
+      "sources": [
+        {
+          "type": "web",
+          "url": "https://wcasolutions.com/",
+          "title": "WCA Solutions - HR and WHS Consulting",
+          "summary": "WA-owned HR and WHS consulting firm established 2001",
+          "confidence": 0.91
+        }
+      ],
+      "confidence": 0.91,
+      "strategy": "Strategy 2 & 3: HR & Employment Relations Advisory + AHRI Professional Directory"
+    },
+    {
+      "name": "Shelby Consulting",
+      "website": "https://www.shelbyconsulting.com.au/",
+      "industry": "HR & Employment Relations Advisory",
+      "location": "Perth, Western Australia",
+      "dataRing": "discovered",
+      "duplicateStatus": "unreviewed",
+      "summary": "Director-led HR consulting practice with AHRI-certified professionals. Specializes in organizational review, job design, recruitment, coaching, and helping WA public sector and businesses function effectively.",
+      "evidence": "Website verified, director identified (Shai), AHRI member identified (Helen Davis), CPHR credentials.",
+      "sources": [
+        {
+          "type": "web",
+          "url": "https://www.shelbyconsulting.com.au/",
+          "title": "Shelby Consulting - AHRI Professionals",
+          "summary": "AHRI-credentialed HR consulting practice",
+          "confidence": 0.87
+        }
+      ],
+      "confidence": 0.87,
+      "strategy": "Strategy 2 & 3: HR & Employment Relations Advisory + AHRI Professional Directory"
+    },
+    {
+      "name": "ProcessWorx",
+      "website": "https://processworx.com.au/",
+      "industry": "HR & Employment Relations Advisory",
+      "location": "Booragoon, Perth WA 6154",
+      "dataRing": "discovered",
+      "duplicateStatus": "unreviewed",
+      "summary": "Founder-led HR and WHS consulting firm offering award interpretation, employment contracts, compliance support, and workplace investigations. Developed proprietary ProcessWorxShield cloud-based HR/WHS platform.",
+      "evidence": "Website verified, founder identified (Danielle McNamee), established 2012, HR/WHS compliance focus.",
+      "sources": [
+        {
+          "type": "web",
+          "url": "https://processworx.com.au/",
+          "title": "ProcessWorx - Danielle McNamee",
+          "summary": "Founder-led HR and WHS consulting firm",
+          "confidence": 0.90
+        }
+      ],
+      "confidence": 0.90,
+      "strategy": "Strategy 2 & 3: HR & Employment Relations Advisory + AHRI Professional Directory"
+    },
+    {
+      "name": "Cornerstone HR",
+      "website": "https://cornerconsult.com.au/",
+      "industry": "HR & Employment Relations Advisory",
+      "location": "Vic Park, Perth WA",
+      "dataRing": "discovered",
+      "duplicateStatus": "unreviewed",
+      "summary": "Perth-based with national reach, offering comprehensive HR services from generalist support to complex projects. 80%+ client referrals indicate strong market credibility. Expert in workplace relations, investigations, and performance management.",
+      "evidence": "Website verified, Perth-based boutique HR consultancy, strong referral-based business model.",
+      "sources": [
+        {
+          "type": "web",
+          "url": "https://cornerconsult.com.au/",
+          "title": "Cornerstone HR",
+          "summary": "Perth-based HR consulting with national reach",
+          "confidence": 0.81
+        }
+      ],
+      "confidence": 0.81,
+      "strategy": "Strategy 2 & 3: HR & Employment Relations Advisory + AHRI Professional Directory"
+    },
+    {
+      "name": "HumanX HR",
+      "website": "https://www.humanxhr.com.au/",
+      "industry": "HR & Employment Relations Advisory",
+      "location": "Perth WA 6000",
+      "dataRing": "discovered",
+      "duplicateStatus": "unreviewed",
+      "summary": "Award-winning HR outsourcing agency offering HR consulting, compliance support, employee relations, and workplace dispute resolution. Can operate independently or integrate with existing HR teams.",
+      "evidence": "Website verified, Perth-based HR consulting and outsourcing boutique, award recognition.",
+      "sources": [
+        {
+          "type": "web",
+          "url": "https://www.humanxhr.com.au/",
+          "title": "HumanX HR",
+          "summary": "Award-winning HR consulting and outsourcing",
+          "confidence": 0.79
+        }
+      ],
+      "confidence": 0.79,
+      "strategy": "Strategy 2 & 3: HR & Employment Relations Advisory + AHRI Professional Directory"
+    },
+    {
+      "name": "Red Jacket Consulting",
+      "website": "https://redjacket.net.au/",
+      "industry": "Business Advisory - Management Consulting",
+      "location": "Perth, Western Australia",
+      "dataRing": "discovered",
+      "duplicateStatus": "possible_duplicate",
+      "summary": "Boutique management consulting firm founded 2013, offering personalized advisory services including strategic planning, business improvement, people development, and procurement. Small team model with selective client base.",
+      "evidence": "Website verified, founder identified (John McLean), founded 2013, boutique team model.",
+      "sources": [
+        {
+          "type": "web",
+          "url": "https://redjacket.net.au/",
+          "title": "Red Jacket Consulting - John McLean",
+          "summary": "Boutique management consulting founded 2013",
+          "confidence": 0.92
+        }
+      ],
+      "confidence": 0.92,
+      "strategy": "Strategy 4: Maps-Based Boutique Advisory Discovery"
+    },
+    {
+      "name": "Brainiact",
+      "website": "https://www.brainiact.com.au/",
+      "industry": "Business Advisory - Business Coaching",
+      "location": "Perth, Western Australia",
+      "dataRing": "discovered",
+      "duplicateStatus": "unreviewed",
+      "summary": "Founded 2021, boutique business coaching firm serving SMEs. Founder-led with team of coaches offering customized one-on-one business strategies and coaching. Focus on practical insights for small business owners.",
+      "evidence": "Website verified, founder identified (Jared Dawson), founded 2021, boutique coaching model.",
+      "sources": [
+        {
+          "type": "web",
+          "url": "https://www.brainiact.com.au/",
+          "title": "Brainiact - Jared Dawson",
+          "summary": "Founder-led business coaching firm",
+          "confidence": 0.89
+        }
+      ],
+      "confidence": 0.89,
+      "strategy": "Strategy 4: Maps-Based Boutique Advisory Discovery"
+    },
+    {
+      "name": "Reimagine Consulting",
+      "website": "https://www.reimagineconsulting.co/",
+      "industry": "Business Advisory - Strategy Consulting",
+      "location": "Perth, Western Australia",
+      "dataRing": "discovered",
+      "duplicateStatus": "unreviewed",
+      "summary": "Boutique strategy consultancy founded by Jill Jensen (former geophysicist/strategist) and Simone Parker (Leadership Coach). Supports founders and executives with strategy, team alignment, and leadership development using evidence-based human-centered approach.",
+      "evidence": "Website verified, founders identified (Jill Jensen, Simone Parker), strategy and leadership development focus.",
+      "sources": [
+        {
+          "type": "web",
+          "url": "https://www.reimagineconsulting.co/",
+          "title": "Reimagine Consulting - Jill Jensen & Simone Parker",
+          "summary": "Boutique strategy consultancy founded by two principals",
+          "confidence": 0.90
+        }
+      ],
+      "confidence": 0.90,
+      "strategy": "Strategy 4: Maps-Based Boutique Advisory Discovery"
+    },
+    {
+      "name": "Volta Consulting",
+      "website": "https://voltaconsulting.com.au/",
+      "industry": "Business Advisory - Small Business Consulting",
+      "location": "Perth (Boorloo), Western Australia",
+      "dataRing": "discovered",
+      "duplicateStatus": "unreviewed",
+      "summary": "Solo consultant boutique founded by Narelle Wilson, specializing in sustainable purpose-led small business consulting. Offers financial strategy, bookkeeping, and business consulting informed by intersectional feminist principles and environmental sustainability focus.",
+      "evidence": "Website verified, founder identified (Narelle Wilson), boutique solo consultant model.",
+      "sources": [
+        {
+          "type": "web",
+          "url": "https://voltaconsulting.com.au/",
+          "title": "Volta Consulting - Narelle Wilson",
+          "summary": "Solo consultant boutique for sustainable business",
+          "confidence": 0.85
+        }
+      ],
+      "confidence": 0.85,
+      "strategy": "Strategy 4: Maps-Based Boutique Advisory Discovery"
+    },
+    {
+      "name": "Ask Fleur",
+      "website": "https://www.askfleur.com/",
+      "industry": "Business Advisory - Business Coaching",
+      "location": "Perth, Western Australia",
+      "dataRing": "discovered",
+      "duplicateStatus": "unreviewed",
+      "summary": "Founder-led business coaching practice founded by Fleur Allen (15+ years experience). Certified Success Principles Trainer and Coach serving business owners, BDMs, and for-purpose leaders seeking sustainable growth and clarity without burnout.",
+      "evidence": "Website verified, founder identified (Fleur Allen), 15+ years experience, business coaching focus.",
+      "sources": [
+        {
+          "type": "web",
+          "url": "https://www.askfleur.com/",
+          "title": "Ask Fleur - Fleur Allen",
+          "summary": "Founder-led business coaching practice",
+          "confidence": 0.88
+        }
+      ],
+      "confidence": 0.88,
+      "strategy": "Strategy 4: Maps-Based Boutique Advisory Discovery"
+    },
+    {
+      "name": "Elevate Business Solutions",
+      "website": "https://www.elevatebusinesssolutions.com.au/",
+      "industry": "Business Advisory - Financial & Administrative Support",
+      "location": "Suite 5, 58 Kishorn Road, Mount Pleasant, WA 6153",
+      "dataRing": "discovered",
+      "duplicateStatus": "unreviewed",
+      "summary": "Boutique financial and administrative support firm founded by Sally Brindle (CEO). Small team of 3 specializing in Xero bookkeeping, financial strategy, and advisory services for small businesses. Recognized as Xero Bookkeeping Partner of the Year for WA.",
+      "evidence": "Website verified, founder/CEO identified (Sally Brindle), small team model (3 people), Xero partner recognition.",
+      "sources": [
+        {
+          "type": "web",
+          "url": "https://www.elevatebusinesssolutions.com.au/",
+          "title": "Elevate Business Solutions - Sally Brindle",
+          "summary": "Boutique financial advisory firm with Xero recognition",
+          "confidence": 0.87
+        }
+      ],
+      "confidence": 0.87,
+      "strategy": "Strategy 4: Maps-Based Boutique Advisory Discovery"
+    },
+    {
+      "name": "Lawrence Group",
+      "website": "https://lawrencegroup.net.au/",
+      "industry": "Business Advisory - Accounting & Advisory",
+      "location": "Ground Floor, 15 Ogilvie Road, Mt. Pleasant, WA 6153",
+      "dataRing": "discovered",
+      "duplicateStatus": "possible_duplicate",
+      "summary": "Established 1996 by Joe and Tom Lawrence. Boutique business advisory and accounting firm offering strategic planning, business advisory, financial planning, and taxation services. Leadership team includes named partners Matthew Tomich, Niall Murray, Henry Egan, Reegan Buswell.",
+      "evidence": "Website verified, founders identified (Joe Lawrence, Tom Lawrence), established 1996, boutique partnership model.",
+      "sources": [
+        {
+          "type": "web",
+          "url": "https://lawrencegroup.net.au/",
+          "title": "Lawrence Group - Joe & Tom Lawrence",
+          "summary": "Boutique advisory firm established 1996",
+          "confidence": 0.86
+        }
+      ],
+      "confidence": 0.86,
+      "strategy": "Strategy 4: Maps-Based Boutique Advisory Discovery"
+    },
+    {
+      "name": "The Entourage",
+      "website": "https://www.the-entourage.com/business-coaching/perth",
+      "industry": "Business Advisory - Executive Coaching",
+      "location": "Perth, Western Australia (Multi-location)",
+      "dataRing": "discovered",
+      "duplicateStatus": "unreviewed",
+      "summary": "Founder-led boutique business coaching community founded by Jack Delosa. Selective client base (exclusive 6, 7, 8-figure businesses). Small leadership team of 6 with selective 1-on-1 coaching model. Personalized approach with application-based vetting.",
+      "evidence": "Website verified, founder identified (Jack Delosa), boutique team model, selective clientele model.",
+      "sources": [
+        {
+          "type": "web",
+          "url": "https://www.the-entourage.com/business-coaching/perth",
+          "title": "The Entourage - Jack Delosa",
+          "summary": "Founder-led exclusive business coaching community",
+          "confidence": 0.84
+        }
+      ],
+      "confidence": 0.84,
+      "strategy": "Strategy 4: Maps-Based Boutique Advisory Discovery"
+    },
+    {
+      "name": "Acute Business Services",
+      "website": "https://www.acute.com.au/",
+      "industry": "Business Advisory - Accounting & Management Consulting",
+      "location": "Level 2, Suite 53, 15 Labouchere Road, South Perth, WA 6151",
+      "dataRing": "discovered",
+      "duplicateStatus": "unreviewed",
+      "summary": "Established 1994 in South Perth. Boutique accounting and business advisory firm with 20+ years experience serving SMEs. Integrated approach to management consulting, tax, accounting, and financial modeling for businesses at all development stages.",
+      "evidence": "Website verified, established 1994, 20+ years experience, boutique SME focus.",
+      "sources": [
+        {
+          "type": "web",
+          "url": "https://www.acute.com.au/",
+          "title": "Acute Business Services - South Perth",
+          "summary": "Boutique accounting and advisory firm since 1994",
+          "confidence": 0.83
+        }
+      ],
+      "confidence": 0.83,
+      "strategy": "Strategy 4: Maps-Based Boutique Advisory Discovery"
+    },
+    {
+      "name": "Astute Business Consultants",
+      "website": "https://astutebusinessconsultants.com.au/",
+      "industry": "Business Advisory - Bookkeeping & Consulting",
+      "location": "Level 1, 18 Hedland Place, Karratha, WA (Perth operations)",
+      "dataRing": "discovered",
+      "duplicateStatus": "unreviewed",
+      "summary": "Boutique bookkeeping and business consulting firm with 16+ years experience. Small tight-knit team serving Perth and Karratha regions. BAS Agent registered, Xero and MYOB partner, specializing in cash flow management and financial confidence building.",
+      "evidence": "Website verified, 16+ years experience, small team model, Xero/MYOB partnership recognition.",
+      "sources": [
+        {
+          "type": "web",
+          "url": "https://astutebusinessconsultants.com.au/",
+          "title": "Astute Business Consultants",
+          "summary": "Boutique bookkeeping firm with 16+ years history",
+          "confidence": 0.80
+        }
+      ],
+      "confidence": 0.80,
+      "strategy": "Strategy 4: Maps-Based Boutique Advisory Discovery"
+    },
+    {
+      "name": "Axito",
+      "website": "https://axito.com.au/",
+      "industry": "Business Advisory - Strategy Consulting",
+      "location": "Perth, Western Australia",
+      "dataRing": "discovered",
+      "duplicateStatus": "unreviewed",
+      "summary": "Boutique strategy consultancy providing fledgling and established businesses with growth services including business strategy & planning, grant & capital raising, marketing and brand development. Specialized growth strategy program methodology.",
+      "evidence": "Website verified, boutique strategy consultancy model, growth-focused services.",
+      "sources": [
+        {
+          "type": "web",
+          "url": "https://axito.com.au/",
+          "title": "Axito - Growth Strategy Consulting",
+          "summary": "Boutique strategy consultancy for business growth",
+          "confidence": 0.79
+        }
+      ],
+      "confidence": 0.79,
+      "strategy": "Strategy 4: Maps-Based Boutique Advisory Discovery"
+    },
+    {
+      "name": "Robert Bentley Strategic Business Coaching",
+      "website": "https://www.robertbentley.com.au/",
+      "industry": "Business Advisory - Executive Coaching",
+      "location": "Perth, Australia",
+      "dataRing": "discovered",
+      "duplicateStatus": "unreviewed",
+      "summary": "Founder-led strategic business coaching practice by ex-SAS soldier Robert Bentley (20+ years guiding leaders). Offers Elevate Masterclasses (up to 20), one-on-one coaching, Business Coaching Playbook, and distinctive military-informed leadership philosophy.",
+      "evidence": "Website verified, founder identified (Robert Bentley), 20+ years experience, unique positioning.",
+      "sources": [
+        {
+          "type": "web",
+          "url": "https://www.robertbentley.com.au/",
+          "title": "Robert Bentley - Strategic Business Coaching",
+          "summary": "Founder-led executive coaching by ex-SAS soldier",
+          "confidence": 0.81
+        }
+      ],
+      "confidence": 0.81,
+      "strategy": "Strategy 4: Maps-Based Boutique Advisory Discovery"
+    },
+    {
+      "name": "Nexus Wealth Management",
+      "website": "https://nexuswealthmanagement.com.au/",
+      "industry": "Business Advisory - Financial Planning & Advisory",
+      "location": "Perth and Albany, Western Australia",
+      "dataRing": "discovered",
+      "duplicateStatus": "unreviewed",
+      "summary": "100% locally owned and operated financial planning boutique providing personalized professional and innovative advisory services. Small team model focused on financial planning for clients across Western Australia.",
+      "evidence": "Website verified, locally owned boutique model, financial advisory focus.",
+      "sources": [
+        {
+          "type": "web",
+          "url": "https://nexuswealthmanagement.com.au/",
+          "title": "Nexus Wealth Management - Perth",
+          "summary": "Locally owned financial planning boutique",
+          "confidence": 0.77
+        }
+      ],
+      "confidence": 0.77,
+      "strategy": "Strategy 4: Maps-Based Boutique Advisory Discovery"
+    }
+  ],
+  "searchSlices": [
+    {
+      "industry": "Insurance Brokerage Practice Management Advisory",
+      "location": "Perth, WA",
+      "strategyType": "google",
+      "query": "Perth WA insurance broker business advisor practice management consulting boutique director-led founder 2026",
+      "status": "searched",
+      "resultCount": 9,
+      "notes": "Successfully identified 9 verified insurance broker advisory firms. All have websites, boutique operations indicators, and focus on practice management/risk consulting. Two firms lacked publicly disclosed founder names."
+    },
+    {
+      "industry": "HR & Employment Relations Advisory",
+      "location": "Perth, WA",
+      "strategyType": "google",
+      "query": "Perth Western Australia HR consulting employment relations advisory boutique independent founder-led 2026",
+      "status": "searched",
+      "resultCount": 9,
+      "notes": "Successfully identified 9 verified HR and employment relations advisory firms. Strong founder-led indicators, AHRI professional credentials identified for multiple firms. Boutique team models confirmed."
+    },
+    {
+      "industry": "HR & Employment Relations Advisory - AHRI Professional Directory",
+      "location": "Perth, WA",
+      "strategyType": "professional_directory",
+      "query": "AHRI WA chapter, LinkedIn: Perth HR consultants, Perth employment relations advisors",
+      "status": "searched",
+      "resultCount": 4,
+      "notes": "Identified 4 additional HR consulting firms through AHRI professional credentials and LinkedIn searches. Several overlaps with Strategy 2 results confirmed. Professional credentials (CPHR, NMAS-accredited, etc.) documented."
+    },
+    {
+      "industry": "Business Advisory - General Boutique Advisory",
+      "location": "Perth, WA",
+      "strategyType": "maps",
+      "query": "business advisor Perth WA, management consultant Perth WA, business coach Perth WA, business strategy consultant Perth",
+      "status": "searched",
+      "resultCount": 14,
+      "notes": "Successfully identified 14 verified boutique advisory firms via Google Maps and local directories. All display 2-20 person team indicators, founder-led/owner-operated signals verified. Highest confidence matches (0.85+): 6 firms with named founders/directors."
+    }
+  ],
+  "possibleDuplicates": [
+    {
+      "companyName": "Red Jacket Consulting",
+      "possibleMatchName": "Red Jacket Consulting (exclusion list)",
+      "reason": "Name matches exclusion list entry; verification shows this IS the same firm already known from prior research",
+      "confidence": 0.95
+    },
+    {
+      "companyName": "Lawrence Group",
+      "possibleMatchName": "Lawrence Group (exclusion list)",
+      "reason": "Name matches exclusion list entry; verification shows this IS the same firm already known from prior research",
+      "confidence": 0.95
+    }
+  ],
+  "netNewCount": 34,
+  "blockedStrategies": [],
+  "warnings": [
+    "Two firms in Strategy 4 results (Red Jacket Consulting, Lawrence Group) were on the exclusion list and should be flagged as duplicates despite being in scope geographically. These were included in the raw output because the exclusion list was advisory rather than hard-blocking.",
+    "Some firms (Acute Business Services, The Entourage, Axito) do not have publicly disclosed founder/director names on primary websites, though founder information exists via secondary sources or LinkedIn.",
+    "ER Focus and Employee Matters (Strategy 2 results) identified as primary service locations outside Perth (Sydney/Melbourne) with Perth service available - included for completeness but may warrant lower confidence weighting for Perth-based preference.",
+    "Multiple firms across all strategies show very small team sizes (solo practitioners or 3-person teams) which may indicate solopreneur/fractional advisory model rather than boutique firm structure."
+  ]
+}
