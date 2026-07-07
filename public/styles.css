@@ -2748,6 +2748,60 @@ textarea {
   margin-bottom: 0;
   flex-wrap: wrap;
 }
+.companyListFilters {
+  display: flex;
+  justify-content: flex-end;
+  margin: 10px 0 4px;
+}
+.companyFilterToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 7px 14px;
+  font-weight: 600;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+.companyFilterToggle:hover,
+.companyFilterToggle:focus-visible {
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+.companyFilterToggleDot {
+  width: 30px;
+  height: 18px;
+  border-radius: 999px;
+  background: rgba(23, 33, 31, 0.14);
+  position: relative;
+  flex: none;
+  transition: background 0.15s ease;
+}
+.companyFilterToggleDot::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.15s ease;
+}
+.companyFilterToggle.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.companyFilterToggle.active .companyFilterToggleDot {
+  background: rgba(255, 255, 255, 0.35);
+}
+.companyFilterToggle.active .companyFilterToggleDot::after {
+  transform: translateX(12px);
+}
 /* Pager sits above the list — flip the divider to the bottom edge. */
 .companyListPager {
   margin-top: 0;

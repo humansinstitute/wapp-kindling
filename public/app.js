@@ -45,8 +45,9 @@ const state = {
   // it (On Deck); from the plain Companies list it stays null.
   companyModal: { open: false, companyId: "", company: null, target: null, detail: null, loading: false, draftIndex: 0 },
   servicePage: { profile: null, loaded: false, loading: false, error: "" },
-  companyListPage: { companies: [], total: 0, offset: 0, band: "high", bandCounts: null, loaded: false, loading: false, error: "" },
+  companyListPage: { companies: [], total: 0, offset: 0, band: "high", bandCounts: null, hideProcessed: false, loaded: false, loading: false, error: "" },
   resultsPage: { tab: "waiting", items: [], total: 0, offset: 0, q: "", counts: null, loaded: false, loading: false, error: "" },
+  alertsPage: { feeds: [], hits: [], scheduler: null, loaded: false, loading: false, error: "", saving: false },
   reasonModal: null,
   navCollapsed: localStorage.getItem("kindling_nav_collapsed") === "1",
   userProfile: null,
@@ -180,7 +181,7 @@ function setKindlingView(view) {
 
 function appRoute() {
   const pathname = normalizedPath();
-  if (["/chat", "/settings", "/menu", "/results"].includes(pathname)) return pathname;
+  if (["/chat", "/settings", "/menu", "/results", "/alerts"].includes(pathname)) return pathname;
   const view = kindlingViewForPath(pathname);
   if (view === "service") return "/service";
   if (view === "companies") return "/companies-list";
@@ -200,12 +201,13 @@ const SECTION_NAV = {
   servicePage: "service",
   companyListPage: "companies",
   resultsPage: "results",
+  alertsPage: "alerts",
   shell: "chats",
   settingsPage: "settings",
 };
 
 function showOnly(id) {
-  for (const sectionId of ["login", "focus", "servicePage", "companyListPage", "resultsPage", "home", "actPage", "settingsPage", "shell"]) {
+  for (const sectionId of ["login", "focus", "servicePage", "companyListPage", "resultsPage", "alertsPage", "home", "actPage", "settingsPage", "shell"]) {
     $(sectionId).classList.toggle("hidden", sectionId !== id);
   }
   const navKey = SECTION_NAV[id] || null;
@@ -272,6 +274,12 @@ async function renderRoute() {
   if (state.route === "/results") {
     showOnly("resultsPage");
     await loadResultsPage();
+    return;
+  }
+
+  if (state.route === "/alerts") {
+    showOnly("alertsPage");
+    await loadAlertsPage();
     return;
   }
 
@@ -922,6 +930,7 @@ const APP_NAV_ITEMS = [
   { key: "service", label: "Service Offering", route: "/service-offerings", icon: "offering" },
   { key: "companies", label: "Company List", route: "/companies", icon: "companies" },
   { key: "results", label: "Results", route: "/results", icon: "results" },
+  { key: "alerts", label: "Alerts", route: "/alerts", icon: "alerts" },
   { key: "chats", label: "Chats", route: "/chat", icon: "chats" },
   { key: "settings", label: "Settings", route: "/settings", icon: "settings" },
 ];
@@ -933,6 +942,7 @@ const NAV_ICONS = {
   results: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V5"/><path d="M4 19h16"/><path d="M8 16v-5"/><path d="M13 16V8"/><path d="M18 16v-3"/></svg>',
   chats: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.5 7.2L4 21l1.8-5.5A8 8 0 1 1 21 12Z"/></svg>',
   settings: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.5-2.4 1a7 7 0 0 0-1.7-1L14.5 3h-5l-.3 2.5a7 7 0 0 0-1.7 1l-2.4-1-2 3.5L3 11a7 7 0 0 0 0 2l-2 1.5 2 3.5 2.4-1a7 7 0 0 0 1.7 1l.3 2.5h5l.3-2.5a7 7 0 0 0 1.7-1l2.4 1 2-3.5-2-1.5a7 7 0 0 0 .1-1Z"/></svg>',
+  alerts: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>',
 };
 
 function navCountFor(key) {
@@ -951,6 +961,11 @@ function navCountFor(key) {
     if (!counts) return null;
     // Badge = things still awaiting a response (waiting + aged-out).
     return Number(counts.waiting || 0) + Number(counts.no_response || 0);
+  }
+  if (key === "alerts") {
+    if (!state.alertsPage.loaded) return null;
+    const queued = state.alertsPage.hits.filter((h) => h.status === "queued" || h.status === "resolving").length;
+    return queued || null;
   }
   return null;
 }
@@ -1095,6 +1110,7 @@ async function loadCompanyListPage({ force = false } = {}) {
       offset: String(Math.max(0, Number(page.offset) || 0)),
       withBandCounts: "1",
     });
+    if (page.hideProcessed) query.set("hideProcessed", "1");
     const data = await api(`/api/kindling/companies?${query}`);
     if (seq !== companyListSeq) return;
     page.companies = data.companies || [];
@@ -1117,6 +1133,13 @@ function setCompanyBand(band) {
   if (state.companyListPage.band === band) return;
   state.companyListPage.band = band;
   state.companyListPage.offset = 0;
+  void loadCompanyListPage({ force: true });
+}
+
+function toggleCompanyHideProcessed() {
+  const page = state.companyListPage;
+  page.hideProcessed = !page.hideProcessed;
+  page.offset = 0;
   void loadCompanyListPage({ force: true });
 }
 
@@ -1176,6 +1199,14 @@ function renderCompanyListPage() {
   el.innerHTML = `<div class="pageInner companyListInner">
     <header class="pageTopHeader"><h1>Company List</h1>${count ? `<span class="pageCount">${escapeHtml(count)}</span>` : ""}</header>
     ${renderCompanyBandTabs()}
+    <div class="companyListFilters">
+      <button type="button" class="companyFilterToggle ${state.companyListPage.hideProcessed ? "active" : ""}"
+        data-company-toggle="hideProcessed"
+        role="switch" aria-checked="${state.companyListPage.hideProcessed ? "true" : "false"}">
+        <span class="companyFilterToggleDot" aria-hidden="true"></span>
+        Hide processed (contacted / rejected)
+      </button>
+    </div>
     ${pager}
     ${body}
   </div>`;
@@ -1378,6 +1409,253 @@ function renderResultsPage() {
     ${pager}
     ${body}
   </div>`;
+}
+
+// ---- Alerts page (RSS hiring-signal ingestion) ----------------------------
+
+let alertsSeq = 0;
+async function loadAlertsPage({ force = false } = {}) {
+  if (state.alertsPage.loaded && !force) {
+    renderAlertsPage();
+    return;
+  }
+  const seq = ++alertsSeq;
+  const page = state.alertsPage;
+  page.loading = true;
+  page.error = "";
+  renderAlertsPage();
+  try {
+    const [feeds, hits, scheduler] = await Promise.all([
+      api("/api/kindling/alert-feeds"),
+      api("/api/kindling/alert-hits?limit=50"),
+      api("/api/kindling/scheduler-settings").catch(() => ({ settings: null })),
+    ]);
+    if (seq !== alertsSeq) return;
+    page.feeds = feeds.feeds || [];
+    page.hits = hits.hits || [];
+    page.scheduler = scheduler.settings || page.scheduler;
+    page.loaded = true;
+    page.loading = false;
+    renderAlertsPage();
+    if (!$("appNav").classList.contains("hidden")) renderAppNav("alerts");
+  } catch (err) {
+    if (seq !== alertsSeq) return;
+    page.loading = false;
+    page.error = err?.message || String(err);
+    renderAlertsPage();
+  }
+}
+
+const ALERT_HIT_BADGE = {
+  queued: { label: "Queued", color: "#8a6d3b", bg: "#fcf3d6" },
+  resolving: { label: "Resolving", color: "#8a6d3b", bg: "#fcf3d6" },
+  matched: { label: "Matched", color: "#1f5c8a", bg: "#dcecf8" },
+  enriched: { label: "Enriched", color: "#1f5c8a", bg: "#dcecf8" },
+  scored: { label: "Scored", color: "#1f5c8a", bg: "#dcecf8" },
+  promoted: { label: "Promoted", color: "#1e6b3a", bg: "#d8f0df" },
+  discarded: { label: "Discarded", color: "#6b6b6b", bg: "#ececec" },
+  failed: { label: "Failed", color: "#8a1f1f", bg: "#f8dcdc" },
+};
+
+function alertHitBadge(status) {
+  const b = ALERT_HIT_BADGE[status] || { label: status || "?", color: "#555", bg: "#eee" };
+  return `<span class="alertBadge" style="color:${b.color};background:${b.bg}">${escapeHtml(b.label)}</span>`;
+}
+
+function fmtAlertTime(ms) {
+  if (!ms) return "—";
+  const d = new Date(Number(ms));
+  if (Number.isNaN(d.getTime())) return "—";
+  const diff = Date.now() - d.getTime();
+  const mins = Math.round(diff / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return d.toLocaleDateString();
+}
+
+function renderAlertFeedRow(feed, canEdit) {
+  const paused = feed.status === "paused";
+  const stalled = feed.status === "stalled";
+  const statusColor = paused ? "#6b6b6b" : stalled ? "#8a1f1f" : "#1e6b3a";
+  const toggleLabel = paused ? "Activate" : "Pause";
+  const toggleNext = paused ? "active" : "paused";
+  return `
+    <div class="alertFeedRow" style="display:grid;grid-template-columns:1fr auto;gap:8px;padding:12px;border:1px solid var(--border,#e2e2e2);border-radius:10px;margin-bottom:8px">
+      <div>
+        <div style="font-weight:600">${escapeHtml(feed.label)}</div>
+        ${feed.queryNote ? `<div style="font-size:12px;opacity:.75">${escapeHtml(feed.queryNote)}</div>` : ""}
+        <div style="font-size:12px;opacity:.6;word-break:break-all">${escapeHtml(feed.feedUrl)}</div>
+        <div style="font-size:12px;margin-top:4px">
+          <span style="color:${statusColor};font-weight:600">${escapeHtml(feed.status)}</span>
+          · signal <code>${escapeHtml(feed.signalType)}</code>
+          · last run ${fmtAlertTime(feed.lastRunAt)}
+          ${feed.stalledReason ? `· <span style="color:#8a1f1f">${escapeHtml(feed.stalledReason)}</span>` : ""}
+        </div>
+      </div>
+      ${canEdit ? `
+      <div style="display:flex;gap:6px;align-items:flex-start">
+        <button type="button" data-alert-action="toggle-feed" data-feed-id="${escapeHtml(feed.id)}" data-next-status="${toggleNext}">${toggleLabel}</button>
+        <button type="button" class="danger" data-alert-action="delete-feed" data-feed-id="${escapeHtml(feed.id)}" data-feed-label="${escapeHtml(feed.label)}">Delete</button>
+      </div>` : ""}
+    </div>`;
+}
+
+function renderAlertHitRow(hit) {
+  const company = hit.companyId
+    ? `<a href="/companies" data-nav="/companies" style="text-decoration:underline">${escapeHtml(hit.title || "company")}</a>`
+    : escapeHtml(hit.title || "(untitled)");
+  const detail = hit.discardReason
+    ? `<span style="opacity:.7">${escapeHtml(hit.discardReason)}</span>`
+    : hit.link
+      ? `<a href="${escapeHtml(hit.link)}" target="_blank" rel="noopener" style="text-decoration:underline">source</a>`
+      : "";
+  return `
+    <div class="alertHitRow" style="display:grid;grid-template-columns:96px 1fr auto;gap:8px;padding:8px 10px;border-bottom:1px solid var(--border,#eee);align-items:center">
+      <div>${alertHitBadge(hit.status)}</div>
+      <div style="min-width:0">
+        <div style="font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${company}</div>
+        <div style="font-size:12px;opacity:.7">${detail}</div>
+      </div>
+      <div style="font-size:12px;opacity:.6;white-space:nowrap">${fmtAlertTime(hit.createdAt)}</div>
+    </div>`;
+}
+
+function renderAlertsPage() {
+  const el = $("alertsPage");
+  if (!el) return;
+  const page = state.alertsPage;
+  const canEdit = Boolean(state.me?.access?.edit);
+
+  if (page.loading && !page.loaded) {
+    el.innerHTML = `<div class="pageInner"><header class="pageTopHeader"><h1>Alerts</h1></header>
+      <div class="pageLoading"><span class="kindlingSpinner" aria-hidden="true"></span>Loading alerts…</div></div>`;
+    return;
+  }
+  if (page.error) {
+    el.innerHTML = `<div class="pageInner"><header class="pageTopHeader"><h1>Alerts</h1></header>
+      <p class="pageError">Couldn't load alerts: ${escapeHtml(page.error)}</p>
+      <button type="button" data-alert-action="retry">Retry</button></div>`;
+    return;
+  }
+
+  const s = page.scheduler;
+  const alertsOn = Boolean(s?.alertsEnabled);
+  const masterOn = Boolean(s?.enabled);
+  const cadenceMin = Math.max(1, Math.round(Number(s?.cooldowns?.alertsMs ?? 900000) / 60000));
+
+  const masterNote = masterOn
+    ? ""
+    : `<p class="pageEmpty" style="margin-top:4px">⚠︎ The master Automation switch is off, so alerts won't poll until you enable it in <a href="/settings" data-nav="/settings" style="text-decoration:underline">Settings → Automation</a>.</p>`;
+
+  const settingsCard = `
+    <div class="kindlingPanel" style="padding:16px;margin-bottom:16px">
+      <h2 style="margin:0 0 8px">Automation</h2>
+      <div style="display:flex;flex-wrap:wrap;gap:16px;align-items:center">
+        <label style="display:flex;gap:8px;align-items:center">
+          <input type="checkbox" id="alertEnabled" ${alertsOn ? "checked" : ""} ${canEdit ? "" : "disabled"}/>
+          <strong>Alert polling enabled</strong>
+        </label>
+        <label style="display:flex;gap:8px;align-items:center">
+          <span>Poll every (min)</span>
+          <input type="number" min="1" id="alertCadence" value="${cadenceMin}" style="width:80px" ${canEdit ? "" : "disabled"}/>
+        </label>
+        ${canEdit ? `<button type="button" data-alert-action="save-settings" ${page.saving ? "disabled" : ""}>Save</button>` : ""}
+        <button type="button" data-alert-action="refresh">Refresh</button>
+      </div>
+      ${masterNote}
+    </div>`;
+
+  const addForm = canEdit ? `
+    <form class="kindlingPanel alertAddForm" data-alert-action="add-feed" style="padding:16px;margin-bottom:16px;display:grid;gap:10px">
+      <h2 style="margin:0">Add a Google Alert feed</h2>
+      <p style="margin:0;font-size:12px;opacity:.7">In Google Alerts, set <strong>Deliver to → RSS feed</strong>, then paste the feed URL here. See docs/RssAlertIngestion.md.</p>
+      <label style="display:grid;gap:4px"><span>Label</span><input type="text" id="alertNewLabel" placeholder="SEEK: right hand to the owner" required/></label>
+      <label style="display:grid;gap:4px"><span>Feed URL</span><input type="url" id="alertNewUrl" placeholder="https://www.google.com/alerts/feeds/..." required/></label>
+      <label style="display:grid;gap:4px"><span>Query note (optional)</span><input type="text" id="alertNewQuery" placeholder='"right hand to the owner" "operations manager"'/></label>
+      <div><button type="submit">Add feed</button></div>
+    </form>` : "";
+
+  const feeds = page.feeds.length
+    ? page.feeds.map((f) => renderAlertFeedRow(f, canEdit)).join("")
+    : `<p class="pageEmpty">No feeds yet. Add a Google Alerts RSS feed above to start ingesting hiring signals.</p>`;
+
+  const hits = page.hits.length
+    ? `<div class="kindlingPanel" style="padding:0">${page.hits.map(renderAlertHitRow).join("")}</div>`
+    : `<p class="pageEmpty">No alert hits yet. Once feeds poll, matched entries appear here.</p>`;
+
+  el.innerHTML = `<div class="pageInner">
+    <header class="pageTopHeader"><h1>Alerts</h1><span class="pageCount">Hiring-signal feeds → enrich → score → deck</span></header>
+    ${settingsCard}
+    ${addForm}
+    <h2 style="margin:8px 0">Feeds <span style="opacity:.6;font-weight:400">(${page.feeds.length})</span></h2>
+    ${feeds}
+    <h2 style="margin:16px 0 8px">Recent hits <span style="opacity:.6;font-weight:400">(${page.hits.length})</span></h2>
+    ${hits}
+  </div>`;
+}
+
+async function addAlertFeed() {
+  const label = ($("alertNewLabel")?.value || "").trim();
+  const feedUrl = ($("alertNewUrl")?.value || "").trim();
+  const queryNote = ($("alertNewQuery")?.value || "").trim();
+  if (!feedUrl) { setStatus("Feed URL is required"); return; }
+  try {
+    await api("/api/kindling/alert-feeds", {
+      method: "POST",
+      body: JSON.stringify({ label, feedUrl, queryNote }),
+    });
+    setStatus("Alert feed added");
+    await loadAlertsPage({ force: true });
+  } catch (err) {
+    setStatus(err?.message || String(err));
+  }
+}
+
+async function setAlertFeedStatus(feedId, status) {
+  try {
+    await api(`/api/kindling/alert-feeds/${encodeURIComponent(feedId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status }),
+    });
+    await loadAlertsPage({ force: true });
+  } catch (err) {
+    setStatus(err?.message || String(err));
+  }
+}
+
+async function removeAlertFeed(feedId, label) {
+  if (!window.confirm(`Delete alert feed "${label}"? Its hit history is removed too.`)) return;
+  try {
+    await api(`/api/kindling/alert-feeds/${encodeURIComponent(feedId)}`, { method: "DELETE" });
+    setStatus("Alert feed deleted");
+    await loadAlertsPage({ force: true });
+  } catch (err) {
+    setStatus(err?.message || String(err));
+  }
+}
+
+async function saveAlertSettings() {
+  const page = state.alertsPage;
+  const s = page.scheduler || {};
+  const cadenceMin = Math.max(1, Number($("alertCadence")?.value || 15));
+  const cooldowns = { ...(s.cooldowns || {}), alertsMs: cadenceMin * 60000 };
+  page.saving = true;
+  renderAlertsPage();
+  try {
+    const res = await api("/api/kindling/scheduler-settings", {
+      method: "PATCH",
+      body: JSON.stringify({ alertsEnabled: $("alertEnabled")?.checked, cooldowns }),
+    });
+    page.scheduler = res.settings || page.scheduler;
+    setStatus("Alert settings saved");
+  } catch (err) {
+    setStatus(err?.message || String(err));
+  } finally {
+    page.saving = false;
+    renderAlertsPage();
+  }
 }
 
 // ---- Shared reason / outcome modal ----------------------------------------
@@ -4798,6 +5076,10 @@ $("companyListPage").addEventListener("click", (event) => {
     setCompanyBand(band);
     return;
   }
+  if (event.target.closest('[data-company-toggle="hideProcessed"]')) {
+    toggleCompanyHideProcessed();
+    return;
+  }
   const page = event.target.closest("[data-company-page]")?.dataset.companyPage;
   if (page) { stepCompanyPage(page === "next" ? 1 : -1); return; }
   // Open the shared details overlay for a row — but let the inline website link
@@ -4953,6 +5235,24 @@ $("resultsPage").addEventListener("submit", (event) => {
 document.addEventListener("click", (event) => {
   if (event.target.closest(".resultMenu")) return;
   $("resultsPage")?.querySelectorAll(".resultMenu.open").forEach((m) => m.classList.remove("open"));
+});
+
+// Alerts page interactions
+$("alertsPage").addEventListener("click", (event) => {
+  const navLink = event.target.closest("[data-nav]");
+  if (navLink) { event.preventDefault(); navigate(navLink.dataset.nav); return; }
+  const actionEl = event.target.closest("[data-alert-action]");
+  if (!actionEl) return;
+  const action = actionEl.dataset.alertAction;
+  if (action === "retry" || action === "refresh") { void loadAlertsPage({ force: true }); return; }
+  if (action === "save-settings") { void saveAlertSettings(); return; }
+  if (action === "toggle-feed") { void setAlertFeedStatus(actionEl.dataset.feedId, actionEl.dataset.nextStatus); return; }
+  if (action === "delete-feed") { void removeAlertFeed(actionEl.dataset.feedId, actionEl.dataset.feedLabel || ""); return; }
+});
+$("alertsPage").addEventListener("submit", (event) => {
+  if (!event.target.closest('[data-alert-action="add-feed"]')) return;
+  event.preventDefault();
+  void addAlertFeed();
 });
 
 // Reason / outcome modal interactions

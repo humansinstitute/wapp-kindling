@@ -35,12 +35,19 @@ import {
   releaseSchedulerLock,
   setSetting,
   updateSchedulerSettings,
+  createAlertFeed,
+  listAlertFeeds,
+  getAlertFeed,
+  updateAlertFeed,
+  deleteAlertFeed,
+  listAlertHits,
   type AccessRole,
   type AppSettings,
   type Message,
   type SchedulerSettings,
   type SchedulerSettingsPatch,
 } from "./db.ts";
+import { runAutomatedAlertLoop } from "./alerts.ts";
 import { buildPipelineTriggerRequest, startPreparedChatPipeline, type PipelineTriggerRequest } from "./pipeline.ts";
 import { splitPitchVariants } from "./outreach-variants.ts";
 
@@ -1416,6 +1423,50 @@ function selectEnrichmentDryRun(settings = getSchedulerSettings()) {
       sourceCount: Number(row.source_count ?? 0),
     },
     reason: `enriched floor is ${counts.enriched}/${settings.enrichedFloor}; company ${String(row.name)} is unqueued for enrichment`,
+  };
+}
+
+// Alert-origin enrichment (requestKind = 'alert') is time-sensitive: a fresh
+// hiring signal should enrich immediately, so these queue items are exempt from
+// the enrichedFloor gate that throttles routine batch enrichment. Returns the
+// same shape as selectEnrichmentDryRun's queued branch, or null when none due.
+function selectAlertEnrichmentDryRun(now = Date.now()) {
+  const queued = db.query(`
+    SELECT wq.*, c.id AS company_id, c.name, c.location, c.industry, c.website, c.data_ring,
+      c.duplicate_status, c.enrichment_status, c.confidence, c.profile_json, c.created_at AS company_created_at,
+      c.updated_at AS company_updated_at
+    FROM work_queue wq
+    JOIN companies c ON c.id = wq.target_id AND wq.target_type = 'company'
+    WHERE wq.kind = 'company_enrichment'
+      AND wq.status IN ('queued', 'failed')
+      AND json_extract(wq.context_json, '$.requestKind') = 'alert'
+      AND (wq.next_run_after_at IS NULL OR wq.next_run_after_at <= ?1)
+      AND COALESCE(wq.locked_by_run_id, '') = ''
+      AND c.data_ring NOT IN ('parked', 'contacted', 'processed')
+    ORDER BY wq.priority ASC, COALESCE(wq.next_run_after_at, 0) ASC, wq.updated_at ASC, lower(c.name) ASC
+    LIMIT 1
+  `).get(now) as Record<string, unknown> | null;
+  if (!queued) return { item: null, reason: "no due alert-origin enrichment work" };
+  return {
+    item: {
+      kind: "work_queue",
+      queueItem: mapWorkQueueItem(queued),
+      company: mapCompany({
+        id: queued.company_id,
+        name: queued.name,
+        location: queued.location,
+        industry: queued.industry,
+        website: queued.website,
+        data_ring: queued.data_ring,
+        duplicate_status: queued.duplicate_status,
+        enrichment_status: queued.enrichment_status,
+        confidence: queued.confidence,
+        profile_json: queued.profile_json,
+        created_at: queued.company_created_at,
+        updated_at: queued.company_updated_at,
+      }),
+    },
+    reason: `alert-origin enrichment ${String(queued.id)} is due for ${String(queued.name)} (floor-exempt)`,
   };
 }
 
@@ -4213,6 +4264,20 @@ function createKindlingRun(input: {
   return id;
 }
 
+// A company is "processed" (already engaged) once we've contacted or rejected
+// it — i.e. it sits in a terminal ring or carries any outreach_results row. The
+// Company List "hide processed" toggle removes these so the user can focus on
+// fresh, un-actioned targets (e.g. only high-fit companies not yet worked).
+function engagedExclusionClause(alias = "companies") {
+  return `${alias}.data_ring NOT IN ('processed', 'contacted')`
+    + ` AND NOT EXISTS (SELECT 1 FROM outreach_results o WHERE o.company_id = ${alias}.id)`;
+}
+
+function wantsHideProcessed(filters: URLSearchParams | null) {
+  const value = filters?.get("hideProcessed");
+  return value === "1" || value === "true";
+}
+
 function buildCompanyFilterQuery(filters: URLSearchParams | null = null) {
   const clauses: string[] = [];
   const values: string[] = [];
@@ -4241,6 +4306,7 @@ function buildCompanyFilterQuery(filters: URLSearchParams | null = null) {
   }
   if (filters?.get("hasWebsite") === "yes") clauses.push("website IS NOT NULL AND website != ''");
   if (filters?.get("hasWebsite") === "no") clauses.push("(website IS NULL OR website = '')");
+  if (wantsHideProcessed(filters)) clauses.push(engagedExclusionClause("companies"));
   // Fit band, derived from a company's BEST service-fit assessment score.
   // "not_scored" = no assessment row at all.
   const band = String(filters?.get("band") || "").toLowerCase();
@@ -4253,7 +4319,10 @@ function buildCompanyFilterQuery(filters: URLSearchParams | null = null) {
   return { where, values };
 }
 
-function companyBandCounts() {
+function companyBandCounts(filters: URLSearchParams | null = null) {
+  // The band tab counts mirror the active "hide processed" toggle so, e.g., the
+  // High Fit tab shows the number of fresh un-actioned high-fit targets.
+  const where = wantsHideProcessed(filters) ? `WHERE ${engagedExclusionClause("c")}` : "";
   const row = db.query(`
     SELECT
       SUM(CASE WHEN m.maxscore >= 75 THEN 1 ELSE 0 END) AS high,
@@ -4266,6 +4335,7 @@ function companyBandCounts() {
       FROM service_fit_assessments
       GROUP BY company_id
     ) m ON m.company_id = c.id
+    ${where}
   `).get() as { high: number; medium: number; low: number; not_scored: number } | null;
   return {
     high: Number(row?.high ?? 0),
@@ -7232,7 +7302,10 @@ async function runAutomatedEnrichmentLoop() {
   }
   const concurrency = roleConcurrencyState("enrich_company", settings);
   if (concurrency.blockedReason) return null;
-  const selection = selectEnrichmentDryRun(settings);
+  // Alert-origin work jumps the queue and bypasses the enrichedFloor gate; fall
+  // back to the normal floor-gated selection when there is no hot alert waiting.
+  const alertSelection = selectAlertEnrichmentDryRun(now);
+  const selection = alertSelection.item ? alertSelection : selectEnrichmentDryRun(settings);
   if (!selection.item) return null;
   const item = selection.item;
   const decision = {
@@ -7429,6 +7502,11 @@ export async function runAutomatedProspectingLoop() {
   if (scoring) results.push({ action: "scoring", ...scoring });
   const outreach = await runAutomatedOutreachLoop();
   if (outreach) results.push({ action: "outreach", ...outreach });
+  const alerts = await runAutomatedAlertLoop().catch((error) => {
+    console.error("automated alert loop failed", error);
+    return null;
+  });
+  if (alerts) results.push(alerts);
   if (!results.length) return null;
   if (results.length === 1) return results[0];
   return { action: "multi", count: results.length, results };
@@ -8505,7 +8583,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
       returned: companies.length,
       limit,
       offset,
-      ...(withBandCounts ? { bandCounts: companyBandCounts() } : {}),
+      ...(withBandCounts ? { bandCounts: companyBandCounts(url.searchParams) } : {}),
     });
   }
 
@@ -9206,6 +9284,73 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
       persisted: persisted.assessments.length === 1 ? persisted.assessment : persisted.assessments,
       assessments: persisted.assessments,
     });
+  }
+
+  if (pathname === "/api/kindling/alert-feeds" && req.method === "GET") {
+    const session = requireSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    return json({ feeds: listAlertFeeds() });
+  }
+
+  if (pathname === "/api/kindling/alert-feeds" && req.method === "POST") {
+    const session = requireEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const body = await readJson(req);
+    const feedUrl = String(body.feedUrl ?? "").trim();
+    if (!feedUrl) return json({ error: "feedUrl is required" }, 400);
+    try {
+      new URL(feedUrl);
+    } catch {
+      return json({ error: "feedUrl must be a valid URL" }, 400);
+    }
+    const feed = createAlertFeed({
+      label: String(body.label ?? "").trim() || "Untitled alert",
+      feedUrl,
+      queryNote: String(body.queryNote ?? ""),
+      signalType: body.signalType ? String(body.signalType) : undefined,
+      defaultStrength: body.defaultStrength ? String(body.defaultStrength) : undefined,
+      segmentId: body.segmentId ? String(body.segmentId) : null,
+      status: body.status ? String(body.status) as "active" | "paused" | "stalled" : undefined,
+    });
+    return json({ feed }, 201);
+  }
+
+  const alertFeedMatch = pathname.match(/^\/api\/kindling\/alert-feeds\/([^/]+)$/);
+  if (alertFeedMatch && req.method === "PATCH") {
+    const session = requireEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const id = decodeURIComponent(alertFeedMatch[1]!);
+    if (!getAlertFeed(id)) return json({ error: "alert feed not found" }, 404);
+    const body = await readJson(req);
+    const feed = updateAlertFeed(id, {
+      label: body.label !== undefined ? String(body.label) : undefined,
+      feedUrl: body.feedUrl !== undefined ? String(body.feedUrl) : undefined,
+      queryNote: body.queryNote !== undefined ? String(body.queryNote) : undefined,
+      signalType: body.signalType !== undefined ? String(body.signalType) : undefined,
+      defaultStrength: body.defaultStrength !== undefined ? String(body.defaultStrength) : undefined,
+      segmentId: body.segmentId !== undefined ? (body.segmentId ? String(body.segmentId) : null) : undefined,
+      status: body.status !== undefined ? String(body.status) as "active" | "paused" | "stalled" : undefined,
+    });
+    return json({ feed });
+  }
+
+  if (alertFeedMatch && req.method === "DELETE") {
+    const session = requireEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const id = decodeURIComponent(alertFeedMatch[1]!);
+    const removed = deleteAlertFeed(id);
+    return removed ? json({ ok: true }) : json({ error: "alert feed not found" }, 404);
+  }
+
+  if (pathname === "/api/kindling/alert-hits" && req.method === "GET") {
+    const session = requireSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    const hits = listAlertHits({
+      feedId: url.searchParams.get("feedId") ?? undefined,
+      status: url.searchParams.get("status") ?? undefined,
+      limit: url.searchParams.get("limit") ? Number(url.searchParams.get("limit")) : undefined,
+    });
+    return json({ hits });
   }
 
   if (pathname === "/api/chats" && req.method === "GET") {
