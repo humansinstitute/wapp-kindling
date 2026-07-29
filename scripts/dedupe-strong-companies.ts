@@ -28,6 +28,16 @@ function parseJsonObject(value: unknown): Row {
   }
 }
 
+function parseJsonArray(value: unknown): unknown[] {
+  if (typeof value !== "string" || !value.trim()) return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
 function normaliseName(value: unknown) {
   return text(value)
     .toLowerCase()
@@ -111,6 +121,10 @@ function dataRingRank(value: unknown) {
     ranked: 2,
     scored: 3,
     enhanced: 4,
+    stale: 4,
+    outreach_ready: 5,
+    contacted: 6,
+    processed: 6,
   }[text(value)] ?? 0;
 }
 
@@ -122,21 +136,39 @@ function enrichmentRank(value: unknown) {
   }[text(value)] ?? 0;
 }
 
-function chooseCanonical(rows: Row[], stats: Map<string, { sources: number; profiles: number }>) {
+type CompanyStats = {
+  sources: number;
+  profiles: number;
+  outreach: number;
+  feedback: number;
+  alerts: number;
+};
+
+function emptyStats(): CompanyStats {
+  return { sources: 0, profiles: 0, outreach: 0, feedback: 0, alerts: 0 };
+}
+
+function chooseCanonical(rows: Row[], stats: Map<string, CompanyStats>) {
   return rows
     .slice()
     .sort((a, b) => {
-      const aStats = stats.get(String(a.id)) ?? { sources: 0, profiles: 0 };
-      const bStats = stats.get(String(b.id)) ?? { sources: 0, profiles: 0 };
-      const scoreA = enrichmentRank(a.enrichment_status) * 1_000_000
+      const aStats = stats.get(String(a.id)) ?? emptyStats();
+      const bStats = stats.get(String(b.id)) ?? emptyStats();
+      const scoreA = (aStats.outreach > 0 ? 1_000_000_000 : 0)
+        + enrichmentRank(a.enrichment_status) * 1_000_000
         + dataRingRank(a.data_ring) * 100_000
         + aStats.profiles * 10_000
         + aStats.sources * 100
+        + aStats.feedback * 10
+        + aStats.alerts
         + numberValue(a.confidence);
-      const scoreB = enrichmentRank(b.enrichment_status) * 1_000_000
+      const scoreB = (bStats.outreach > 0 ? 1_000_000_000 : 0)
+        + enrichmentRank(b.enrichment_status) * 1_000_000
         + dataRingRank(b.data_ring) * 100_000
         + bStats.profiles * 10_000
         + bStats.sources * 100
+        + bStats.feedback * 10
+        + bStats.alerts
         + numberValue(b.confidence);
       return scoreB - scoreA
         || numberValue(a.created_at) - numberValue(b.created_at)
@@ -237,6 +269,7 @@ function mergeCompanySegments(db: Database, canonicalId: string, duplicateIds: s
         created_at = MIN(company_segments.created_at, excluded.created_at)
     `).run(canonicalId, row.segment_id, row.confidence ?? 0, text(row.sources, "dedupe"), row.created_at ?? Date.now());
   }
+  return rows.length;
 }
 
 function updateSimpleCompanyRefs(db: Database, table: string, canonicalId: string, duplicateIds: string[]) {
@@ -256,22 +289,72 @@ function updateUniqueCompanyRefs(db: Database, input: {
   const ids = input.duplicateIds;
   if (ids.length === 0) return { updated: 0, deleted: 0 };
   let deleted = 0;
+  let updated = 0;
+
+  // Get all rows from duplicate companies
   const rows = db.query(`SELECT * FROM ${input.table} WHERE company_id IN (${ids.map(() => "?").join(",")})`).all(...ids) as Row[];
+
+  // Group by unique column value to find conflicts
+  const grouped = new Map<string, Row[]>();
   for (const row of rows) {
+    const key = String(row[input.uniqueColumn]);
+    const list = grouped.get(key) ?? [];
+    list.push(row);
+    grouped.set(key, list);
+  }
+
+  // Process each unique column value group
+  for (const [uniqueValue, groupRows] of grouped) {
+    // Check if canonical already has an entry for this unique value
     const existing = db.query(`SELECT * FROM ${input.table} WHERE company_id = ?1 AND ${input.uniqueColumn} = ?2`)
-      .get(input.canonicalId, row[input.uniqueColumn]) as Row | null;
-    if (!existing) continue;
-    const keepDuplicate = input.scoreColumn
-      ? numberValue(row[input.scoreColumn]) > numberValue(existing[input.scoreColumn])
-      : false;
-    if (keepDuplicate) {
-      db.query(`DELETE FROM ${input.table} WHERE id = ?1`).run(existing.id);
+      .get(input.canonicalId, uniqueValue) as Row | null;
+
+    if (!existing) {
+      // No conflict: keep the best duplicate row and update it to canonical
+      const best = groupRows.slice().sort((a, b) => {
+        if (input.scoreColumn) {
+          return numberValue(b[input.scoreColumn]) - numberValue(a[input.scoreColumn]);
+        }
+        return 0;
+      })[0]!;
+      db.query(`UPDATE ${input.table} SET company_id = ?1 WHERE id = ?2`).run(input.canonicalId, best.id);
+      updated += 1;
+      // Delete the rest
+      for (const row of groupRows) {
+        if (row.id !== best.id) {
+          db.query(`DELETE FROM ${input.table} WHERE id = ?1`).run(row.id);
+          deleted += 1;
+        }
+      }
     } else {
-      db.query(`DELETE FROM ${input.table} WHERE id = ?1`).run(row.id);
-      deleted += 1;
+      // Conflict exists: keep canonical or best duplicate, delete the rest
+      const allRows = [existing, ...groupRows];
+      const best = allRows.slice().sort((a, b) => {
+        // Canonical always wins if no score column
+        if (!input.scoreColumn) {
+          if (String(a.company_id) === input.canonicalId) return -1;
+          if (String(b.company_id) === input.canonicalId) return 1;
+          return 0;
+        }
+        return numberValue(b[input.scoreColumn]) - numberValue(a[input.scoreColumn]);
+      })[0]!;
+
+      // Delete all except the best
+      for (const row of allRows) {
+        if (row.id !== best.id) {
+          db.query(`DELETE FROM ${input.table} WHERE id = ?1`).run(row.id);
+          deleted += 1;
+        }
+      }
+
+      // If best is not canonical, update it
+      if (String(best.company_id) !== input.canonicalId) {
+        db.query(`UPDATE ${input.table} SET company_id = ?1 WHERE id = ?2`).run(input.canonicalId, best.id);
+        updated += 1;
+      }
     }
   }
-  const updated = updateSimpleCompanyRefs(db, input.table, input.canonicalId, ids);
+
   return { updated, deleted };
 }
 
@@ -293,6 +376,7 @@ function updateServiceFitRefs(db: Database, canonicalId: string, duplicateIds: s
       || (numberValue(row.score) === numberValue(existing.score) && numberValue(row.confidence) > numberValue(existing.confidence));
     if (keepDuplicate) {
       db.query("DELETE FROM service_fit_assessments WHERE id = ?1").run(existing.id);
+      deleted += 1;
     } else {
       db.query("DELETE FROM service_fit_assessments WHERE id = ?1").run(row.id);
       deleted += 1;
@@ -312,6 +396,83 @@ function updateWorkQueue(db: Database, canonicalId: string, duplicateIds: string
     .run(canonicalId, Date.now(), ...duplicateIds).changes;
 }
 
+function outreachRank(row: Row) {
+  const stateRank: Record<string, number> = {
+    meeting: 6,
+    waiting: 5,
+    on_deck: 4,
+    rejected: 3,
+    no_response: 2,
+  };
+  return (stateRank[text(row.state)] ?? 1) * 1_000_000_000
+    + numberValue(row.response_at) * 100
+    + numberValue(row.outreach_at) * 10
+    + numberValue(row.updated_at);
+}
+
+function mergeOutreachResults(db: Database, canonicalId: string, duplicateIds: string[]) {
+  const ids = [canonicalId, ...duplicateIds];
+  const rows = db.query(`SELECT * FROM outreach_results WHERE company_id IN (${ids.map(() => "?").join(",")})`).all(...ids) as Row[];
+  if (rows.length === 0) return { updated: 0, deleted: 0 };
+  const best = rows.slice().sort((a, b) => outreachRank(b) - outreachRank(a))[0]!;
+  db.query(`DELETE FROM outreach_results WHERE company_id IN (${ids.map(() => "?").join(",")})`).run(...ids);
+  db.query(`
+    INSERT INTO outreach_results(
+      id, company_id, state, channel, outreach_at, response_at, outcome, reason, reason_category,
+      dismissed_from, fit_band, fit_score, notes, prev_data_ring, created_at, updated_at
+    )
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+  `).run(
+    best.id,
+    canonicalId,
+    text(best.state, "waiting"),
+    best.channel ?? null,
+    best.outreach_at ?? null,
+    best.response_at ?? null,
+    best.outcome ?? null,
+    best.reason ?? null,
+    best.reason_category ?? null,
+    best.dismissed_from ?? null,
+    best.fit_band ?? null,
+    best.fit_score ?? null,
+    best.notes ?? null,
+    best.prev_data_ring ?? null,
+    best.created_at ?? Date.now(),
+    best.updated_at ?? Date.now(),
+  );
+  return {
+    updated: String(best.company_id) === canonicalId && rows.length === 1 ? 0 : 1,
+    deleted: rows.length - 1,
+  };
+}
+
+function mergeCompanyFeedback(db: Database, canonicalId: string, duplicateIds: string[]) {
+  const ids = [canonicalId, ...duplicateIds];
+  const rows = db.query(`SELECT * FROM company_feedback WHERE company_id IN (${ids.map(() => "?").join(",")})`).all(...ids) as Row[];
+  if (rows.length === 0) return { updated: 0, deleted: 0 };
+  const best = rows.slice()
+    .sort((a, b) => numberValue(b.updated_at) - numberValue(a.updated_at) || numberValue(b.created_at) - numberValue(a.created_at))[0]!;
+  const labels = uniqueTexts(rows.flatMap((row) => parseJsonArray(row.labels_json)));
+  const notes = uniqueTexts(rows.map((row) => row.note)).join(" | ");
+  db.query(`DELETE FROM company_feedback WHERE company_id IN (${ids.map(() => "?").join(",")})`).run(...ids);
+  db.query(`
+    INSERT INTO company_feedback(company_id, verdict, labels_json, note, actor, created_at, updated_at)
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+  `).run(
+    canonicalId,
+    best.verdict ?? null,
+    JSON.stringify(labels),
+    notes || best.note || null,
+    best.actor ?? null,
+    Math.min(...rows.map((row) => numberValue(row.created_at, Date.now()))),
+    Math.max(...rows.map((row) => numberValue(row.updated_at, Date.now()))),
+  );
+  return {
+    updated: String(best.company_id) === canonicalId && rows.length === 1 ? 0 : 1,
+    deleted: rows.length - 1,
+  };
+}
+
 const db = new Database(dbPath);
 db.exec("PRAGMA foreign_keys = ON");
 db.exec("PRAGMA busy_timeout = 10000");
@@ -319,12 +480,18 @@ db.exec("PRAGMA busy_timeout = 10000");
 const companies = db.query("SELECT * FROM companies").all() as Row[];
 const sourceCounts = countByCompany(db, "sources");
 const profileCounts = countByCompany(db, "customer_profile_versions");
-const stats = new Map<string, { sources: number; profiles: number }>();
+const outreachCounts = countByCompany(db, "outreach_results");
+const feedbackCounts = countByCompany(db, "company_feedback");
+const alertCounts = countByCompany(db, "alert_hits");
+const stats = new Map<string, CompanyStats>();
 for (const company of companies) {
   const id = String(company.id);
   stats.set(id, {
     sources: sourceCounts.get(id) ?? 0,
     profiles: profileCounts.get(id) ?? 0,
+    outreach: outreachCounts.get(id) ?? 0,
+    feedback: feedbackCounts.get(id) ?? 0,
+    alerts: alertCounts.get(id) ?? 0,
   });
 }
 
@@ -364,6 +531,9 @@ const summary: Row = {
     signals: 0,
     enrichmentRequests: 0,
     outreachDrafts: 0,
+    outreachResults: { updated: 0, deleted: 0 },
+    companyFeedback: { updated: 0, deleted: 0 },
+    alertHits: 0,
     rankingItems: { updated: 0, deleted: 0 },
     serviceFitAssessments: { updated: 0, deleted: 0 },
     targetListItems: { updated: 0, deleted: 0 },
@@ -384,16 +554,19 @@ try {
     const rows = companies.filter((company) => String(company.id) === item.canonicalId || item.duplicateIds.includes(String(company.id)));
     const canonical = rows.find((row) => String(row.id) === item.canonicalId)!;
     mergeCompanyRow(db, canonical, rows);
-    mergeCompanySegments(db, item.canonicalId, item.duplicateIds);
+    (summary.merged as Row).companySegments = numberValue((summary.merged as Row).companySegments) + mergeCompanySegments(db, item.canonicalId, item.duplicateIds);
 
     (summary.merged as Row).sources = numberValue((summary.merged as Row).sources) + updateSimpleCompanyRefs(db, "sources", item.canonicalId, item.duplicateIds);
     (summary.merged as Row).customerProfileVersions = numberValue((summary.merged as Row).customerProfileVersions) + updateSimpleCompanyRefs(db, "customer_profile_versions", item.canonicalId, item.duplicateIds);
     (summary.merged as Row).signals = numberValue((summary.merged as Row).signals) + updateSimpleCompanyRefs(db, "signals", item.canonicalId, item.duplicateIds);
     (summary.merged as Row).enrichmentRequests = numberValue((summary.merged as Row).enrichmentRequests) + updateSimpleCompanyRefs(db, "enrichment_requests", item.canonicalId, item.duplicateIds);
     (summary.merged as Row).outreachDrafts = numberValue((summary.merged as Row).outreachDrafts) + updateSimpleCompanyRefs(db, "outreach_drafts", item.canonicalId, item.duplicateIds);
+    (summary.merged as Row).alertHits = numberValue((summary.merged as Row).alertHits) + updateSimpleCompanyRefs(db, "alert_hits", item.canonicalId, item.duplicateIds);
     (summary.merged as Row).activities = numberValue((summary.merged as Row).activities) + updateCompanyActivities(db, item.canonicalId, item.duplicateIds);
     (summary.merged as Row).workQueue = numberValue((summary.merged as Row).workQueue) + updateWorkQueue(db, item.canonicalId, item.duplicateIds);
 
+    const outreach = mergeOutreachResults(db, item.canonicalId, item.duplicateIds);
+    const feedback = mergeCompanyFeedback(db, item.canonicalId, item.duplicateIds);
     const ranking = updateUniqueCompanyRefs(db, {
       table: "ranking_items",
       uniqueColumn: "ranking_run_id",
@@ -409,6 +582,14 @@ try {
       scoreColumn: "score",
     });
     const fit = updateServiceFitRefs(db, item.canonicalId, item.duplicateIds);
+    (summary.merged as Row).outreachResults = {
+      updated: numberValue(((summary.merged as Row).outreachResults as Row).updated) + outreach.updated,
+      deleted: numberValue(((summary.merged as Row).outreachResults as Row).deleted) + outreach.deleted,
+    };
+    (summary.merged as Row).companyFeedback = {
+      updated: numberValue(((summary.merged as Row).companyFeedback as Row).updated) + feedback.updated,
+      deleted: numberValue(((summary.merged as Row).companyFeedback as Row).deleted) + feedback.deleted,
+    };
     (summary.merged as Row).rankingItems = {
       updated: numberValue(((summary.merged as Row).rankingItems as Row).updated) + ranking.updated,
       deleted: numberValue(((summary.merged as Row).rankingItems as Row).deleted) + ranking.deleted,

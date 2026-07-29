@@ -571,6 +571,13 @@ describe("Kindling API contracts", () => {
         autopilotUrl: "https://rick.runwingman.com",
       },
     });
+    await api("/api/kindling/scheduler-settings", {
+      method: "PATCH",
+      body: {
+        agents: { scan_target_list: "codex" },
+        models: { scan_target_list: "gpt-5" },
+      },
+    });
 
     const { res, payload } = await api("/api/kindling/target-scans", {
       method: "POST",
@@ -578,6 +585,10 @@ describe("Kindling API contracts", () => {
     });
     expect(res.status).toBe(202);
     expect(payload.triggerRequest.url).toBe("https://rick.runwingman.com/api/pipelines/triggers/http/kindling-scan-target-list");
+    expect(payload.triggerRequest.body.input).toMatchObject({
+      agent: "codex",
+      model: "gpt-5",
+    });
   });
 
   test("accepts documented service offering webhook callback", async () => {
@@ -1437,6 +1448,152 @@ describe("Kindling API contracts", () => {
     expect(count.count).toBe(1);
   });
 
+  test("scan write matches an existing company across website variants instead of duplicating it", async () => {
+    const now = Date.now();
+    db.query(`
+      INSERT INTO companies(id, name, location, industry, website, data_ring, duplicate_status, enrichment_status, confidence, profile_json, created_at, updated_at)
+      VALUES ('scan-variant-existing', 'Variant Co', 'Perth, WA', 'Accounting', 'https://variant.example', 'found', 'unknown', 'not_started', 0.4, '{}', ?1, ?1)
+    `).run(now);
+    db.query("INSERT INTO discovery_jobs(id, industry, location, status, created_at, updated_at) VALUES ('scan-variant-request', 'Accounting', 'Perth', 'queued', 1, 1)").run();
+    seedKindlingRun("scan_target_list", "scan-variant-request", "scan-variant-token");
+    const write = await api("/api/kindling/pipeline-write/target-scan", {
+      method: "POST",
+      headers: { "x-kindling-pipeline-token": "scan-variant-token" },
+      body: {
+        requestId: "scan-variant-request",
+        result: {
+          outputKind: "target_scan_result",
+          industry: "Accounting",
+          location: "Perth",
+          companies: [{ name: "Variant Co", website: "https://www.variant.example/", location: "Subiaco, WA", confidence: 0.7 }],
+        },
+      },
+    });
+    expect(write.res.status).toBe(200);
+    const count = db.query("SELECT COUNT(*) AS count FROM companies").get() as { count: number };
+    expect(count.count).toBe(1);
+    const row = db.query("SELECT location, duplicate_status FROM companies WHERE id = 'scan-variant-existing'").get() as Record<string, unknown>;
+    expect(String(row.location)).toBe("Subiaco, WA");
+    expect(String(row.duplicate_status)).not.toBe("duplicate");
+  });
+
+  test("manual company create with the same normalized name and website is marked duplicate", async () => {
+    const now = Date.now();
+    db.query(`
+      INSERT INTO companies(id, name, location, industry, website, data_ring, duplicate_status, enrichment_status, confidence, profile_json, created_at, updated_at)
+      VALUES ('manual-original', 'Manual Co', 'Perth', 'Advisory', 'https://manual.example', 'found', 'unknown', 'not_started', 0.4, '{}', ?1, ?1)
+    `).run(now - 100_000);
+    const created = await api("/api/kindling/companies", {
+      method: "POST",
+      body: { name: "Manual Co", website: "https://www.manual.example/", location: "Perth" },
+    });
+    expect(created.res.status).toBe(201);
+    const newId = String((created.payload.company as Record<string, unknown>).id);
+    expect(newId).not.toBe("manual-original");
+    const dupe = db.query("SELECT duplicate_status FROM companies WHERE id = ?1").get(newId) as Record<string, unknown>;
+    expect(String(dupe.duplicate_status)).toBe("duplicate");
+    const keeper = db.query("SELECT duplicate_status FROM companies WHERE id = 'manual-original'").get() as Record<string, unknown>;
+    expect(String(keeper.duplicate_status)).not.toBe("duplicate");
+  });
+
+  test("NIP-98 company create with the same normalized name and website is marked duplicate", async () => {
+    const now = Date.now();
+    db.query(`
+      INSERT INTO companies(id, name, location, industry, website, data_ring, duplicate_status, enrichment_status, confidence, profile_json, created_at, updated_at)
+      VALUES ('nip98-original', 'Agent Co', 'Perth', 'Advisory', 'http://agent.example/', 'found', 'unknown', 'not_started', 0.4, '{}', ?1, ?1)
+    `).run(now - 100_000);
+    const body = { name: "Agent Co", website: "https://www.agent.example", dataRing: "found" };
+    const created = await api("/api/nip98/companies", {
+      method: "POST",
+      headers: nip98Headers("/api/nip98/companies", "POST", body),
+      body,
+    });
+    expect(created.res.status).toBe(201);
+    const newId = String((created.payload.company as Record<string, unknown>).id);
+    expect(newId).not.toBe("nip98-original");
+    const dupe = db.query("SELECT duplicate_status FROM companies WHERE id = ?1").get(newId) as Record<string, unknown>;
+    expect(String(dupe.duplicate_status)).toBe("duplicate");
+    const keeper = db.query("SELECT duplicate_status FROM companies WHERE id = 'nip98-original'").get() as Record<string, unknown>;
+    expect(String(keeper.duplicate_status)).not.toBe("duplicate");
+  });
+
+  test("website edit that collides with another copy marks that copy duplicate and keeps the enriched original", async () => {
+    const now = Date.now();
+    db.query(`
+      INSERT INTO companies(id, name, location, industry, website, data_ring, duplicate_status, enrichment_status, confidence, profile_json, created_at, updated_at)
+      VALUES
+        ('patch-original', 'Patch Co', 'Perth', 'Advisory', 'https://patch-old.example', 'enhanced', 'unknown', 'complete', 0.8, '{}', ?1, ?1),
+        ('patch-copy', 'Patch Co', 'Perth', 'Advisory', 'https://patch.example', 'found', 'unknown', 'not_started', 0.4, '{}', ?2, ?2)
+    `).run(now - 100_000, now);
+    const patched = await api("/api/kindling/companies/patch-original", {
+      method: "PATCH",
+      body: { website: "https://www.patch.example/" },
+    });
+    expect(patched.res.status).toBe(200);
+    const original = db.query("SELECT website, duplicate_status FROM companies WHERE id = 'patch-original'").get() as Record<string, unknown>;
+    expect(String(original.website)).toBe("https://www.patch.example/");
+    expect(String(original.duplicate_status)).not.toBe("duplicate");
+    const copy = db.query("SELECT duplicate_status FROM companies WHERE id = 'patch-copy'").get() as Record<string, unknown>;
+    expect(String(copy.duplicate_status)).toBe("duplicate");
+    const activity = db.query(`
+      SELECT actor, action_type FROM activities
+      WHERE target_type = 'company' AND target_id = 'patch-copy' AND action_type = 'marked_duplicate'
+    `).get() as Record<string, unknown>;
+    expect(String(activity.actor)).toBe("user");
+  });
+
+  test("duplicate companies never appear in the top-target list", async () => {
+    const now = Date.now();
+    db.query("INSERT INTO market_profiles(id, name, current_version_id, created_at, updated_at) VALUES ('profile-1', 'Adapt profile', 'profile-version-1', ?1, ?1)")
+      .run(now);
+    db.query(`
+      INSERT INTO market_profile_versions(
+        id, profile_id, version_number, structured_json, summary, rationale, source_references_json, created_at
+      )
+      VALUES ('profile-version-1', 'profile-1', 1, '{}', 'Adapt services', 'Initial test profile', '[]', ?1)
+    `).run(now);
+    db.query(`
+      INSERT INTO service_offerings(
+        id, market_profile_version_id, key, name, variant_key, structured_json, status, created_at, updated_at
+      )
+      VALUES ('service-dedupe', 'profile-version-1', 'ai_consulting', 'AI consulting', '', '{}', 'active', ?1, ?1)
+    `).run(now);
+    db.query(`
+      INSERT INTO companies(
+        id, name, location, industry, website, data_ring, duplicate_status, enrichment_status, confidence, profile_json, created_at, updated_at
+      )
+      VALUES
+        ('target-unique', 'Unique Target Co', 'Perth', 'Advisory', 'https://unique-target.example', 'scored', 'unique', 'complete', 0.8, '{}', ?1, ?1),
+        ('target-dupe', 'Duplicate Target Co', 'Perth', 'Advisory', 'https://dupe-target.example', 'scored', 'duplicate', 'complete', 0.8, '{}', ?1, ?1)
+    `).run(now);
+    db.query(`
+      INSERT INTO kindling_pipeline_runs(
+        id, role_key, local_request_id, status, webhook_token, trigger_payload_json, result_payload_json, created_at, updated_at
+      )
+      VALUES
+        ('run-unique', 'score_company_service_fit', 'request-unique', 'complete', 'token-unique', '{}', '{}', ?1, ?1),
+        ('run-dupe', 'score_company_service_fit', 'request-dupe', 'complete', 'token-dupe', '{}', '{}', ?1, ?1)
+    `).run(now);
+    db.query(`
+      INSERT INTO service_fit_assessments(
+        id, company_id, service_offering_id, market_profile_version_id, score, band, confidence,
+        drivers_json, fit_explanation, evidence_json, caveats_json, recommended_action,
+        source_run_id, assessment_json, created_at, updated_at
+      )
+      VALUES
+        ('assessment-unique', 'target-unique', 'service-dedupe', 'profile-version-1', 80, 'high', 0.8, '[]', 'Fit.', '[]', '[]', 'Review', 'run-unique', '{}', ?1, ?1),
+        ('assessment-dupe', 'target-dupe', 'service-dedupe', 'profile-version-1', 90, 'high', 0.9, '[]', 'Fit.', '[]', '[]', 'Review', 'run-dupe', '{}', ?1, ?1)
+    `).run(now);
+    const rebuilt = await api("/api/kindling/top-targets/rebuild", {
+      method: "POST",
+      body: { reason: "Duplicate exclusion test" },
+    });
+    expect(rebuilt.res.status).toBe(201);
+    const companyIds = (rebuilt.payload.targets as Array<{ companyId: string }>).map((target) => target.companyId);
+    expect(companyIds).toContain("target-unique");
+    expect(companyIds).not.toContain("target-dupe");
+  });
+
   test("keeps planned scan strategies separate from attempted strategy history", async () => {
     db.query("INSERT INTO discovery_jobs(id, industry, location, status, created_at, updated_at) VALUES ('scan-planned-request', 'Accounting', 'Perth', 'queued', 1, 1)").run();
     seedKindlingRun("scan_target_list", "scan-planned-request", "scan-planned-token");
@@ -1808,6 +1965,10 @@ describe("Kindling API contracts", () => {
           enrichmentMs: 1_800_000,
           outreachMs: 900_000,
         },
+        agents: {
+          scan_target_list: "codex",
+          enrich_company: "claude",
+        },
       },
     });
     expect(patched.res.status).toBe(200);
@@ -1827,6 +1988,10 @@ describe("Kindling API contracts", () => {
         acquisitionMs: 3_600_000,
         enrichmentMs: 1_800_000,
       },
+      agents: {
+        scan_target_list: "codex",
+        enrich_company: "claude",
+      },
     });
 
     const persisted = getSchedulerSettings();
@@ -1836,6 +2001,10 @@ describe("Kindling API contracts", () => {
       enrichedFloor: 75,
       topTargetCount: 80,
       outreachTargetCount: 55,
+      agents: {
+        scan_target_list: "codex",
+        enrich_company: "claude",
+      },
     });
     const row = db.query("SELECT target_pool_size, enriched_floor, top_target_count, outreach_target_count FROM scheduler_settings WHERE id = 'default'")
       .get() as Record<string, unknown>;

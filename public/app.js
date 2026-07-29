@@ -2324,6 +2324,13 @@ const AUTOMATION_MODELS = [
   { value: "claude-sonnet-4-6", label: "Sonnet" },
   { value: "claude-opus-4-8", label: "Opus" },
 ];
+const AUTOMATION_AGENTS = [
+  { value: "", label: "Default (OpenCode)" },
+  { value: "codex", label: "Codex" },
+  { value: "claude", label: "Claude" },
+  { value: "goose", label: "Goose" },
+  { value: "opencode", label: "OpenCode" },
+];
 
 function renderAutomationCard() {
   const body = $("automationBody");
@@ -2332,9 +2339,12 @@ function renderAutomationCard() {
   const canEdit = Boolean(state.me?.access?.edit);
   if (!s) { body.innerHTML = "<p>Scheduler settings unavailable.</p>"; return; }
   const conc = s.perRoleConcurrency || {};
+  const agents = s.agents || {};
   const models = s.models || {};
   const cooldowns = s.cooldowns || {};
   const modelOpts = (sel) => AUTOMATION_MODELS
+    .map((o) => `<option value="${o.value}" ${(sel || "") === o.value ? "selected" : ""}>${o.label}</option>`).join("");
+  const agentOpts = (sel) => AUTOMATION_AGENTS
     .map((o) => `<option value="${o.value}" ${(sel || "") === o.value ? "selected" : ""}>${o.label}</option>`).join("");
   const rows = AUTOMATION_ACTIONS.map((a) => `
     <div class="automationRow">
@@ -2342,6 +2352,7 @@ function renderAutomationCard() {
       <div class="automationFields">
         <label><span>Concurrency</span><input type="number" min="1" max="20" id="auto_conc_${a.key}" value="${Number(conc[a.role] || 1)}"/></label>
         <label><span>Every (min)</span><input type="number" min="0" id="auto_cd_${a.key}" value="${Math.round(Number(cooldowns[a.cooldown] || 0) / 60000)}"/></label>
+        <label><span>Agent</span><select id="auto_agent_${a.key}">${agentOpts(agents[a.role])}</select></label>
         <label><span>Model</span><select id="auto_model_${a.key}">${modelOpts(models[a.role])}</select></label>
       </div>
     </div>`).join("");
@@ -2362,12 +2373,15 @@ function renderAutomationCard() {
 async function saveAutomation() {
   const s = state.schedulerSettings || {};
   const conc = { ...(s.perRoleConcurrency || {}) };
+  const agents = { ...(s.agents || {}) };
   const models = { ...(s.models || {}) };
   const cooldowns = { ...(s.cooldowns || {}) };
   for (const a of AUTOMATION_ACTIONS) {
     conc[a.role] = Math.max(1, Number($(`auto_conc_${a.key}`).value || 1));
     cooldowns[a.cooldown] = Math.max(0, Number($(`auto_cd_${a.key}`).value || 0)) * 60000;
+    const agent = $(`auto_agent_${a.key}`).value;
     const m = $(`auto_model_${a.key}`).value;
+    for (const r of a.roles) agents[r] = agent;
     for (const r of a.roles) models[r] = m;
   }
   try {
@@ -2385,6 +2399,7 @@ async function saveAutomation() {
         outreachTargetCount: Number($("auto_outreachtarget").value || 0),
         perRoleConcurrency: conc,
         cooldowns,
+        agents,
         models,
       }),
     });

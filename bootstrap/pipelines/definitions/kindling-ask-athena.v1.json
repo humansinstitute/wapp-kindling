@@ -13,8 +13,7 @@
   ],
   "input": {
     "source": "chat-wapp",
-    "agent": "claude",
-    "workingDirectory": "/workspace/athena-kindling",
+    "agent": "opencode",
     "chatId": "",
     "userPubkey": "",
     "userNpub": "",
@@ -33,7 +32,7 @@
       "description": "Answer the user's question read-only from the repo, then POST the answer to the chat webhook.",
       "type": "agent",
       "agent": "$.agent",
-      "directory": "$.workingDirectory",
+      "directory": "/workspace/athena-kindling",
       "timeoutMs": 600000,
       "input": {
         "pick": {

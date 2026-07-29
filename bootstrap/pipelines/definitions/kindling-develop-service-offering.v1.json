@@ -17,7 +17,7 @@
     "userNpub": "",
     "message": "",
     "history": [],
-    "agent": "claude",
+    "agent": "opencode",
     "workingDirectory": "/workspace/athena-kindling",
     "localContext": {
       "marketProfileId": "",

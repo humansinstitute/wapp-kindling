@@ -33,7 +33,7 @@ Each ticket should use `software-implementation-review-loop` with:
 - `designDocumentUrl`: `/Users/mini/code/wapp-kindling/docs/AutomatedProspectingImplementationTickets.md`
 - `relevantContext`: `/Users/mini/code/wapp-kindling/docs/AutomatedProspectingLoopDesign.md`
 - `maxReviewIterations`: `3`
-- worker/manager/reporter agent: `codex`
+- worker/manager/reporter agent: `opencode`
 
 Before starting the next ticket:
 

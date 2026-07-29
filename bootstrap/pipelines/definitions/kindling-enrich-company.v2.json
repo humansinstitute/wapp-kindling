@@ -16,7 +16,7 @@
     "userNpub": "",
     "companyId": "",
     "companyName": "",
-    "agent": "claude",
+    "agent": "opencode",
     "workingDirectory": "/workspace/athena-kindling",
     "localContext": {
       "company": {},

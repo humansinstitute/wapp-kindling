@@ -13,7 +13,7 @@ const PETE_NPUB = "npub1jss47s4fvv6usl7tn6yp5zamv2u60923ncgfea0e6thkza5p7c3q0afm
 const DEFAULT_DM_CHANNEL_ID = "97ae5c0d-f88c-41e7-9f7a-d64d27a4fd18";
 const DEFAULT_PIPELINE_RUN_BASE_URL = "https://rick.runwingman.com/pipelines/runs";
 const WM21_ROOT = process.env.KINDLING_PIPELINE_WORKING_DIRECTORY || "/workspace/athena-kindling";
-const SCHEDULED_PIPELINE_AGENT = process.env.KINDLING_SCHEDULED_PIPELINE_AGENT || "claude";
+const SCHEDULED_PIPELINE_AGENT = process.env.KINDLING_SCHEDULED_PIPELINE_AGENT || "opencode";
 const SCHEDULED_PIPELINE_MODEL = process.env.KINDLING_SCHEDULED_PIPELINE_MODEL || "";
 const SCHEDULED_PIPELINE_WORKING_DIRECTORY = process.env.KINDLING_PIPELINE_WORKING_DIRECTORY || "/workspace/athena-kindling";
 

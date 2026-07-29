@@ -32,7 +32,10 @@ import {
   mapMessage,
   normalizeCompanyDataRing,
   normalizeCompanyExecutionStatus,
+  normalizeNameKey,
+  normalizeWebsiteKey,
   releaseSchedulerLock,
+  resolveDuplicateGroupForCompany,
   setSetting,
   updateSchedulerSettings,
   createAlertFeed,
@@ -688,6 +691,9 @@ function schedulerSettingsPatchFromBody(body: Record<string, unknown>): Schedule
   if (body.cooldowns !== undefined || body.cooldowns_json !== undefined) {
     patch.cooldowns = parseJsonObjectField(body.cooldowns ?? body.cooldowns_json, {}) as Record<string, number>;
   }
+  if (body.agents !== undefined || body.agents_json !== undefined) {
+    patch.agents = parseJsonObjectField(body.agents ?? body.agents_json, {}) as Record<string, string>;
+  }
   if (body.models !== undefined || body.models_json !== undefined) {
     patch.models = parseJsonObjectField(body.models ?? body.models_json, {}) as Record<string, string>;
   }
@@ -706,7 +712,7 @@ const ROLE_STALE_ACTIVE_PIPELINE_RUN_MS: Record<string, number> = {
 const ACQUISITION_PARTIAL_STALE_PIPELINE_RUN_MS = 90 * 60 * 1000;
 const SCHEDULED_ACQUISITION_TARGET_COUNT = 50;
 const SCHEDULED_SCORING_BATCH_LIMIT = 1;
-const SCHEDULED_PIPELINE_AGENT = process.env.KINDLING_SCHEDULED_PIPELINE_AGENT || "claude";
+const SCHEDULED_PIPELINE_AGENT = process.env.KINDLING_SCHEDULED_PIPELINE_AGENT || "opencode";
 const SCHEDULED_PIPELINE_MODEL = process.env.KINDLING_SCHEDULED_PIPELINE_MODEL || "";
 const SCHEDULED_OUTREACH_PIPELINE_MODEL = process.env.KINDLING_OUTREACH_PIPELINE_MODEL || "";
 const SCHEDULED_PIPELINE_WORKING_DIRECTORY = process.env.KINDLING_PIPELINE_WORKING_DIRECTORY || "/workspace/athena-kindling";
@@ -726,6 +732,10 @@ function scheduledPipelineModelForRole(roleKey: string) {
   if (configured) return configured;
   if (roleKey === "draft_outreach") return SCHEDULED_OUTREACH_PIPELINE_MODEL;
   return SCHEDULED_PIPELINE_MODEL;
+}
+
+function scheduledPipelineAgentForRole(roleKey: string) {
+  return getSchedulerSettings().agents?.[roleKey] || SCHEDULED_PIPELINE_AGENT;
 }
 
 // Which pipeline roles each scheduler action drives. Toggling an action in the
@@ -1501,6 +1511,7 @@ function selectScoringCandidateRows(marketProfileVersionId: string, offeringCoun
     LEFT JOIN target_segments ts ON ts.id = cseg.segment_id
     WHERE (c.enrichment_status = 'complete' OR c.data_ring IN ('enhanced', 'ranked', 'stale'))
       AND c.data_ring NOT IN ('scored', 'outreach_ready', 'outreach', 'contacted', 'parked', 'processed')
+      AND c.duplicate_status != 'duplicate'
       AND (
         SELECT COUNT(DISTINCT sfa.service_offering_id)
         FROM service_fit_assessments sfa
@@ -4227,7 +4238,7 @@ function buildKindlingTriggerRequest(input: {
         userPubkey: input.userPubkey,
         userNpub: input.userNpub,
         message: input.message,
-        agent: SCHEDULED_PIPELINE_AGENT,
+        agent: scheduledPipelineAgentForRole(input.roleKey),
         model: scheduledPipelineModelForRole(input.roleKey),
         workingDirectory: SCHEDULED_PIPELINE_WORKING_DIRECTORY,
         localContext: input.context,
@@ -5191,6 +5202,7 @@ function initialRankingCandidateRows(limit: number | null = null) {
     FROM companies c
     WHERE (c.data_ring IN ('enhanced', 'ranked') OR c.enrichment_status = 'complete')
       AND c.data_ring NOT IN ('scored', 'outreach_ready', 'contacted', 'parked', 'processed')
+      AND c.duplicate_status != 'duplicate'
     ORDER BY c.updated_at DESC, lower(c.name) ASC
     ${limitClause}
   `).all() as Record<string, unknown>[];
@@ -5552,6 +5564,9 @@ function topTargetAssessmentRows() {
       -- recirculation) is "Processed" and must drop off the active deck. Undo simply
       -- deletes the outreach_results row, which returns the company here automatically.
       AND NOT EXISTS (SELECT 1 FROM outreach_results o WHERE o.company_id = c.id)
+      -- Records marked as duplicates (same normalized name + website as the kept
+      -- record) never appear in a target list.
+      AND c.duplicate_status != 'duplicate'
     ORDER BY sfa.updated_at DESC, sfa.score DESC
   `).all() as Record<string, unknown>[];
 }
@@ -6325,22 +6340,22 @@ function isFailurePipelineStatus(value: unknown) {
 }
 
 function findExistingScanCompany(company: Record<string, unknown>, records: Record<string, unknown>) {
-  const website = String(company.website ?? "").trim();
-  if (website) {
-    return db.query("SELECT * FROM companies WHERE lower(website) = lower(?1) LIMIT 1").get(website) as Record<string, unknown> | null;
+  const websiteKey = normalizeWebsiteKey(company.website);
+  if (websiteKey) {
+    return db.query("SELECT * FROM companies WHERE website_key = ?1 LIMIT 1").get(websiteKey) as Record<string, unknown> | null;
   }
-  const name = String(company.name ?? "").trim();
-  if (!name) return null;
+  const nameKey = normalizeNameKey(company.name);
+  if (!nameKey) return null;
   const location = String(company.location ?? records.location ?? "").trim();
   const industry = String(company.industry ?? records.industry ?? "").trim();
   return db.query(`
     SELECT *
     FROM companies
-    WHERE lower(name) = lower(?1)
+    WHERE name_key = ?1
       AND lower(COALESCE(location, '')) = lower(?2)
       AND lower(COALESCE(industry, '')) = lower(?3)
     LIMIT 1
-  `).get(name, location, industry) as Record<string, unknown> | null;
+  `).get(nameKey, location, industry) as Record<string, unknown> | null;
 }
 
 function sourceAlreadyExists(companyId: string, url: string, summary: string) {
@@ -6413,6 +6428,9 @@ function persistScanRecords(requestId: string, records: Record<string, unknown>,
         WHERE id = ?6
       `).run(location, industry, website, confidence, now, companyId);
       recordActivity("company", companyId, "pipeline", "company_matched", `Matched by scan ${requestId}`, { requestId });
+      // The scan write may have set a website that now collides with another
+      // record of the same name - resolve the group immediately.
+      resolveDuplicateGroupForCompany(companyId, "pipeline", now);
       updatedCompanies += 1;
     } else {
       const dataRing = normalizeCompanyDataRing(company.dataRing ?? "found");
@@ -6421,6 +6439,8 @@ function persistScanRecords(requestId: string, records: Record<string, unknown>,
         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'not_started', ?8, '{}', ?9, ?9)
       `).run(companyId, name, location, industry, website, dataRing, normalizeDuplicateStatus(company.duplicateStatus), confidence, now);
       recordActivity("company", companyId, "pipeline", "company_created", `Created by scan ${requestId}`, { requestId });
+      // Belt and braces: never leave two records with the same name + website.
+      resolveDuplicateGroupForCompany(companyId, "pipeline", now);
       createdCompanies += 1;
     }
 
@@ -6609,6 +6629,11 @@ function persistCompanyEnrichment(input: {
     now,
     companyId,
   );
+  // Enrichment canonicalizes websites (e.g. redirect targets), which can make
+  // this record collide with another copy of the same company. Resolve the
+  // group: the reached-out/enriched/original record is kept, the rest are
+  // marked duplicate and drop out of target lists.
+  resolveDuplicateGroupForCompany(companyId, "pipeline", now);
 
   completeEnrichmentQueueForRequest(input.requestId, companyId, input.response || "Enrichment complete", now);
 
@@ -8611,6 +8636,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
       now,
     );
     recordActivity("company", id, "user", "company_created", "Manual company created", { pubkey: session.pubkey });
+    resolveDuplicateGroupForCompany(id, "user", now);
     const company = db.query("SELECT * FROM companies WHERE id = ?1").get(id) as Record<string, unknown>;
     return json({ company: mapCompany(company) }, 201);
   }
@@ -8752,6 +8778,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
       companyId,
     );
     recordActivity("company", companyId, "user", "company_updated", "Company profile edited", { pubkey: session.pubkey });
+    resolveDuplicateGroupForCompany(companyId, "user", now);
     const row = db.query("SELECT * FROM companies WHERE id = ?1").get(companyId) as Record<string, unknown>;
     return json({ company: mapCompany(row) });
   }
@@ -9645,6 +9672,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
       now,
     );
     recordActivity("company", id, "agent", "company_created", "Created through NIP-98 API", { pubkey: verified.pubkey });
+    resolveDuplicateGroupForCompany(id, "agent", now);
     const company = db.query("SELECT * FROM companies WHERE id = ?1").get(id) as Record<string, unknown>;
     return json({ company: mapCompany(company) }, 201);
   }
@@ -9682,6 +9710,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
       companyId,
     );
     recordActivity("company", companyId, "agent", "company_updated", "Updated through NIP-98 API", { pubkey: verified.pubkey });
+    resolveDuplicateGroupForCompany(companyId, "agent", now);
     const row = db.query("SELECT * FROM companies WHERE id = ?1").get(companyId) as Record<string, unknown>;
     return json({ company: mapCompany(row) });
   }

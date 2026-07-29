@@ -21,7 +21,7 @@
     "industry": "",
     "location": "",
     "targetCount": 100,
-    "agent": "claude",
+    "agent": "opencode",
     "workingDirectory": "/workspace/athena-kindling",
     "localContext": {
       "marketProfileId": "",

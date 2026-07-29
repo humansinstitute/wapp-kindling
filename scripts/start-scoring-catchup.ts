@@ -15,7 +15,7 @@ const kindlingOrigin = trimTrailingSlash(argValue("--origin", process.env.KINDLI
 const workingDirectory = argValue("--working-directory", process.env.KINDLING_PIPELINE_WORKING_DIRECTORY || "/workspace/athena-kindling");
 const dryRun = Bun.argv.includes("--dry-run");
 const model = argValue("--model", process.env.KINDLING_SCHEDULED_PIPELINE_MODEL || "");
-const agent = argValue("--agent", process.env.KINDLING_SCHEDULED_PIPELINE_AGENT || "claude");
+const agent = argValue("--agent", process.env.KINDLING_SCHEDULED_PIPELINE_AGENT || "opencode");
 
 function argValue(name: string, fallback = "") {
   const index = Bun.argv.indexOf(name);

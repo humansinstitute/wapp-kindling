@@ -249,12 +249,14 @@ CREATE TABLE IF NOT EXISTS scheduler_settings (
   enrichment_enabled INTEGER NOT NULL DEFAULT 1,
   scoring_enabled INTEGER NOT NULL DEFAULT 1,
   outreach_enabled INTEGER NOT NULL DEFAULT 1,
+  alerts_enabled INTEGER NOT NULL DEFAULT 1,
   target_pool_size INTEGER NOT NULL DEFAULT 10000,
   enriched_floor INTEGER NOT NULL DEFAULT 50,
   top_target_count INTEGER NOT NULL DEFAULT 100,
   outreach_target_count INTEGER NOT NULL DEFAULT 100,
   per_role_concurrency_json TEXT NOT NULL DEFAULT '{}',
   cooldowns_json TEXT NOT NULL DEFAULT '{}',
+  agents_json TEXT NOT NULL DEFAULT '{}',
   models_json TEXT NOT NULL DEFAULT '{}',
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
@@ -549,9 +551,75 @@ CREATE TABLE IF NOT EXISTS company_feedback (
   FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
 );
 
+-- RSS alert ingestion. Each alert_feeds row is one Google Alerts (or search-API)
+-- RSS feed we poll on a cadence; next_run_after_at follows the same scheduling
+-- pattern as coverage_slices. See docs/RssAlertIngestion.md.
+CREATE TABLE IF NOT EXISTS alert_feeds (
+  id TEXT PRIMARY KEY,
+  label TEXT NOT NULL,
+  feed_url TEXT NOT NULL,
+  query_note TEXT NOT NULL DEFAULT '',
+  signal_type TEXT NOT NULL DEFAULT 'hiring_intent',
+  default_strength TEXT NOT NULL DEFAULT 'high',
+  segment_id TEXT,
+  status TEXT NOT NULL DEFAULT 'active' CHECK(status IN ('active', 'paused', 'stalled')),
+  last_run_at INTEGER,
+  next_run_after_at INTEGER,
+  stalled_reason TEXT,
+  etag TEXT,
+  last_entry_seen_at INTEGER,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  FOREIGN KEY (segment_id) REFERENCES target_segments(id) ON DELETE SET NULL
+);
+
+-- One row per RSS entry ever seen. UNIQUE(feed_id, guid) + INSERT OR IGNORE is
+-- the dedup mechanism; the row is also the audit trail and processing state.
+CREATE TABLE IF NOT EXISTS alert_hits (
+  id TEXT PRIMARY KEY,
+  feed_id TEXT NOT NULL,
+  guid TEXT NOT NULL,
+  title TEXT NOT NULL DEFAULT '',
+  link TEXT NOT NULL DEFAULT '',
+  snippet TEXT NOT NULL DEFAULT '',
+  published_at INTEGER,
+  status TEXT NOT NULL DEFAULT 'queued'
+    CHECK(status IN ('queued', 'resolving', 'matched', 'enriched', 'scored', 'promoted', 'discarded', 'failed')),
+  company_id TEXT,
+  signal_id TEXT,
+  discard_reason TEXT NOT NULL DEFAULT '',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  error TEXT NOT NULL DEFAULT '',
+  context_json TEXT NOT NULL DEFAULT '{}',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  FOREIGN KEY (feed_id) REFERENCES alert_feeds(id) ON DELETE CASCADE,
+  FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE SET NULL,
+  UNIQUE(feed_id, guid)
+);
+
 `);
 
 for (const migration of [
+  // Normalized dedupe keys. Stored as VIRTUAL generated columns so every write
+  // path (scan writes, manual/NIP-98 creates, enrichment website updates, PATCH
+  // edits) stays in sync without touching each INSERT/UPDATE statement.
+  // website_key: lowercase, scheme stripped, leading "www." stripped, trailing
+  // slashes stripped. name_key: lowercase, trimmed.
+  `ALTER TABLE companies ADD COLUMN website_key TEXT GENERATED ALWAYS AS (
+    CASE
+      WHEN COALESCE(website, '') = '' THEN ''
+      ELSE rtrim(
+        CASE
+          WHEN substr(replace(replace(lower(trim(website)), 'https://', ''), 'http://', ''), 1, 4) = 'www.'
+          THEN substr(replace(replace(lower(trim(website)), 'https://', ''), 'http://', ''), 5)
+          ELSE replace(replace(lower(trim(website)), 'https://', ''), 'http://', '')
+        END,
+        '/'
+      )
+    END
+  ) VIRTUAL`,
+  "ALTER TABLE companies ADD COLUMN name_key TEXT GENERATED ALWAYS AS (lower(trim(COALESCE(name, '')))) VIRTUAL",
   "ALTER TABLE sources ADD COLUMN title TEXT",
   "ALTER TABLE sources ADD COLUMN extracted_data_json TEXT NOT NULL DEFAULT '{}'",
   "ALTER TABLE sources ADD COLUMN last_checked_at INTEGER",
@@ -576,7 +644,9 @@ for (const migration of [
   "ALTER TABLE coverage_slices ADD COLUMN source_family TEXT NOT NULL DEFAULT 'web'",
   "ALTER TABLE coverage_slices ADD COLUMN strategy_type TEXT NOT NULL DEFAULT 'search'",
   "ALTER TABLE scheduler_settings ADD COLUMN outreach_target_count INTEGER NOT NULL DEFAULT 100",
+  "ALTER TABLE scheduler_settings ADD COLUMN agents_json TEXT NOT NULL DEFAULT '{}'",
   "ALTER TABLE scheduler_settings ADD COLUMN models_json TEXT NOT NULL DEFAULT '{}'",
+  "ALTER TABLE scheduler_settings ADD COLUMN alerts_enabled INTEGER NOT NULL DEFAULT 1",
   "ALTER TABLE work_queue ADD COLUMN segment_id TEXT",
   "ALTER TABLE work_queue ADD COLUMN segment TEXT NOT NULL DEFAULT ''",
   "ALTER TABLE work_queue ADD COLUMN next_run_after_at INTEGER",
@@ -632,6 +702,8 @@ CREATE INDEX IF NOT EXISTS idx_companies_industry_location ON companies(industry
 CREATE INDEX IF NOT EXISTS idx_companies_data_ring ON companies(data_ring, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_companies_duplicate_status ON companies(duplicate_status, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_companies_website ON companies(website);
+CREATE INDEX IF NOT EXISTS idx_companies_website_key ON companies(website_key);
+CREATE INDEX IF NOT EXISTS idx_companies_name_website_key ON companies(name_key, website_key);
 CREATE INDEX IF NOT EXISTS idx_enrichment_industry_status ON companies(industry, enrichment_status);
 CREATE INDEX IF NOT EXISTS idx_service_offerings_version_status ON service_offerings(market_profile_version_id, status, key, variant_key);
 CREATE INDEX IF NOT EXISTS idx_service_fit_assessments_company ON service_fit_assessments(company_id, score DESC, updated_at DESC);
@@ -646,6 +718,10 @@ CREATE INDEX IF NOT EXISTS idx_ranking_items_company ON ranking_items(company_id
 CREATE INDEX IF NOT EXISTS idx_target_list_runs_created ON target_list_runs(status, completed_at DESC, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_target_list_items_run_rank ON target_list_items(target_list_run_id, rank);
 CREATE INDEX IF NOT EXISTS idx_target_list_items_company ON target_list_items(company_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_alert_feeds_due ON alert_feeds(status, next_run_after_at);
+CREATE INDEX IF NOT EXISTS idx_alert_hits_status ON alert_hits(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_alert_hits_feed ON alert_hits(feed_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_alert_hits_company ON alert_hits(company_id);
 `);
 
 for (const migration of [
@@ -806,12 +882,14 @@ export type SchedulerSettings = {
   enrichmentEnabled: boolean;
   scoringEnabled: boolean;
   outreachEnabled: boolean;
+  alertsEnabled: boolean;
   targetPoolSize: number;
   enrichedFloor: number;
   topTargetCount: number;
   outreachTargetCount: number;
   perRoleConcurrency: Record<string, number>;
   cooldowns: Record<string, number>;
+  agents: Record<string, string>;
   models: Record<string, string>;
   createdAt: number;
   updatedAt: number;
@@ -914,6 +992,98 @@ export function normalizeCompanyExecutionStatus(value: unknown, fallback = "not_
   return ["not_started", "queued", "running", "complete", "failed"].includes(status) ? status : fallback;
 }
 
+// ---------------------------------------------------------------------------
+// Duplicate detection keys. These mirror the website_key / name_key generated
+// columns on the companies table (see migrations above); keep them in sync.
+// ---------------------------------------------------------------------------
+
+export function normalizeWebsiteKey(value: unknown): string {
+  const raw = String(value ?? "").trim().toLowerCase();
+  if (!raw) return "";
+  let key = raw.replace(/^https?:\/\//, "");
+  if (key.startsWith("www.")) key = key.slice(4);
+  return key.replace(/\/+$/, "");
+}
+
+export function normalizeNameKey(value: unknown): string {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+export type DuplicateResolution = {
+  groupKey: string;
+  keeperId: string;
+  markedIds: string[];
+};
+
+// Keeper selection: a company that has been reached out to (any outreach_results
+// row - waiting/meeting/rejected/on_deck) always wins, then the most enriched
+// copy, then the original (earliest created). Everything else in the same
+// name_key + website_key group is marked duplicate_status = 'duplicate' so it
+// drops out of target lists, ranking and scoring selectors.
+export function pickDuplicateGroupKeeperId(rows: Record<string, unknown>[]): string | null {
+  if (!rows.length) return null;
+  const ringRank: Record<string, number> = {
+    contacted: 6,
+    outreach_ready: 5,
+    scored: 4,
+    ranked: 3,
+    enhanced: 2,
+    found: 1,
+  };
+  const sorted = [...rows].sort((a, b) => {
+    const outreachDelta = Number(Boolean(b.has_outreach)) - Number(Boolean(a.has_outreach));
+    if (outreachDelta) return outreachDelta;
+    const enrichedDelta = Number(b.enrichment_status === "complete") - Number(a.enrichment_status === "complete");
+    if (enrichedDelta) return enrichedDelta;
+    const ringDelta = (ringRank[String(b.data_ring)] ?? 0) - (ringRank[String(a.data_ring)] ?? 0);
+    if (ringDelta) return ringDelta;
+    const createdDelta = Number(a.created_at ?? 0) - Number(b.created_at ?? 0);
+    if (createdDelta) return createdDelta;
+    return String(a.id).localeCompare(String(b.id));
+  });
+  return String(sorted[0]!.id);
+}
+
+// Resolve the duplicate group a company belongs to (same normalized name and
+// website): pick the keeper and mark every other member as a duplicate. Safe to
+// call after any company insert or name/website update. Returns null when the
+// company has no website or no group collision.
+export function resolveDuplicateGroupForCompany(companyId: string, actor: string, now = Date.now()): DuplicateResolution | null {
+  const row = db.query("SELECT id, name, name_key, website_key FROM companies WHERE id = ?1").get(companyId) as Record<string, unknown> | null;
+  const nameKey = String(row?.name_key ?? "");
+  const websiteKey = String(row?.website_key ?? "");
+  if (!row || !nameKey || !websiteKey) return null;
+  const group = db.query(`
+    SELECT c.id, c.data_ring, c.enrichment_status, c.duplicate_status, c.created_at,
+      EXISTS(SELECT 1 FROM outreach_results o WHERE o.company_id = c.id) AS has_outreach
+    FROM companies c
+    WHERE c.name_key = ?1 AND c.website_key = ?2
+  `).all(nameKey, websiteKey) as Record<string, unknown>[];
+  if (group.length < 2) return null;
+  const keeperId = pickDuplicateGroupKeeperId(group);
+  if (!keeperId) return null;
+  const markedIds: string[] = [];
+  for (const member of group) {
+    const memberId = String(member.id);
+    if (memberId === keeperId) continue;
+    if (String(member.duplicate_status) === "duplicate") continue;
+    db.query("UPDATE companies SET duplicate_status = 'duplicate', updated_at = ?1 WHERE id = ?2").run(now, memberId);
+    db.query(`
+      INSERT INTO activities(id, target_type, target_id, actor, action_type, summary, payload_json, created_at)
+      VALUES (?1, 'company', ?2, ?3, 'marked_duplicate', ?4, ?5, ?6)
+    `).run(
+      crypto.randomUUID(),
+      memberId,
+      actor,
+      `Marked duplicate of company ${keeperId} (same name and website)`,
+      JSON.stringify({ keeperId, nameKey, websiteKey }),
+      now,
+    );
+    markedIds.push(memberId);
+  }
+  return { groupKey: `${nameKey}|${websiteKey}`, keeperId, markedIds };
+}
+
 function jsonParse<T>(value: unknown, fallback: T): T {
   if (typeof value !== "string" || !value.trim()) return fallback;
   try {
@@ -929,6 +1099,7 @@ const defaultSchedulerSettings = {
   enrichmentEnabled: true,
   scoringEnabled: true,
   outreachEnabled: true,
+  alertsEnabled: true,
   targetPoolSize: 10000,
   enrichedFloor: 50,
   topTargetCount: 100,
@@ -945,10 +1116,12 @@ const defaultSchedulerSettings = {
     enrichmentMs: 60 * 1000,
     scoringMs: 5 * 60 * 1000,
     outreachMs: 10 * 60 * 1000,
+    alertsMs: 15 * 60 * 1000,
     stalledSliceMs: 7 * 24 * 60 * 60 * 1000,
   },
   // Per-role model override (roleKey -> model id). Empty = Autopilot default.
   // Controlled from the Settings page Automation card.
+  agents: {},
   models: {},
 } satisfies SchedulerSettingsPatch;
 
@@ -990,11 +1163,11 @@ function normalizeNumberRecord(value: unknown, fallback: Record<string, number>,
 export function ensureDefaultSchedulerSettings(updatedAt = Date.now()) {
   db.query(`
     INSERT INTO scheduler_settings(
-      id, enabled, acquisition_enabled, enrichment_enabled, scoring_enabled, outreach_enabled,
+      id, enabled, acquisition_enabled, enrichment_enabled, scoring_enabled, outreach_enabled, alerts_enabled,
       target_pool_size, enriched_floor, top_target_count, outreach_target_count, per_role_concurrency_json, cooldowns_json,
-      models_json, created_at, updated_at
+      agents_json, models_json, created_at, updated_at
     )
-    VALUES ('default', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?13)
+    VALUES ('default', ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?15)
     ON CONFLICT(id) DO NOTHING
   `).run(
     defaultSchedulerSettings.enabled ? 1 : 0,
@@ -1002,12 +1175,14 @@ export function ensureDefaultSchedulerSettings(updatedAt = Date.now()) {
     defaultSchedulerSettings.enrichmentEnabled ? 1 : 0,
     defaultSchedulerSettings.scoringEnabled ? 1 : 0,
     defaultSchedulerSettings.outreachEnabled ? 1 : 0,
+    defaultSchedulerSettings.alertsEnabled ? 1 : 0,
     defaultSchedulerSettings.targetPoolSize,
     defaultSchedulerSettings.enrichedFloor,
     defaultSchedulerSettings.topTargetCount,
     defaultSchedulerSettings.outreachTargetCount,
     JSON.stringify(defaultSchedulerSettings.perRoleConcurrency),
     JSON.stringify(defaultSchedulerSettings.cooldowns),
+    JSON.stringify(defaultSchedulerSettings.agents),
     JSON.stringify(defaultSchedulerSettings.models),
     updatedAt,
   );
@@ -1020,6 +1195,7 @@ function mapSchedulerSettings(row: Record<string, unknown>): SchedulerSettings {
     enrichmentEnabled: Boolean(Number(row.enrichment_enabled)),
     scoringEnabled: Boolean(Number(row.scoring_enabled)),
     outreachEnabled: Boolean(Number(row.outreach_enabled)),
+    alertsEnabled: Boolean(Number(row.alerts_enabled ?? 1)),
     targetPoolSize: Number(row.target_pool_size),
     enrichedFloor: Number(row.enriched_floor),
     topTargetCount: Number(row.top_target_count),
@@ -1032,6 +1208,7 @@ function mapSchedulerSettings(row: Record<string, unknown>): SchedulerSettings {
       ...defaultSchedulerSettings.cooldowns,
       ...jsonParse<Record<string, number>>(row.cooldowns_json, {}),
     },
+    agents: jsonParse<Record<string, string>>(row.agents_json, {}),
     models: jsonParse<Record<string, string>>(row.models_json, {}),
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
@@ -1066,12 +1243,14 @@ export function updateSchedulerSettings(patch: SchedulerSettingsPatch, updatedAt
     enrichmentEnabled: normalizeBooleanSetting(patch.enrichmentEnabled, current.enrichmentEnabled),
     scoringEnabled: normalizeBooleanSetting(patch.scoringEnabled, current.scoringEnabled),
     outreachEnabled: normalizeBooleanSetting(patch.outreachEnabled, current.outreachEnabled),
+    alertsEnabled: normalizeBooleanSetting(patch.alertsEnabled, current.alertsEnabled),
     targetPoolSize: normalizePositiveIntegerSetting(patch.targetPoolSize, current.targetPoolSize),
     enrichedFloor: normalizePositiveIntegerSetting(patch.enrichedFloor, current.enrichedFloor),
     topTargetCount: normalizePositiveIntegerSetting(patch.topTargetCount, current.topTargetCount),
     outreachTargetCount: normalizePositiveIntegerSetting(patch.outreachTargetCount, current.outreachTargetCount),
     perRoleConcurrency: normalizeNumberRecord(patch.perRoleConcurrency, current.perRoleConcurrency),
     cooldowns: normalizeNumberRecord(patch.cooldowns, current.cooldowns, true),
+    agents: patch.agents === undefined ? current.agents : normalizeStringRecord(patch.agents, current.agents),
     models: patch.models === undefined ? current.models : normalizeStringRecord(patch.models, current.models),
     updatedAt,
   };
@@ -1082,14 +1261,16 @@ export function updateSchedulerSettings(patch: SchedulerSettingsPatch, updatedAt
         enrichment_enabled = ?3,
         scoring_enabled = ?4,
         outreach_enabled = ?5,
-        target_pool_size = ?6,
-        enriched_floor = ?7,
-        top_target_count = ?8,
-        outreach_target_count = ?9,
-        per_role_concurrency_json = ?10,
-        cooldowns_json = ?11,
-        models_json = ?12,
-        updated_at = ?13
+        alerts_enabled = ?6,
+        target_pool_size = ?7,
+        enriched_floor = ?8,
+        top_target_count = ?9,
+        outreach_target_count = ?10,
+        per_role_concurrency_json = ?11,
+        cooldowns_json = ?12,
+        agents_json = ?13,
+        models_json = ?14,
+        updated_at = ?15
     WHERE id = 'default'
   `).run(
     next.enabled ? 1 : 0,
@@ -1097,12 +1278,14 @@ export function updateSchedulerSettings(patch: SchedulerSettingsPatch, updatedAt
     next.enrichmentEnabled ? 1 : 0,
     next.scoringEnabled ? 1 : 0,
     next.outreachEnabled ? 1 : 0,
+    next.alertsEnabled ? 1 : 0,
     next.targetPoolSize,
     next.enrichedFloor,
     next.topTargetCount,
     next.outreachTargetCount,
     JSON.stringify(next.perRoleConcurrency),
     JSON.stringify(next.cooldowns),
+    JSON.stringify(next.agents),
     JSON.stringify(next.models),
     updatedAt,
   );
@@ -1521,4 +1704,332 @@ export function mapAccessRule(row: Record<string, unknown>): AccessRule {
     role: String(row.role) as AccessRole,
     createdAt: Number(row.created_at),
   };
+}
+
+// ---------------------------------------------------------------------------
+// RSS alert ingestion (see docs/RssAlertIngestion.md)
+// ---------------------------------------------------------------------------
+
+export type AlertFeedStatus = "active" | "paused" | "stalled";
+
+export type AlertFeed = {
+  id: string;
+  label: string;
+  feedUrl: string;
+  queryNote: string;
+  signalType: string;
+  defaultStrength: string;
+  segmentId: string | null;
+  status: AlertFeedStatus;
+  lastRunAt: number | null;
+  nextRunAfterAt: number | null;
+  stalledReason: string | null;
+  etag: string | null;
+  lastEntrySeenAt: number | null;
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type AlertHitStatus =
+  | "queued"
+  | "resolving"
+  | "matched"
+  | "enriched"
+  | "scored"
+  | "promoted"
+  | "discarded"
+  | "failed";
+
+export type AlertHit = {
+  id: string;
+  feedId: string;
+  guid: string;
+  title: string;
+  link: string;
+  snippet: string;
+  publishedAt: number | null;
+  status: AlertHitStatus;
+  companyId: string | null;
+  signalId: string | null;
+  discardReason: string;
+  attempts: number;
+  error: string;
+  context: Record<string, unknown>;
+  createdAt: number;
+  updatedAt: number;
+};
+
+function normalizeAlertFeedStatus(value: unknown, fallback: AlertFeedStatus = "active"): AlertFeedStatus {
+  const status = String(value ?? "").trim().toLowerCase();
+  return ["active", "paused", "stalled"].includes(status) ? (status as AlertFeedStatus) : fallback;
+}
+
+export function mapAlertFeed(row: Record<string, unknown>): AlertFeed {
+  return {
+    id: String(row.id),
+    label: String(row.label ?? ""),
+    feedUrl: String(row.feed_url ?? ""),
+    queryNote: String(row.query_note ?? ""),
+    signalType: String(row.signal_type ?? "hiring_intent"),
+    defaultStrength: String(row.default_strength ?? "high"),
+    segmentId: row.segment_id ? String(row.segment_id) : null,
+    status: normalizeAlertFeedStatus(row.status),
+    lastRunAt: row.last_run_at != null ? Number(row.last_run_at) : null,
+    nextRunAfterAt: row.next_run_after_at != null ? Number(row.next_run_after_at) : null,
+    stalledReason: row.stalled_reason != null ? String(row.stalled_reason) : null,
+    etag: row.etag != null ? String(row.etag) : null,
+    lastEntrySeenAt: row.last_entry_seen_at != null ? Number(row.last_entry_seen_at) : null,
+    createdAt: Number(row.created_at),
+    updatedAt: Number(row.updated_at),
+  };
+}
+
+export function mapAlertHit(row: Record<string, unknown>): AlertHit {
+  return {
+    id: String(row.id),
+    feedId: String(row.feed_id),
+    guid: String(row.guid),
+    title: String(row.title ?? ""),
+    link: String(row.link ?? ""),
+    snippet: String(row.snippet ?? ""),
+    publishedAt: row.published_at != null ? Number(row.published_at) : null,
+    status: String(row.status ?? "queued") as AlertHitStatus,
+    companyId: row.company_id ? String(row.company_id) : null,
+    signalId: row.signal_id ? String(row.signal_id) : null,
+    discardReason: String(row.discard_reason ?? ""),
+    attempts: Number(row.attempts ?? 0),
+    error: String(row.error ?? ""),
+    context: jsonParse<Record<string, unknown>>(row.context_json, {}),
+    createdAt: Number(row.created_at),
+    updatedAt: Number(row.updated_at),
+  };
+}
+
+export function createAlertFeed(input: {
+  label: string;
+  feedUrl: string;
+  queryNote?: string;
+  signalType?: string;
+  defaultStrength?: string;
+  segmentId?: string | null;
+  status?: AlertFeedStatus;
+  now?: number;
+}): AlertFeed {
+  const now = input.now ?? Date.now();
+  const id = crypto.randomUUID();
+  db.query(`
+    INSERT INTO alert_feeds(
+      id, label, feed_url, query_note, signal_type, default_strength, segment_id, status,
+      last_run_at, next_run_after_at, stalled_reason, etag, last_entry_seen_at, created_at, updated_at
+    )
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, NULL, ?9, NULL, NULL, NULL, ?9, ?9)
+  `).run(
+    id,
+    String(input.label ?? "").trim() || "Untitled alert",
+    String(input.feedUrl ?? "").trim(),
+    String(input.queryNote ?? "").trim(),
+    String(input.signalType ?? "hiring_intent").trim() || "hiring_intent",
+    String(input.defaultStrength ?? "high").trim() || "high",
+    input.segmentId ? String(input.segmentId) : null,
+    normalizeAlertFeedStatus(input.status),
+    now,
+  );
+  const feed = getAlertFeed(id);
+  if (!feed) throw new Error("alert feed could not be created");
+  return feed;
+}
+
+export function getAlertFeed(id: string): AlertFeed | null {
+  const row = db.query("SELECT * FROM alert_feeds WHERE id = ?1").get(id) as Record<string, unknown> | null;
+  return row ? mapAlertFeed(row) : null;
+}
+
+export function listAlertFeeds(): AlertFeed[] {
+  const rows = db.query("SELECT * FROM alert_feeds ORDER BY created_at DESC").all() as Record<string, unknown>[];
+  return rows.map(mapAlertFeed);
+}
+
+export function updateAlertFeed(id: string, patch: {
+  label?: string;
+  feedUrl?: string;
+  queryNote?: string;
+  signalType?: string;
+  defaultStrength?: string;
+  segmentId?: string | null;
+  status?: AlertFeedStatus;
+  now?: number;
+}): AlertFeed | null {
+  const current = getAlertFeed(id);
+  if (!current) return null;
+  const now = patch.now ?? Date.now();
+  db.query(`
+    UPDATE alert_feeds
+    SET label = ?2,
+        feed_url = ?3,
+        query_note = ?4,
+        signal_type = ?5,
+        default_strength = ?6,
+        segment_id = ?7,
+        status = ?8,
+        updated_at = ?9
+    WHERE id = ?1
+  `).run(
+    id,
+    patch.label !== undefined ? String(patch.label).trim() || current.label : current.label,
+    patch.feedUrl !== undefined ? String(patch.feedUrl).trim() || current.feedUrl : current.feedUrl,
+    patch.queryNote !== undefined ? String(patch.queryNote).trim() : current.queryNote,
+    patch.signalType !== undefined ? String(patch.signalType).trim() || current.signalType : current.signalType,
+    patch.defaultStrength !== undefined ? String(patch.defaultStrength).trim() || current.defaultStrength : current.defaultStrength,
+    patch.segmentId !== undefined ? (patch.segmentId ? String(patch.segmentId) : null) : current.segmentId,
+    patch.status !== undefined ? normalizeAlertFeedStatus(patch.status) : current.status,
+    now,
+  );
+  return getAlertFeed(id);
+}
+
+export function deleteAlertFeed(id: string): boolean {
+  const result = db.query("DELETE FROM alert_feeds WHERE id = ?1").run(id);
+  return result.changes > 0;
+}
+
+// Active feeds whose cadence window has elapsed, most-overdue first.
+export function selectDueAlertFeeds(now = Date.now(), limit = 1): AlertFeed[] {
+  const safeLimit = Math.max(1, Math.min(20, Math.floor(limit)));
+  const rows = db.query(`
+    SELECT *
+    FROM alert_feeds
+    WHERE status = 'active'
+      AND (next_run_after_at IS NULL OR next_run_after_at <= ?1)
+    ORDER BY next_run_after_at IS NULL DESC, next_run_after_at ASC
+    LIMIT ?2
+  `).all(now, safeLimit) as Record<string, unknown>[];
+  return rows.map(mapAlertFeed);
+}
+
+export function recordAlertFeedPoll(id: string, patch: {
+  nextRunAfterAt?: number | null;
+  etag?: string | null;
+  lastEntrySeenAt?: number | null;
+  stalledReason?: string | null;
+  status?: AlertFeedStatus;
+  now?: number;
+}): void {
+  const current = getAlertFeed(id);
+  if (!current) return;
+  const now = patch.now ?? Date.now();
+  db.query(`
+    UPDATE alert_feeds
+    SET last_run_at = ?2,
+        next_run_after_at = ?3,
+        etag = ?4,
+        last_entry_seen_at = ?5,
+        stalled_reason = ?6,
+        status = ?7,
+        updated_at = ?2
+    WHERE id = ?1
+  `).run(
+    id,
+    now,
+    patch.nextRunAfterAt !== undefined ? patch.nextRunAfterAt : current.nextRunAfterAt,
+    patch.etag !== undefined ? patch.etag : current.etag,
+    patch.lastEntrySeenAt !== undefined ? patch.lastEntrySeenAt : current.lastEntrySeenAt,
+    patch.stalledReason !== undefined ? patch.stalledReason : current.stalledReason,
+    patch.status !== undefined ? normalizeAlertFeedStatus(patch.status) : current.status,
+  );
+}
+
+// INSERT OR IGNORE — the UNIQUE(feed_id, guid) constraint dedups. Returns true
+// only when a new row was actually inserted.
+export function insertAlertHit(input: {
+  feedId: string;
+  guid: string;
+  title?: string;
+  link?: string;
+  snippet?: string;
+  publishedAt?: number | null;
+  now?: number;
+}): boolean {
+  const now = input.now ?? Date.now();
+  const result = db.query(`
+    INSERT OR IGNORE INTO alert_hits(
+      id, feed_id, guid, title, link, snippet, published_at, status,
+      company_id, signal_id, discard_reason, attempts, error, context_json, created_at, updated_at
+    )
+    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'queued', NULL, NULL, '', 0, '', '{}', ?8, ?8)
+  `).run(
+    crypto.randomUUID(),
+    input.feedId,
+    String(input.guid),
+    String(input.title ?? ""),
+    String(input.link ?? ""),
+    String(input.snippet ?? ""),
+    input.publishedAt ?? null,
+    now,
+  );
+  return result.changes > 0;
+}
+
+export function listQueuedAlertHits(limit = 5): AlertHit[] {
+  const safeLimit = Math.max(1, Math.min(50, Math.floor(limit)));
+  const rows = db.query(`
+    SELECT * FROM alert_hits WHERE status = 'queued' ORDER BY created_at ASC LIMIT ?1
+  `).all(safeLimit) as Record<string, unknown>[];
+  return rows.map(mapAlertHit);
+}
+
+export function listAlertHits(filter: { feedId?: string; status?: string; limit?: number } = {}): AlertHit[] {
+  const clauses: string[] = [];
+  const params: (string | number)[] = [];
+  if (filter.feedId) {
+    params.push(filter.feedId);
+    clauses.push(`feed_id = ?${params.length}`);
+  }
+  if (filter.status) {
+    params.push(filter.status);
+    clauses.push(`status = ?${params.length}`);
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  params.push(Math.max(1, Math.min(500, Math.floor(filter.limit ?? 100))));
+  const rows = db.query(`
+    SELECT * FROM alert_hits ${where} ORDER BY created_at DESC LIMIT ?${params.length}
+  `).all(...params) as Record<string, unknown>[];
+  return rows.map(mapAlertHit);
+}
+
+export function updateAlertHit(id: string, patch: {
+  status?: AlertHitStatus;
+  companyId?: string | null;
+  signalId?: string | null;
+  discardReason?: string;
+  incrementAttempts?: boolean;
+  error?: string;
+  context?: Record<string, unknown>;
+  now?: number;
+}): void {
+  const row = db.query("SELECT * FROM alert_hits WHERE id = ?1").get(id) as Record<string, unknown> | null;
+  if (!row) return;
+  const current = mapAlertHit(row);
+  const now = patch.now ?? Date.now();
+  db.query(`
+    UPDATE alert_hits
+    SET status = ?2,
+        company_id = ?3,
+        signal_id = ?4,
+        discard_reason = ?5,
+        attempts = ?6,
+        error = ?7,
+        context_json = ?8,
+        updated_at = ?9
+    WHERE id = ?1
+  `).run(
+    id,
+    patch.status ?? current.status,
+    patch.companyId !== undefined ? patch.companyId : current.companyId,
+    patch.signalId !== undefined ? patch.signalId : current.signalId,
+    patch.discardReason !== undefined ? patch.discardReason : current.discardReason,
+    current.attempts + (patch.incrementAttempts ? 1 : 0),
+    patch.error !== undefined ? patch.error : current.error,
+    JSON.stringify(patch.context !== undefined ? { ...current.context, ...patch.context } : current.context),
+    now,
+  );
 }

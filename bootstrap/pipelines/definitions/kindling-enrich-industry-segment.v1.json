@@ -17,7 +17,7 @@
     "batchId": "",
     "industry": "",
     "batchSize": 0,
-    "agent": "claude",
+    "agent": "opencode",
     "workingDirectory": "/workspace/athena-kindling",
     "localContext": {
       "companies": [],
