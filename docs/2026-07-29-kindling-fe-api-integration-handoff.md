@@ -67,3 +67,18 @@ Report implementation path, changed files, validation output, app registry/runti
 - The FE runtime is healthy locally and publicly. Its signer npub is `npub1nl0hac57enc56zzrsdzreff0ze23eu0p5l5zsx5zlyunmckwxv8qytsp8f`.
 - Runtime canonical reads are currently blocked upstream: Kindling API returns `workspace app not found (404)` from Tower. API logs show this recurring since 2026-07-08. A supported Tower registration attempt returned `403 Not authorized to manage this workspace`, so Rick workspace authority is required to restore the API app registration.
 - `bun run check`, lifecycle build, and the four focused canonical adapter tests pass. The inherited full suite has 80 passing and 3 pre-existing failing assertions unrelated to this adapter (service-offering seed expectation, top-target ordering expectation, and coverage-count expectation).
+
+## Live signer authorization audit
+
+Authorization was audited before any further runtime data validation. Kindling API was not restarted and its private key was not read or copied into Kindling FE.
+
+- Kindling FE signer npub: `npub1nl0hac57enc56zzrsdzreff0ze23eu0p5l5zsx5zlyunmckwxv8qytsp8f`
+- The running API configuration reports one allowed npub, but `configuredAccessAllows` returns `false` for this FE signer for both `read` and `edit`; it is not the configured owner.
+- NIP-98 kind `27235` requests signed by the FE identity returned:
+  - `GET /api/v1/bootstrap`: HTTP `500`, `workspace app not found (404)`
+  - `GET /api/v1/targets/authorization-probe`: HTTP `500`, `workspace app not found (404)`
+  - `GET /api/v1/targets/changes?since=0&limit=1&include=summary`: HTTP `500`, `workspace app not found (404)`
+- Because the signer is not in the environment allowlist, Kindling API attempts its Tower-backed `access_rules` lookup. That lookup cannot run because the API's workspace-app registration is missing.
+- The environment allowlist requires a Kindling API restart to take effect. The live Tower/access-rule alternative is also unavailable until the API app is registered, and the supported registration attempt returned `403 Not authorized to manage this workspace`.
+
+Per the handoff safety rule, authorization was not weakened, Kindling API was not restarted, and runtime company validation stopped here. Rick workspace authority must first restore the existing Kindling API app registration; the FE signer can then be granted a Tower-backed `read` access rule live and the three signed probes repeated.
