@@ -2465,6 +2465,13 @@ function applyCompanyList(filtered) {
     limit: Number(filtered.limit ?? 20),
     offset: Number(filtered.offset ?? Number(state.kindlingPaging[companyPageKeyFor(state.activeKindlingView)] || 0)),
   };
+  if (filtered.source || filtered.syncCursor !== undefined) {
+    k.canonicalApi = {
+      ...(k.canonicalApi || {}),
+      companySource: filtered.source || k.canonicalApi?.companySource,
+      syncCursor: filtered.syncCursor ?? k.canonicalApi?.syncCursor,
+    };
+  }
 }
 
 function applyTargets(targets) {
@@ -2770,6 +2777,11 @@ function renderKindling() {
             <span>Kindling</span>
           </div>
           <h1>Business development workspace</h1>
+          <p class="canonicalApiStatus" title="${escapeHtml(data.canonicalApi?.apiBaseUrl || "")}">
+            Company source: ${escapeHtml(data.canonicalApi?.companySource || "loading")}
+            · cursor ${escapeHtml(data.canonicalApi?.syncCursor ?? "not synced")}
+            ${data.canonicalApi?.signerReady === false ? " · signer unavailable" : ""}
+          </p>
         </div>
         <div class="kindlingHeaderActions">
           <button type="button" data-action="home">Home</button>
@@ -2847,7 +2859,7 @@ function renderKindlingView(data, company, canEdit) {
             <h2>${state.activeKindlingView === "enriched" ? "Enriched Companies" : "Companies"}</h2>
             <span>${companyListShownLabel(data)}</span>
           </div>
-          ${state.activeKindlingView === "companies" ? `<button type="button" data-action="open-company-create" ${canEdit ? "" : "disabled"}>New company</button>` : ""}
+          ${state.activeKindlingView === "companies" && data.canonicalApi?.companySource !== "canonical-api" ? `<button type="button" data-action="open-company-create" ${canEdit ? "" : "disabled"}>New company</button>` : ""}
         </div>
         ${state.activeKindlingView === "companies" ? renderCompanyStageFilters() : ""}
         ${renderCompanyFilters(state.activeKindlingView === "enriched")}

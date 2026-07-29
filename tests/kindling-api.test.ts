@@ -4,10 +4,13 @@ import { join } from "node:path";
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
 import { beforeEach, describe, expect, test } from "bun:test";
-import { finalizeEvent, getPublicKey } from "nostr-tools";
+import { finalizeEvent, getPublicKey, verifyEvent } from "nostr-tools";
 
 process.env.CHAT_WAPP_DB_PATH = join(mkdtempSync(join(tmpdir(), "kindling-api-")), "test.sqlite");
 process.env.WINGMAN_URL = "http://127.0.0.1:9";
+// Existing route contracts exercise the explicit legacy compatibility mode.
+// Focused adapter tests below opt into canonical mode per sync call.
+process.env.KINDLING_COMPANY_SOURCE = "local";
 
 const {
   acquireSchedulerLock,
@@ -21,6 +24,13 @@ const {
 } = await import("../src/db.ts");
 const { handleApi, runAutomatedProspectingLoop } = await import("../src/server.ts");
 const { runAutoEnrichNextIndustry } = await import("../src/auto-enrichment-job.ts");
+const {
+  buildCanonicalNip98Authorization,
+  canonicalApiBaseUrl,
+  mapCanonicalTarget,
+  resetCanonicalSyncStateForTests,
+  syncCanonicalCompanies,
+} = await import("../src/canonical-api.ts");
 
 const secretKey = new Uint8Array(32).fill(7);
 const pubkey = getPublicKey(secretKey);
@@ -4553,5 +4563,91 @@ describe("Paste-NSEC login signing", () => {
   test("an invalid nsec string cannot be decoded", async () => {
     const { nip19 } = await import("../public/vendor/nostr-signer.js");
     expect(() => nip19.decode("nsec1notarealkey")).toThrow();
+  });
+});
+
+describe("Canonical Kindling API adapter", () => {
+  beforeEach(() => {
+    resetCanonicalSyncStateForTests();
+  });
+
+  test("normalizes the configured API base URL", () => {
+    expect(canonicalApiBaseUrl("https://api.example.test/root/")).toBe("https://api.example.test/root");
+    expect(() => canonicalApiBaseUrl("file:///tmp/unsafe")).toThrow();
+  });
+
+  test("prepares valid NIP-98 GET and payload-bound POST requests", () => {
+    const decode = (value: string) => JSON.parse(atob(value.replace(/^Nostr /, "")));
+    const getEvent = decode(buildCanonicalNip98Authorization(
+      "https://api.example.test/api/v1/bootstrap", "GET", "", secretKey, 1_700_000_000,
+    ));
+    expect(verifyEvent(getEvent)).toBe(true);
+    expect(getEvent.kind).toBe(27235);
+    expect(getEvent.tags).toContainEqual(["u", "https://api.example.test/api/v1/bootstrap"]);
+    expect(getEvent.tags).toContainEqual(["method", "GET"]);
+    expect(getEvent.tags.some((tag: string[]) => tag[0] === "payload")).toBe(false);
+
+    const body = JSON.stringify({ ids: ["canonical-1"], include: "detail" });
+    const postEvent = decode(buildCanonicalNip98Authorization(
+      "https://api.example.test/api/v1/targets/bulk", "POST", body, secretKey, 1_700_000_000,
+    ));
+    expect(verifyEvent(postEvent)).toBe(true);
+    expect(postEvent.tags.some((tag: string[]) => tag[0] === "payload" && tag[1]?.length === 64)).toBe(true);
+  });
+
+  test("maps canonical identity and enrichment facts without workflow fields", () => {
+    const mapped = mapCanonicalTarget({
+      id: "canonical-1",
+      displayName: "Canonical Co",
+      websiteUrl: "https://canonical.example/",
+      location: { city: "Perth", state: "WA", country: "Australia", text: "Perth, WA" },
+      industry: { level1: { id: "m", label: "Professional Services" }, level2: { id: "69", label: "Accounting" } },
+      enrichmentStatus: "complete",
+      confidence: 0.91,
+      updatedAt: "2026-07-29T00:00:00.000Z",
+      changeSeq: 42,
+    });
+    expect(mapped).toMatchObject({
+      id: "canonical-1",
+      name: "Canonical Co",
+      location: "Perth, WA",
+      industry: "Accounting",
+      website: "https://canonical.example/",
+      enrichmentStatus: "complete",
+      confidence: 0.91,
+      changeSeq: 42,
+    });
+    expect(mapped).not.toHaveProperty("fitScore");
+    expect(mapped).not.toHaveProperty("notes");
+  });
+
+  test("commits each change page before advancing the sync cursor", async () => {
+    const seen: string[] = [];
+    const responses = [
+      {
+        changes: [{ operation: "upsert", companyId: "canonical-1", target: { id: "canonical-1", displayName: "One", changeSeq: 1 } }],
+        sync: { nextCursor: "1", hasMore: true },
+      },
+      {
+        changes: [{ operation: "upsert", companyId: "canonical-2", target: { id: "canonical-2", displayName: "Two", changeSeq: 2 } }],
+        sync: { nextCursor: "2", hasMore: false },
+      },
+    ];
+    db.query("INSERT INTO app_settings(key, value, updated_at) VALUES ('canonicalApiSyncCursor', '0', 1)").run();
+    const fetchImpl = async (input: string | URL | Request) => {
+      const requestUrl = new URL(String(input));
+      seen.push(requestUrl.searchParams.get("since") || "");
+      return new Response(JSON.stringify(responses.shift()), { status: 200 });
+    };
+    const result = await syncCanonicalCompanies({
+      sourceMode: "canonical-api",
+      baseUrl: "https://canonical.kindling.test",
+      fetchImpl: fetchImpl as typeof fetch,
+      secretInput: secretKey,
+    });
+    expect(seen).toEqual(["0", "1"]);
+    expect(result).toMatchObject({ mode: "changes", cursor: "2", applied: 2 });
+    expect((db.query("SELECT value FROM app_settings WHERE key = 'canonicalApiSyncCursor'").get() as { value: string }).value).toBe("2");
+    expect((db.query("SELECT COUNT(*) AS count FROM canonical_company_cache").get() as { count: number }).count).toBe(2);
   });
 });

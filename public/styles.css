@@ -654,6 +654,12 @@ button[aria-busy="true"]::after {
   letter-spacing: 0;
 }
 
+.canonicalApiStatus {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .kindlingHeaderActions,
 .rowActions {
   display: flex;

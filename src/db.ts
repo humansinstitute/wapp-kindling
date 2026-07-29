@@ -158,6 +158,17 @@ CREATE TABLE IF NOT EXISTS companies (
   updated_at INTEGER NOT NULL
 );
 
+-- Canonical Kindling API facts are kept separate from Athena workflow state.
+-- The companies table remains a compatibility projection for the existing workflow
+-- foreign keys; this table is the explicit authority marker and sync cache.
+CREATE TABLE IF NOT EXISTS canonical_company_cache (
+  company_id TEXT PRIMARY KEY,
+  payload_json TEXT NOT NULL,
+  change_seq INTEGER NOT NULL DEFAULT 0,
+  synced_at INTEGER NOT NULL,
+  FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS service_fit_assessments (
   id TEXT PRIMARY KEY,
   company_id TEXT NOT NULL,
@@ -704,6 +715,7 @@ CREATE INDEX IF NOT EXISTS idx_companies_duplicate_status ON companies(duplicate
 CREATE INDEX IF NOT EXISTS idx_companies_website ON companies(website);
 CREATE INDEX IF NOT EXISTS idx_companies_website_key ON companies(website_key);
 CREATE INDEX IF NOT EXISTS idx_companies_name_website_key ON companies(name_key, website_key);
+CREATE INDEX IF NOT EXISTS idx_canonical_company_cache_change_seq ON canonical_company_cache(change_seq);
 CREATE INDEX IF NOT EXISTS idx_enrichment_industry_status ON companies(industry, enrichment_status);
 CREATE INDEX IF NOT EXISTS idx_service_offerings_version_status ON service_offerings(market_profile_version_id, status, key, variant_key);
 CREATE INDEX IF NOT EXISTS idx_service_fit_assessments_company ON service_fit_assessments(company_id, score DESC, updated_at DESC);

@@ -1,8 +1,10 @@
 # Kindling WApp
 
-Kindling is a local business-development WApp for shaping a service offering, building target lists, reviewing companies, and drafting outreach with Wingman Autopilot pipelines.
+Kindling FE is a local business-development WApp for shaping a service offering, building target lists, reviewing companies, and drafting outreach with Wingman Autopilot pipelines.
 
-The WApp owns the user interface, Nostr login, access rules, business records, and local SQLite database. Autopilot owns the pipeline runs and agent work. Pipeline results return to Kindling through run-scoped webhooks and write APIs.
+Kindling API `/api/v1` is authoritative for company identity and enrichment facts. Kindling FE keeps offer-specific scores, notes, lists, outreach, campaigns, and other workflow state locally, keyed by the canonical API company ID. A separate `canonical_company_cache` table marks the compatibility projection explicitly; legacy local-company authority is available only with `KINDLING_COMPANY_SOURCE=local`.
+
+Kindling FE signs server-to-server API reads using its own `WAPP_NSEC`. Never reuse or copy Kindling API's `WAPP_NSEC`. The managed app card injects `KINDLING_API_URL`, which defaults to the local API WApp at `http://127.0.0.1:41038` for isolated development.
 
 ## Product Flow
 
@@ -50,11 +52,10 @@ The SQLite database is runtime state and is migrated separately. Use `bun script
 
 Kindling should normally be launched and tested from its Wingman Autopilot WApp card. WApps are registered app cards in Autopilot, and the card owns the runtime port and public app URL. Do not pick an arbitrary local port for normal testing.
 
-For Pete's local Wingman instance, the Kindling app card is:
+For Pete's local Wingman instance, use the separately registered `Kindling FE` app card described in `AGENTS.md`. The older Kindling app remains a sibling deployment and is not this checkout.
 
 ```txt
-App label: Kindling
-App ID: c8dc3b14-6869-444f-94c3-37ccb2348cc9
+App label: Kindling FE
 User alias: honest-ivory-thicket
 ```
 
@@ -79,6 +80,7 @@ Important Kindling routes:
 
 ```txt
 GET  /api/kindling/summary
+GET  /api/kindling/canonical-status
 GET  /api/kindling/companies
 POST /api/kindling/companies
 POST /api/kindling/service-offering

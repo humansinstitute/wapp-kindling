@@ -4,6 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "setup": "bun install",
+    "build": "bun run build:signer",
     "start": "bun src/server.ts",
     "dev": "bun --watch src/server.ts",
     "export:pipelines": "bun scripts/export-kindling-pipelines.ts",

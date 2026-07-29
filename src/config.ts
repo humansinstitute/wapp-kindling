@@ -13,3 +13,23 @@ export const PUBLIC_ORIGIN = (process.env.CHAT_WAPP_PUBLIC_ORIGIN || "").replace
 export const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || "chat-wapp-local-demo";
 export const WAPP_OWNER_NPUB = process.env.WAPP_OWNER_NPUB || "";
 export const WAPP_ALLOWED_NPUBS_JSON = process.env.WAPP_ALLOWED_NPUBS_JSON || "[]";
+
+function normalizeHttpBaseUrl(value: string, fallback: string): string {
+  try {
+    const parsed = new URL(value.trim() || fallback);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return fallback;
+    return parsed.toString().replace(/\/$/, "");
+  } catch {
+    return fallback;
+  }
+}
+
+// The local WApp-owned Kindling API port is the safe development default.
+// Autopilot injects the public/canonical URL for managed runtime operation.
+export const KINDLING_API_URL = normalizeHttpBaseUrl(
+  process.env.KINDLING_API_URL || "",
+  "http://127.0.0.1:41038",
+);
+export const KINDLING_COMPANY_SOURCE = process.env.KINDLING_COMPANY_SOURCE === "local"
+  ? "local"
+  : "canonical-api";

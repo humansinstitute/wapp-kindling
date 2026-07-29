@@ -18,7 +18,13 @@ import {
   verifyLoginEvent,
   verifyNip98Request,
 } from "./auth.ts";
-import { PIPELINE_NAME, PORT, PUBLIC_ORIGIN, WINGMAN_URL } from "./config.ts";
+import { KINDLING_COMPANY_SOURCE, PIPELINE_NAME, PORT, PUBLIC_ORIGIN, WINGMAN_URL } from "./config.ts";
+import {
+  canonicalApiStatus,
+  fetchCanonicalTarget,
+  syncCanonicalCompanies,
+  type CanonicalTarget,
+} from "./canonical-api.ts";
 import {
   acquireSchedulerLock,
   companyDataRingFilterValues,
@@ -218,6 +224,7 @@ function mapCompany(row: Record<string, unknown>) {
     profile: jsonParse<Record<string, unknown>>(row.profile_json, {}),
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
+    companySource: KINDLING_COMPANY_SOURCE,
   };
 }
 
@@ -236,6 +243,7 @@ function mapCompanyListItem(row: Record<string, unknown>) {
     fitBand: row.fit_score == null ? null : scoreBand(Number(row.fit_score)),
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
+    companySource: KINDLING_COMPANY_SOURCE,
   };
 }
 
@@ -4297,6 +4305,9 @@ function buildCompanyFilterQuery(filters: URLSearchParams | null = null) {
     values.push(value);
     clauses.push(`${column} = ?${values.length}`);
   };
+  if (KINDLING_COMPANY_SOURCE === "canonical-api") {
+    clauses.push("EXISTS (SELECT 1 FROM canonical_company_cache canonical WHERE canonical.company_id = companies.id)");
+  }
   add("industry", filters?.get("industry") || null);
   add("location", filters?.get("location") || null);
   const dataRing = filters?.get("dataRing") || null;
@@ -4333,7 +4344,12 @@ function buildCompanyFilterQuery(filters: URLSearchParams | null = null) {
 function companyBandCounts(filters: URLSearchParams | null = null) {
   // The band tab counts mirror the active "hide processed" toggle so, e.g., the
   // High Fit tab shows the number of fresh un-actioned high-fit targets.
-  const where = wantsHideProcessed(filters) ? `WHERE ${engagedExclusionClause("c")}` : "";
+  const countClauses = [];
+  if (KINDLING_COMPANY_SOURCE === "canonical-api") {
+    countClauses.push("EXISTS (SELECT 1 FROM canonical_company_cache canonical WHERE canonical.company_id = c.id)");
+  }
+  if (wantsHideProcessed(filters)) countClauses.push(engagedExclusionClause("c"));
+  const where = countClauses.length ? `WHERE ${countClauses.join(" AND ")}` : "";
   const row = db.query(`
     SELECT
       SUM(CASE WHEN m.maxscore >= 75 THEN 1 ELSE 0 END) AS high,
@@ -4363,7 +4379,10 @@ function countCompanies(filters: URLSearchParams | null = null) {
 }
 
 function countEnrichedCompanies() {
-  const row = db.query("SELECT COUNT(*) AS count FROM companies WHERE enrichment_status = 'complete'").get() as { count: number } | null;
+  const canonicalClause = KINDLING_COMPANY_SOURCE === "canonical-api"
+    ? " AND EXISTS (SELECT 1 FROM canonical_company_cache canonical WHERE canonical.company_id = companies.id)"
+    : "";
+  const row = db.query(`SELECT COUNT(*) AS count FROM companies WHERE enrichment_status = 'complete'${canonicalClause}`).get() as { count: number } | null;
   return Number(row?.count ?? 0);
 }
 
@@ -7541,7 +7560,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
   const { pathname } = url;
 
   if (pathname === "/api/health" && req.method === "GET") {
-    return json({ ok: true, now: new Date().toISOString() });
+    return json({ ok: true, now: new Date().toISOString(), canonicalApi: canonicalApiStatus() });
   }
 
   if (pathname === "/api/auth/challenge" && req.method === "POST") {
@@ -7572,6 +7591,12 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
         edit: hasAccess(session.pubkey, "edit"),
       },
     });
+  }
+
+  if (pathname === "/api/kindling/canonical-status" && req.method === "GET") {
+    const session = requireSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    return json({ canonicalApi: canonicalApiStatus() });
   }
 
   if (pathname === "/api/settings" && req.method === "GET") {
@@ -7679,7 +7704,14 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     const session = requireSession(req);
     if (!session) return json({ error: "unauthorized" }, 401);
     const compact = url.searchParams.get("compact") === "1" || url.searchParams.get("compact") === "true";
-    if (!compact) await reconcileActiveKindlingRuns();
+    if (!compact) {
+      await reconcileActiveKindlingRuns();
+      try {
+        await syncCanonicalCompanies();
+      } catch (error) {
+        return json({ error: error instanceof Error ? error.message : String(error), canonicalApi: canonicalApiStatus() }, 502);
+      }
+    }
     const companies = compact ? [] : listCompanies(null, { limit: COMPANY_LIST_LIMIT, offset: 0 });
     const recentRuns = (db.query("SELECT * FROM kindling_pipeline_runs ORDER BY updated_at DESC LIMIT 12").all() as Record<string, unknown>[]).map(mapRun);
     const discoveryJobs = (db.query("SELECT * FROM discovery_jobs ORDER BY updated_at DESC LIMIT 8").all() as Record<string, unknown>[]).map(mapDiscoveryJob);
@@ -7717,6 +7749,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
         limit: COMPANY_LIST_LIMIT,
       },
       compact,
+      canonicalApi: canonicalApiStatus(),
     });
   }
 
@@ -8599,6 +8632,12 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
   if (pathname === "/api/kindling/companies" && req.method === "GET") {
     const session = requireSession(req);
     if (!session) return json({ error: "unauthorized" }, 401);
+    let canonicalSync;
+    try {
+      canonicalSync = await syncCanonicalCompanies();
+    } catch (error) {
+      return json({ error: error instanceof Error ? error.message : String(error), canonicalApi: canonicalApiStatus() }, 502);
+    }
     const { limit, offset } = pagingFromParams(url.searchParams);
     const companies = listCompanies(url.searchParams, { limit, offset, compact: true });
     const withBandCounts = url.searchParams.get("withBandCounts") === "1" || url.searchParams.get("withBandCounts") === "true";
@@ -8608,6 +8647,8 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
       returned: companies.length,
       limit,
       offset,
+      source: canonicalSync.source,
+      syncCursor: canonicalSync.cursor,
       ...(withBandCounts ? { bandCounts: companyBandCounts(url.searchParams) } : {}),
     });
   }
@@ -8615,6 +8656,9 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
   if (pathname === "/api/kindling/companies" && req.method === "POST") {
     const session = requireEditSession(req);
     if (!session) return json({ error: "edit access required" }, 403);
+    if (KINDLING_COMPANY_SOURCE === "canonical-api") {
+      return json({ error: "Canonical companies must be created through Kindling API", companySource: KINDLING_COMPANY_SOURCE }, 409);
+    }
     const body = await readJson(req);
     const name = String(body.name ?? "").trim();
     if (!name) return json({ error: "name is required" }, 400);
@@ -8710,6 +8754,14 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     const session = requireSession(req);
     if (!session) return json({ error: "unauthorized" }, 401);
     const companyId = decodeURIComponent(companyMatch[1]!);
+    let canonicalTarget: CanonicalTarget | null = null;
+    if (KINDLING_COMPANY_SOURCE === "canonical-api") {
+      try {
+        canonicalTarget = await fetchCanonicalTarget(companyId);
+      } catch (error) {
+        return json({ error: error instanceof Error ? error.message : String(error), canonicalApi: canonicalApiStatus() }, 502);
+      }
+    }
     const row = db.query("SELECT * FROM companies WHERE id = ?1").get(companyId) as Record<string, unknown> | null;
     if (!row) return json({ error: "company not found" }, 404);
     const sources = (db.query("SELECT * FROM sources WHERE company_id = ?1 ORDER BY created_at DESC").all(companyId) as Record<string, unknown>[]).map(mapSource);
@@ -8732,9 +8784,18 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     const serviceFitAssessments = listServiceFitAssessmentsForCompany(companyId);
     const segments = listCompanySegments(companyId);
     const companyProfile = jsonParse<Record<string, unknown>>(row.profile_json, {});
-    const people = Array.isArray(companyProfile.decisionMakers) ? companyProfile.decisionMakers : [];
+    const canonicalEnrichment = canonicalTarget?.enrichment && typeof canonicalTarget.enrichment === "object"
+      ? canonicalTarget.enrichment as Record<string, unknown>
+      : {};
+    const people = Array.isArray(companyProfile.decisionMakers)
+      ? companyProfile.decisionMakers
+      : Array.isArray(canonicalEnrichment.decisionMakers)
+        ? canonicalEnrichment.decisionMakers
+        : [];
     return json({
       company: mapCompany(row),
+      companySource: KINDLING_COMPANY_SOURCE,
+      canonicalTarget,
       sources,
       signals,
       customerProfileVersions,
@@ -8759,6 +8820,21 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     const body = await readJson(req);
     const now = Date.now();
     const profile = { ...jsonParse<Record<string, unknown>>(existing.profile_json, {}), notes: String(body.notes ?? jsonParse<Record<string, unknown>>(existing.profile_json, {}).notes ?? "") };
+    if (KINDLING_COMPANY_SOURCE === "canonical-api") {
+      const canonicalFields = ["name", "location", "industry", "website", "duplicateStatus", "enrichmentStatus", "confidence"];
+      const attemptedCanonicalFields = canonicalFields.filter((field) => body[field] !== undefined);
+      if (attemptedCanonicalFields.length) {
+        return json({
+          error: "Canonical identity and enrichment facts are read-only in Kindling FE",
+          fields: attemptedCanonicalFields,
+          authority: "Kindling API",
+        }, 409);
+      }
+      db.query("UPDATE companies SET data_ring = ?1, profile_json = ?2 WHERE id = ?3")
+        .run(normalizeCompanyDataRing(body.dataRing ?? existing.data_ring), JSON.stringify(profile), companyId);
+      const row = db.query("SELECT * FROM companies WHERE id = ?1").get(companyId) as Record<string, unknown>;
+      return json({ company: mapCompany(row), companySource: KINDLING_COMPANY_SOURCE });
+    }
     db.query(`
       UPDATE companies
       SET name = ?1, location = ?2, industry = ?3, website = ?4, data_ring = ?5,
