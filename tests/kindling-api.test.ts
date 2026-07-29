@@ -4621,6 +4621,34 @@ describe("Canonical Kindling API adapter", () => {
     expect(mapped).not.toHaveProperty("notes");
   });
 
+  test("reserves one Tower row for bootstrap pagination lookahead", async () => {
+    const requests: URL[] = [];
+    const responses = [
+      { sync: { currentCursor: "2" }, snapshot: { recommendedPageSize: 500 } },
+      {
+        items: [{ id: "canonical-1", displayName: "One", changeSeq: 1 }],
+        page: { nextCursor: "page-2", hasMore: true },
+      },
+      {
+        items: [{ id: "canonical-2", displayName: "Two", changeSeq: 2 }],
+        page: { nextCursor: null, hasMore: false },
+      },
+    ];
+    const fetchImpl = async (input: string | URL | Request) => {
+      requests.push(new URL(String(input)));
+      return new Response(JSON.stringify(responses.shift()), { status: 200 });
+    };
+    const result = await syncCanonicalCompanies({
+      sourceMode: "canonical-api",
+      baseUrl: "https://canonical.kindling.test",
+      fetchImpl: fetchImpl as typeof fetch,
+      secretInput: secretKey,
+    });
+    expect(requests.slice(1).map((request) => request.searchParams.get("limit"))).toEqual(["499", "499"]);
+    expect(requests[2]!.searchParams.get("cursor")).toBe("page-2");
+    expect(result).toMatchObject({ mode: "bootstrap", cursor: "2", applied: 2 });
+  });
+
   test("commits each change page before advancing the sync cursor", async () => {
     const seen: string[] = [];
     const responses = [

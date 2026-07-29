@@ -221,7 +221,8 @@ async function runCanonicalSync(options: CanonicalRequestOptions = {}): Promise<
     }>("api/v1/bootstrap", options);
     let pageCursor: string | null = null;
     do {
-      const query = new URLSearchParams({ limit: String(bootstrap.snapshot.recommendedPageSize || 500) });
+      // Kindling API reserves one of Tower's 500 rows for cursor lookahead.
+      const query = new URLSearchParams({ limit: String(Math.min(499, bootstrap.snapshot.recommendedPageSize || 499)) });
       if (pageCursor) query.set("cursor", pageCursor);
       const page = await canonicalRequest<{
         items: CanonicalTarget[];
@@ -242,7 +243,7 @@ async function runCanonicalSync(options: CanonicalRequestOptions = {}): Promise<
     const payload = await canonicalRequest<{
       changes: Array<{ operation: string; companyId: string; target: CanonicalTarget | null }>;
       sync: { nextCursor: string; hasMore: boolean };
-    }>(`api/v1/targets/changes?since=${encodeURIComponent(cursor)}&limit=500&include=summary`, options);
+    }>(`api/v1/targets/changes?since=${encodeURIComponent(cursor)}&limit=499&include=summary`, options);
     for (const change of payload.changes) {
       if (change.operation === "delete" || !change.target) removeCanonicalTarget(change.companyId);
       else upsertCanonicalTarget(change.target);
