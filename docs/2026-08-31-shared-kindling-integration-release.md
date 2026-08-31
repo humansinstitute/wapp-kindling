@@ -22,11 +22,11 @@ service`, task `5ff305ee-b25d-4472-867e-e94a261eb79c`, from Pete message
     integration starts.
 - `/Users/mini/code/kindlingapi`
   - `feat/shared-kindling-service`
-  - commit `858728f`
+  - commits `858728f`, `71bbe46`
   - independently validated: typecheck and 42/42 tests.
 - `/Users/mini/code/kindling-fe`
   - `feat/collaborative-kindling-frontend`
-  - commits `a5a05fe`, `863537c`, `e583fe6`, `58e2b58`
+  - commits `a5a05fe`, `863537c`, `e583fe6`, `58e2b58`, `242f90f`
   - independently validated: `bun run validate`; 83 pass / 3 inherited full
     suite failures.
 
