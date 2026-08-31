@@ -44,7 +44,7 @@ pm2 start src/server.ts --name kindling-fe
 
 A direct `bun src/server.ts` run is acceptable only for isolated local development/debugging on a non-WApp port, and it must not pretend to be the live app-card runtime.
 
-Kindling API `/api/v1` is the authority for company identity and enrichment facts. Kindling FE uses its own app-card-injected `WAPP_NSEC` to sign NIP-98 requests. Never copy Kindling API's `WAPP_NSEC` into this app. Local workflow state remains keyed by canonical company ID.
+Kindling API `/api/v1` is the authority for company identity and enrichment facts. Kindling FE prepares exact canonical API reads for the signed-in browser user or agent to authorize with its own NIP-98 identity; the frontend server forwards only the short-lived signed event and never receives a private key. Do not configure a raw signing key on Kindling FE. Local workflow state remains keyed by canonical company ID.
 
 When checking health, prefer:
 
@@ -55,3 +55,11 @@ When checking health, prefer:
 - Autopilot-managed app logs.
 
 Do not restart Autopilot, Kindling API, the older Kindling app, or unrelated registered apps while operating Kindling FE unless a task explicitly requires it.
+
+## Conventional Commits
+
+- Every commit must follow [Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/).
+- Use `<type>[optional scope][!]: <description>`, with an optional body and footer(s).
+- Use `feat` for new features and `fix` for bug fixes. Other suitable types include `docs`, `refactor`, `test`, `build`, `ci`, `chore`, `perf`, `style`, and `revert`.
+- Mark breaking changes with `!` before `:` and/or a `BREAKING CHANGE: <description>` footer.
+- Keep unrelated changes in separate commits whenever practical.

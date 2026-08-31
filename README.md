@@ -4,7 +4,7 @@ Kindling FE is a local business-development WApp for shaping a service offering,
 
 Kindling API `/api/v1` is authoritative for company identity and enrichment facts. Kindling FE keeps offer-specific scores, notes, lists, outreach, campaigns, and other workflow state locally, keyed by the canonical API company ID. A separate `canonical_company_cache` table marks the compatibility projection explicitly; legacy local-company authority is available only with `KINDLING_COMPANY_SOURCE=local`.
 
-Kindling FE signs server-to-server API reads using its own `WAPP_NSEC`. Never reuse or copy Kindling API's `WAPP_NSEC`. The managed app card injects `KINDLING_API_URL`, which defaults to the local API WApp at `http://127.0.0.1:41038` for isolated development.
+Canonical reads use browser-mediated NIP-98. Kindling FE prepares an exact API URL, the active browser signer authorizes it as the signed-in user, and the frontend server forwards only that short-lived signed event to Kindling API. No raw signing key is configured in the frontend server, image, or browser bundle. The managed app card injects the runtime-only `KINDLING_API_URL`, which defaults to the local API WApp at `http://127.0.0.1:41038` for isolated development.
 
 ## Product Flow
 
@@ -61,6 +61,8 @@ User alias: honest-ivory-thicket
 
 Open Kindling from the Autopilot WApps/apps screen. The process is launched by Wingman with app environment such as `APP_ID`, `APP_LABEL`, `USER_ALIAS`, and an assigned `PORT`.
 
+Each Wingman machine needs its own clone and Autopilot app card. The durable Pete/Andy/CapRover setup, feature-branch workflow, backend access contract, and integration procedure are in [Collaborative development and deployment](docs/CollaborativeDevelopment.md).
+
 ## Direct Developer Run
 
 ```bash
@@ -72,6 +74,8 @@ Use a direct run only for isolated development/debugging outside the WApp card r
 
 You need a Nostr browser signer for login and for NIP-98 requests to Autopilot. Until access rules exist, the first signed-in user can bootstrap settings. After that, only configured read/edit npubs can use the app, and only edit users can change admin settings or role mappings.
 
+The company cache never syncs silently. Choose **Authorize API sync** in the Kindling header. Current, stale, offline/denied, and empty cache states are shown explicitly; a stale cache remains readable but is never labelled as current.
+
 ## Local Data
 
 The default SQLite path is `data/chat-wapp.sqlite`. The environment variable is still `CHAT_WAPP_DB_PATH` because this repo grew from the chat WApp starter.
@@ -81,6 +85,7 @@ Important Kindling routes:
 ```txt
 GET  /api/kindling/summary
 GET  /api/kindling/canonical-status
+POST /api/kindling/canonical-sync
 GET  /api/kindling/companies
 POST /api/kindling/companies
 POST /api/kindling/service-offering
@@ -108,6 +113,8 @@ Scan pipelines may call `POST /api/kindling/pipeline-write/target-scan` as compa
 ## Validation
 
 ```bash
-bun run check
-bun test
+bun run validate
+bun test # full inherited suite; see the collaboration guide for the current baseline classification
 ```
+
+`bun run validate` deterministically runs typecheck, focused canonical auth/client tests, browser syntax validation, the browser signer build, the deployment contract, and a repository-file secret audit. A Docker image build and isolated-port smoke procedure are documented in the collaboration guide.
