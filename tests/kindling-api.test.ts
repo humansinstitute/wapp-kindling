@@ -4632,6 +4632,22 @@ describe("Canonical Kindling API adapter", () => {
     });
   });
 
+  test("NIP-98 callers can coordinate canonical sync without a bearer session", async () => {
+    const body = {};
+    const result = await api("/api/nip98/kindling/canonical-sync", {
+      method: "POST",
+      body,
+      headers: nip98Headers("/api/nip98/kindling/canonical-sync", "POST", body),
+    });
+    expect(result.res.status).toBe(200);
+    expect(result.payload).toMatchObject({
+      source: "local",
+      mode: "compatibility",
+      complete: true,
+      requiresCanonicalAuth: false,
+    });
+  });
+
   test("accepts only fresh browser NIP-98 from the signed-in user for the exact canonical request", () => {
     const step = prepareCanonicalSync(pubkey, "canonical-api");
     const request = step.canonicalRequest!;

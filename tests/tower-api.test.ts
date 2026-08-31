@@ -1,4 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { sha256 } from "@noble/hashes/sha256";
+import { bytesToHex } from "@noble/hashes/utils";
 import { finalizeEvent, getPublicKey, nip19 } from "nostr-tools";
 import type { TowerMigration } from "../src/tower-db.ts";
 
@@ -140,6 +142,23 @@ function loginEvent(content: string) {
   }, secretKey);
 }
 
+function nip98Headers(path: string, method = "GET", body?: unknown) {
+  const tags = [
+    ["u", `http://kindling.test${path}`],
+    ["method", method],
+  ];
+  if (["POST", "PUT", "PATCH"].includes(method)) {
+    tags.push(["payload", bytesToHex(sha256(new TextEncoder().encode(JSON.stringify(body ?? {}))))]);
+  }
+  const event = finalizeEvent({
+    kind: 27235,
+    created_at: Math.floor(Date.now() / 1000),
+    tags,
+    content: "",
+  }, secretKey);
+  return { authorization: `Nostr ${btoa(JSON.stringify(event))}` };
+}
+
 describe("Tower-mode Kindling API facade", () => {
   test("startup provisions and migrates before route data access", async () => {
     fake.calls = [];
@@ -166,6 +185,23 @@ describe("Tower-mode Kindling API facade", () => {
     expect(me.payload.pubkey).toBe(pubkey);
     expect(me.payload.access).toMatchObject({ login: true, read: true, edit: true });
     expect(fake.calls.some((call) => call.op === "get" && call.table === "sessions")).toBe(true);
+  });
+
+  test("NIP-98 callers can coordinate canonical sync in Tower mode", async () => {
+    const body = {};
+    const result = await api("/api/nip98/kindling/canonical-sync", {
+      method: "POST",
+      body,
+      headers: nip98Headers("/api/nip98/kindling/canonical-sync", "POST", body),
+    });
+
+    expect(result.res.status).toBe(200);
+    expect(result.payload).toMatchObject({
+      source: "local",
+      mode: "compatibility",
+      complete: true,
+      requiresCanonicalAuth: false,
+    });
   });
 
   test("login challenge upsert tolerates Tower missing-row responses", async () => {

@@ -1085,6 +1085,27 @@ async function handleTowerApi(req: Request, url: URL): Promise<Response | null> 
     return json({ pubkey: auth.pubkey, npub: pubkeyToNpub(auth.pubkey), access: { read: await towerHasAccess(auth.pubkey, "read"), edit: await towerHasAccess(auth.pubkey, "edit") } });
   }
 
+  if (pathname === "/api/nip98/kindling/canonical-sync" && req.method === "POST") {
+    const auth = await verifyNip98Request(req, url);
+    if (!auth.ok) return json({ error: auth.error }, 401);
+    if (!(await towerHasAccess(auth.pubkey, "read"))) return json({ error: "read access required" }, 403);
+    const body = await readJson(req);
+    try {
+      const syncId = String(body.syncId ?? "").trim();
+      if (!syncId) return json(prepareCanonicalSync(auth.pubkey));
+      const authorization = String(body.canonicalAuthorization ?? "").trim();
+      if (!authorization) return json({ error: "canonicalAuthorization is required" }, 400);
+      return json(await continueCanonicalSync({ syncId, actorPubkey: auth.pubkey, authorization }));
+    } catch (error) {
+      const status = error instanceof CanonicalSyncConflictError
+        ? 409
+        : error instanceof CanonicalApiError
+          ? error.status
+          : 502;
+      return json({ error: error instanceof Error ? error.message : String(error), canonicalApi: canonicalApiStatus() }, status);
+    }
+  }
+
   if (pathname === "/api/nip98/pipeline-roles" && req.method === "GET") {
     const auth = await verifyNip98Request(req, url);
     if (!auth.ok) return json({ error: auth.error }, 401);
@@ -12001,6 +12022,27 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
         edit: hasAccess(verified.pubkey, "edit"),
       },
     });
+  }
+
+  if (pathname === "/api/nip98/kindling/canonical-sync" && req.method === "POST") {
+    const verified = await verifyNip98Request(req, url);
+    if (!verified.ok) return json({ error: verified.error }, 401);
+    if (!hasAccess(verified.pubkey, "read")) return json({ error: "read access required" }, 403);
+    const body = await readJson(req);
+    try {
+      const syncId = String(body.syncId ?? "").trim();
+      if (!syncId) return json(prepareCanonicalSync(verified.pubkey));
+      const authorization = String(body.canonicalAuthorization ?? "").trim();
+      if (!authorization) return json({ error: "canonicalAuthorization is required" }, 400);
+      return json(await continueCanonicalSync({ syncId, actorPubkey: verified.pubkey, authorization }));
+    } catch (error) {
+      const status = error instanceof CanonicalSyncConflictError
+        ? 409
+        : error instanceof CanonicalApiError
+          ? error.status
+          : 502;
+      return json({ error: error instanceof Error ? error.message : String(error), canonicalApi: canonicalApiStatus() }, status);
+    }
   }
 
   if (pathname === "/api/nip98/pipeline-roles" && req.method === "GET") {
