@@ -11,7 +11,10 @@
     "export:pipelines": "bun scripts/export-kindling-pipelines.ts",
     "build:signer": "bun scripts/build-nostr-signer.ts",
     "check": "tsc --noEmit",
-    "test": "bun test"
+    "test": "bun test",
+    "test:canonical": "bun test tests/kindling-api.test.ts --test-name-pattern 'Canonical Kindling API adapter'",
+    "validate:deploy": "bun scripts/validate-collaborative-frontend.ts",
+    "validate": "bun run check && bun run test:canonical && node --check public/app.js && bun run build && bun run validate:deploy"
   },
   "dependencies": {
     "@noble/hashes": "^1.8.0",
