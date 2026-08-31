@@ -221,7 +221,6 @@ const TABLES = {
     "created_at",
     "updated_at",
   ],
-  target_rankings: ["id", "company_id", "rank", "reason", "score_json", "created_at"],
   ranking_runs: [
     "id",
     "ranking_type",

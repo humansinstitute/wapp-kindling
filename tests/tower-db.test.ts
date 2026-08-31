@@ -1,27 +1,21 @@
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
 import { describe, expect, test } from "bun:test";
-import { getPublicKey, nip19, verifyEvent, type Event } from "nostr-tools";
-import { initializeTowerDbRuntime, loadTowerMigrations, TowerDbClient, type TowerMigration } from "../src/tower-db.ts";
 
-const secretKey = new Uint8Array(32).fill(9);
-const appNpub = nip19.npubEncode(getPublicKey(secretKey));
-const appNsec = nip19.nsecEncode(secretKey);
-const workspaceOwnerNpub = "npub1workspaceowner000000000000000000000000000000000000000000q5sc7p";
+process.env.KINDLING_COMPANY_SOURCE ??= "local";
 
-function decodeAuthorization(value: string | null): Event {
-  expect(value?.startsWith("Nostr ")).toBe(true);
-  return JSON.parse(atob(String(value).slice("Nostr ".length))) as Event;
-}
+const { initializeTowerDbRuntime, loadTowerMigrations, TowerDbClient } = await import("../src/tower-db.ts");
+type TowerMigration = import("../src/tower-db.ts").TowerMigration;
+
+const brokerUrl = "http://127.0.0.1:3600/api/internal/wapps/tower-db";
+const capability = "synthetic-installation-capability";
 
 describe("TowerDbClient", () => {
-  test("signs provision requests with app NIP-98 and payload hash", async () => {
+  test("forwards provision through the installation-scoped loopback broker", async () => {
     const calls: Array<{ url: string; init: RequestInit }> = [];
     const client = new TowerDbClient({
-      towerUrl: "https://tower.test/",
-      workspaceOwnerNpub,
-      appNpub,
-      appNsec,
+      brokerUrl,
+      capability,
       fetchImpl: (async (url: string | URL | Request, init?: RequestInit) => {
         calls.push({ url: String(url), init: init || {} });
         return new Response(JSON.stringify({ ok: true }), { status: 201 });
@@ -31,25 +25,21 @@ describe("TowerDbClient", () => {
     await client.provision("kindling");
 
     expect(calls).toHaveLength(1);
-    expect(calls[0]!.url).toBe(`https://tower.test/api/v4/workspaces/${encodeURIComponent(workspaceOwnerNpub)}/apps/${encodeURIComponent(appNpub)}/db/provision`);
+    expect(calls[0]!.url).toBe(brokerUrl);
     expect(calls[0]!.init.method).toBe("POST");
-    expect(calls[0]!.init.body).toBe(JSON.stringify({ app_slug: "kindling" }));
-    const event = decodeAuthorization(new Headers(calls[0]!.init.headers).get("authorization"));
-    expect(verifyEvent(event)).toBe(true);
-    expect(event.pubkey).toBe(getPublicKey(secretKey));
-    expect(event.kind).toBe(27235);
-    expect(event.tags).toContainEqual(["u", calls[0]!.url]);
-    expect(event.tags).toContainEqual(["method", "POST"]);
-    expect(event.tags).toContainEqual(["payload", bytesToHex(sha256(new TextEncoder().encode(String(calls[0]!.init.body))))]);
+    expect(new Headers(calls[0]!.init.headers).get("authorization")).toBe(`Bearer ${capability}`);
+    expect(JSON.parse(String(calls[0]!.init.body))).toEqual({
+      method: "POST",
+      path: "/provision",
+      body: { app_slug: "kindling" },
+    });
   });
 
-  test("sends migrations to Tower without exposing APP_NSEC in request data", async () => {
+  test("sends migrations through the broker without exposing its capability in request data", async () => {
     const requests: Array<{ url: string; body: string }> = [];
     const client = new TowerDbClient({
-      towerUrl: "https://tower.test",
-      workspaceOwnerNpub,
-      appNpub,
-      appNsec,
+      brokerUrl,
+      capability,
       fetchImpl: (async (url: string | URL | Request, init?: RequestInit) => {
         requests.push({ url: String(url), body: String(init?.body ?? "") });
         return new Response(JSON.stringify({ applied: [] }), { status: 200 });
@@ -59,9 +49,14 @@ describe("TowerDbClient", () => {
 
     await client.runMigrations(migrations);
 
-    expect(requests[0]!.url.endsWith("/db/migrations")).toBe(true);
-    expect(JSON.parse(requests[0]!.body)).toEqual({ migrations });
-    expect(requests[0]!.body.includes(appNsec)).toBe(false);
+    expect(requests[0]!.url).toBe(brokerUrl);
+    expect(JSON.parse(requests[0]!.body)).toEqual({ method: "POST", path: "/migrations", body: { migrations } });
+    expect(requests[0]!.body.includes(capability)).toBe(false);
+  });
+
+  test("rejects non-loopback brokers and missing capabilities", () => {
+    expect(() => new TowerDbClient({ brokerUrl: "https://tower.test/db", capability })).toThrow("loopback HTTP");
+    expect(() => new TowerDbClient({ brokerUrl, capability: "" })).toThrow("WAPP_TOWER_DB_CAPABILITY");
   });
 
   test("loads ordered Tower migration files with sha256 checksums", () => {

@@ -211,7 +211,9 @@ export async function towerGetAppSettings(store = getTowerStore()): Promise<AppS
   const values = new Map(rows.map((row) => [String(row.key), String(row.value ?? "")]));
   return {
     autopilotUrl: (values.get("autopilotUrl") || WINGMAN_URL || "").replace(/\/$/, ""),
+    publicOrigin: (values.get("publicOrigin") || "").replace(/\/$/, ""),
     defaultPipeline: values.get("defaultPipeline") || PIPELINE_NAME,
+    snoozeDays: Math.max(1, Number(values.get("snoozeDays") || 3)),
   };
 }
 

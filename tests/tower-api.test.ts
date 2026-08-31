@@ -1,11 +1,11 @@
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { finalizeEvent, getPublicKey, nip19 } from "nostr-tools";
 import type { TowerMigration } from "../src/tower-db.ts";
 
 const secretKey = new Uint8Array(32).fill(8);
 const pubkey = getPublicKey(secretKey);
 
-process.env.KINDLING_DB_MODE = "tower";
+process.env.KINDLING_COMPANY_SOURCE ??= "local";
 process.env.WINGMAN_URL = "http://127.0.0.1:9";
 process.env.WAPP_OWNER_NPUB = nip19.npubEncode(pubkey);
 
@@ -98,6 +98,7 @@ let fake: FakeTowerClient;
 let token = "";
 
 beforeEach(async () => {
+  process.env.KINDLING_DB_MODE = "tower";
   fake = new FakeTowerClient();
   resetTowerStoreForTests(createTowerStore(fake as never));
   token = "";
@@ -107,6 +108,10 @@ beforeEach(async () => {
     role: "edit",
     created_at: 1,
   }, `${pubkey}:edit`);
+});
+
+afterEach(() => {
+  delete process.env.KINDLING_DB_MODE;
 });
 
 async function api(path: string, options: { method?: string; body?: unknown; headers?: Record<string, string> } = {}) {

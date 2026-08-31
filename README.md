@@ -1,8 +1,10 @@
 # Kindling WApp
 
-Kindling is a local business-development WApp for shaping a service offering, building target lists, reviewing companies, and drafting outreach with Wingman Autopilot pipelines.
+Kindling FE is a local business-development WApp for shaping a service offering, building target lists, reviewing companies, and drafting outreach with Wingman Autopilot pipelines.
 
-The WApp owns the user interface, Nostr login, access rules, business records, and local SQLite database. Autopilot owns the pipeline runs and agent work. Pipeline results return to Kindling through run-scoped webhooks and write APIs.
+Kindling API `/api/v1` is authoritative for company identity and enrichment facts. Kindling FE keeps offer-specific scores, notes, lists, outreach, campaigns, and other workflow state locally, keyed by the canonical API company ID. A separate `canonical_company_cache` table marks the compatibility projection explicitly; legacy local-company authority is available only with `KINDLING_COMPANY_SOURCE=local`.
+
+Canonical reads use browser-mediated NIP-98. Kindling FE prepares an exact API URL, the active browser signer authorizes it as the signed-in user, and the frontend server forwards only that short-lived signed event to Kindling API. No raw signing key is configured in the frontend server, image, or browser bundle. The managed app card injects the runtime-only `KINDLING_API_URL`, which defaults to the local API WApp at `http://127.0.0.1:41038` for isolated development.
 
 ## Product Flow
 
@@ -50,15 +52,16 @@ The SQLite database is runtime state and is migrated separately. Use `bun script
 
 Kindling should normally be launched and tested from its Wingman Autopilot WApp card. WApps are registered app cards in Autopilot, and the card owns the runtime port and public app URL. Do not pick an arbitrary local port for normal testing.
 
-For Pete's local Wingman instance, the Kindling app card is:
+For Pete's local Wingman instance, use the separately registered `Kindling FE` app card described in `AGENTS.md`. The older Kindling app remains a sibling deployment and is not this checkout.
 
 ```txt
-App label: Kindling
-App ID: c8dc3b14-6869-444f-94c3-37ccb2348cc9
+App label: Kindling FE
 User alias: honest-ivory-thicket
 ```
 
 Open Kindling from the Autopilot WApps/apps screen. The process is launched by Wingman with app environment such as `APP_ID`, `APP_LABEL`, `USER_ALIAS`, and an assigned `PORT`.
+
+Each Wingman machine needs its own clone and Autopilot app card. The durable Pete/Andy/CapRover setup, feature-branch workflow, backend access contract, and integration procedure are in [Collaborative development and deployment](docs/CollaborativeDevelopment.md).
 
 ## Direct Developer Run
 
@@ -71,20 +74,22 @@ Use a direct run only for isolated development/debugging outside the WApp card r
 
 You need a Nostr browser signer for login and for NIP-98 requests to Autopilot. Until access rules exist, the first signed-in user can bootstrap settings. After that, only configured read/edit npubs can use the app, and only edit users can change admin settings or role mappings.
 
-## Database Runtime
+The company cache never syncs silently. Choose **Authorize API sync** in the Kindling header. Current, stale, offline/denied, and empty cache states are shown explicitly; a stale cache remains readable but is never labelled as current.
+
+## Local Data And Database Runtime
 
 SQLite remains the default for tests and direct local fallback. The default SQLite path is `data/chat-wapp.sqlite`. The environment variable is still `CHAT_WAPP_DB_PATH` because this repo grew from the chat WApp starter.
 
-When Autopilot starts Kindling as a Tower-backed WApp, it injects the app identity and Tower binding:
+When Autopilot starts Kindling with Tower-backed local workflow storage, it injects an installation-scoped loopback broker contract:
 
 ```txt
-APP_NPUB
-APP_NSEC
-TOWER_URL
-WORKSPACE_OWNER_NPUB
+WAPP_DB_MODE=tower-api
+WAPP_APP_NPUB
+WAPP_TOWER_DB_BROKER_URL
+WAPP_TOWER_DB_CAPABILITY
 ```
 
-Tower mode is enabled when those four values are present, or explicitly with `KINDLING_DB_MODE=tower`. On startup Kindling signs Tower WApp DB requests with `APP_NSEC`, provisions its WApp DB namespace, and applies SQL migrations from `src/db/migrations/` before serving. `APP_NSEC` must only be injected as runtime secret material; do not write it into repo files, logs, or browser-visible responses.
+Tower mode is enabled by `WAPP_DB_MODE=tower-api` or a complete broker URL/capability pair. On startup Kindling asks the loopback Autopilot broker to provision its bound WApp DB namespace and apply SQL migrations from `src/db/migrations/`. Autopilot signs only the permitted own-namespace Tower requests from encrypted custody; the frontend process never receives a private signing key. The short-lived capability must remain process-only and must not appear in logs, browser responses, or committed files.
 
 Tower v1 exposes provision, migrations, and constrained per-table CRUD/query APIs. Kindling keeps browser auth, user/session/access checks, pipeline webhooks, and domain routes inside the WApp backend; browsers and agents should call Kindling APIs, not Tower DB directly.
 
@@ -94,6 +99,8 @@ Important Kindling routes:
 
 ```txt
 GET  /api/kindling/summary
+GET  /api/kindling/canonical-status
+POST /api/kindling/canonical-sync
 GET  /api/kindling/companies
 POST /api/kindling/companies
 POST /api/kindling/service-offering
@@ -121,6 +128,8 @@ Scan pipelines may call `POST /api/kindling/pipeline-write/target-scan` as compa
 ## Validation
 
 ```bash
-bun run check
-bun test
+bun run validate
+bun test # full inherited suite; see the collaboration guide for the current baseline classification
 ```
+
+`bun run validate` deterministically runs typecheck, focused canonical auth/client tests, browser syntax validation, the browser signer build, the deployment contract, and a repository-file secret audit. A Docker image build and isolated-port smoke procedure are documented in the collaboration guide.

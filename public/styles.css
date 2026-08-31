@@ -202,6 +202,52 @@ button[aria-busy="true"]::after {
   min-width: 190px;
 }
 
+.loginMethod {
+  display: grid;
+  justify-items: center;
+  gap: 12px;
+  width: 100%;
+  max-width: 360px;
+  margin: 0 auto;
+}
+
+.nsecLabel {
+  font-size: 13px;
+  color: var(--muted);
+  justify-self: start;
+}
+
+#nsecInput {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: inherit;
+}
+
+.nsecNote {
+  font-size: 12px;
+  color: var(--muted);
+  text-align: left;
+  margin: 0;
+  line-height: 1.45;
+}
+
+.nsecHttpsNote {
+  color: #9b2d1f;
+}
+
+/* Text-style toggles between the two login methods — opt out of the accent
+   button styling that .login button applies. */
+.login button.loginLink {
+  background: none;
+  border: none;
+  color: var(--accent);
+  min-width: 0;
+  padding: 2px 4px;
+  font-size: 13px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
 .error {
   min-height: 22px;
   color: #9b2d1f;
@@ -316,6 +362,356 @@ button[aria-busy="true"]::after {
   background: rgba(255, 255, 255, 0.86);
 }
 
+.focus {
+  min-height: 100vh;
+  padding: 48px clamp(24px, 6vw, 72px) 48px;
+  background: linear-gradient(180deg, #fcfbf7 0%, var(--bg) 100%);
+}
+
+.focusInner {
+  display: grid;
+  gap: 28px;
+  width: 100%;
+  max-width: 980px;
+  margin: 0 auto;
+}
+
+.focusGreeting {
+  display: grid;
+  gap: 4px;
+}
+
+.focusGreeting h1 {
+  margin: 0;
+  font-size: 44px;
+  line-height: 1.02;
+}
+
+.focusLead {
+  margin: 0;
+  font-size: 22px;
+  color: var(--muted);
+}
+
+.focusLead strong {
+  color: var(--ink);
+}
+
+.focusDeckCount {
+  margin: 6px 0 0;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--muted);
+}
+
+.focusStage {
+  display: grid;
+  gap: 18px;
+  width: min(640px, 100%);
+  margin: 0 auto;
+}
+
+.focusCardSkeleton {
+  min-height: 360px;
+  background: linear-gradient(110deg, #f2efe9 8%, #faf8f4 18%, #f2efe9 33%);
+  background-size: 220% 100%;
+  animation: focusShimmer 1.2s linear infinite;
+  border: 1px solid rgba(200, 195, 184, 0.6);
+}
+
+@keyframes focusShimmer {
+  to { background-position: -220% 0; }
+}
+
+.focusCardStack {
+  position: relative;
+}
+
+/* Decorative shadowed layers behind the front card to imply a deck. */
+.focusCardStack::before,
+.focusCardStack::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 14px;
+  background: var(--panel);
+  border: 1px solid rgba(200, 195, 184, 0.7);
+  box-shadow: var(--shadow-soft);
+  transform-origin: center bottom;
+}
+
+.focusCardStack::after {
+  transform: translate(7px, -9px) rotate(2.2deg);
+  opacity: 0.92;
+  z-index: 1;
+}
+
+.focusCardStack::before {
+  transform: translate(-5px, -17px) rotate(-2.6deg);
+  opacity: 0.8;
+  z-index: 0;
+}
+
+.focusCardStack[data-depth="0"]::before,
+.focusCardStack[data-depth="0"]::after,
+.focusCardStack[data-depth="1"]::before {
+  display: none;
+}
+
+.focusCard {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  gap: 12px;
+  padding: 28px;
+  background: var(--panel);
+  border: 1px solid rgba(200, 195, 184, 0.9);
+  border-radius: 14px;
+  box-shadow: var(--shadow-soft);
+}
+
+.focusCardTop {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.focusRank {
+  font-weight: 800;
+  color: var(--accent-dark);
+}
+
+.focusScore {
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: #eef6f3;
+  color: var(--accent-dark);
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.focusConfidence {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.focusName {
+  margin: 0;
+  font-size: 34px;
+  line-height: 1.05;
+}
+
+.focusMeta {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.focusOffering {
+  margin: 0;
+  font-weight: 650;
+  color: var(--accent-2);
+}
+
+.focusWebsite {
+  margin: 0;
+  font-size: 14px;
+}
+
+.focusLink {
+  color: var(--accent);
+  font-weight: 600;
+  word-break: break-all;
+}
+
+.focusContacts {
+  margin-top: 4px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+  display: grid;
+  gap: 10px;
+}
+
+.focusContactsTitle {
+  margin: 0;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.focusContactPager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  margin-top: 2px;
+}
+
+.focusContactArrow {
+  width: 32px;
+  height: 32px;
+  border-radius: 999px;
+  font-size: 18px;
+  line-height: 1;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  background: var(--panel);
+}
+
+.focusContactArrow:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.focusContactPosition {
+  min-width: 96px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.focusContactList {
+  display: grid;
+  gap: 10px;
+}
+
+.focusContact {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+.focusContactAvatar {
+  flex: none;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: #eef6f3;
+  color: var(--accent-dark);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.focusContactBody {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.focusContactName {
+  font-weight: 650;
+  font-size: 15px;
+}
+
+.focusContactRole {
+  font-weight: 500;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.focusContactLinks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.focusContactChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.focusContactChip:hover {
+  border-color: var(--accent);
+  color: var(--accent-dark);
+}
+
+.focusContactMuted {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.focusReason,
+.focusNext,
+.focusCaveats {
+  margin: 0;
+  color: var(--ink);
+  font-size: 15px;
+  line-height: 1.45;
+}
+
+.focusCaveats {
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.focusOpen {
+  justify-self: start;
+  margin-top: 6px;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.focusNav {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+}
+
+.focusArrow {
+  width: 52px;
+  height: 52px;
+  border-radius: 999px;
+  font-size: 26px;
+  line-height: 1;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  background: var(--panel);
+}
+
+.focusArrow:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.focusPosition {
+  min-width: 84px;
+  text-align: center;
+  color: var(--muted);
+  font-weight: 650;
+}
+
+.focusHint,
+.focusEmpty {
+  margin: 0;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.focusEmpty {
+  padding: 32px 8px;
+  font-size: 15px;
+}
+
 .actPage {
   min-height: 100vh;
   background:
@@ -345,6 +741,49 @@ button[aria-busy="true"]::after {
   font-size: 42px;
   line-height: 1.04;
   letter-spacing: 0;
+}
+
+.canonicalApiStatus {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.canonicalCacheBanner {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 12px 14px;
+  border: 1px solid #d9a441;
+  border-radius: 8px;
+  background: #fff7df;
+  color: #5f4615;
+}
+
+.canonicalCacheBanner.current {
+  border-color: rgba(17, 107, 93, 0.35);
+  background: rgba(17, 107, 93, 0.08);
+  color: var(--ink);
+}
+
+.canonicalCacheBanner div {
+  display: grid;
+  gap: 3px;
+}
+
+.canonicalCacheBanner span,
+.canonicalCacheBanner small,
+.canonicalCacheBanner p {
+  margin: 0;
+  font-size: 12px;
+}
+
+.canonicalCacheBanner small {
+  color: #8a301f;
+}
+
+.canonicalCacheBanner p {
+  max-width: 440px;
 }
 
 .kindlingHeaderActions,
@@ -645,6 +1084,102 @@ button[aria-busy="true"]::after {
 .serviceProfileHeader span {
   color: var(--muted);
   font-size: 13px;
+}
+
+/* About Adapt — company-level overview hero */
+.aboutAdapt {
+  display: grid;
+  gap: 12px;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: #fbfaf7;
+}
+
+.aboutAdaptTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.aboutEyebrow {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent);
+}
+
+.aboutVersion {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.aboutAdapt h2 {
+  margin: 0;
+  font-size: 24px;
+  line-height: 1.12;
+}
+
+.aboutSummary {
+  margin: 0;
+  color: var(--ink);
+}
+
+.aboutPositioning {
+  display: grid;
+  gap: 4px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.aboutPositioning strong {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+
+.aboutPositioning p {
+  margin: 0;
+  color: var(--ink);
+}
+
+/* What Adapt offers — services section */
+.offersHeader {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.offersCount {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent-2);
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(186, 85, 55, 0.12);
+}
+
+.serviceCardGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+}
+
+.serviceCard {
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #fff;
+}
+
+.serviceCard h4 {
+  margin: 0;
+  font-size: 16px;
 }
 
 .profileSection {
@@ -1118,6 +1653,13 @@ button[aria-busy="true"]::after {
   font-size: 12px;
 }
 
+.companyRowBadges {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .modalBackdrop {
   position: fixed;
   inset: 0;
@@ -1310,8 +1852,57 @@ button[aria-busy="true"]::after {
 
 .shell {
   min-height: 100vh;
+}
+
+.chatScreen {
+  height: 100vh;
   display: grid;
-  grid-template-columns: 310px minmax(0, 1fr);
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  background: var(--panel-soft);
+}
+
+.chatScreenHeader {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 22px 40px 14px;
+}
+
+.chatScreenTitle .eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.chatScreenTitle h1 {
+  margin: 4px 0 0;
+  font-size: 24px;
+  letter-spacing: -0.01em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chatScreenActions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.chatScreenActions .newChat {
+  width: auto;
+  border-radius: 999px;
+  padding: 9px 16px;
+}
+
+.chatTabs {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding: 2px 40px 16px;
+  border-bottom: 1px solid var(--line);
+  scrollbar-width: thin;
 }
 
 .sidebar {
@@ -1600,25 +2191,33 @@ textarea:focus {
 
 .messages {
   overflow: auto;
-  padding: 24px;
+  padding: 28px 40px;
   display: flex;
   flex-direction: column;
   gap: 14px;
+  width: 100%;
 }
 
 .message {
-  max-width: min(760px, 92%);
-  padding: 13px 15px;
+  max-width: 82%;
+  padding: 13px 18px;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 14px;
   background: var(--panel);
   white-space: pre-wrap;
+  box-shadow: var(--shadow-soft);
 }
 
 .message.user {
   align-self: flex-end;
-  background: #e8f1ee;
-  border-color: #b9d1ca;
+  background: var(--accent);
+  border-color: var(--accent-dark);
+  color: #fff;
+  border-bottom-right-radius: 5px;
+}
+
+.message.assistant {
+  border-bottom-left-radius: 5px;
 }
 
 .message.assistant {
@@ -1638,10 +2237,12 @@ textarea:focus {
 .composer {
   border-top: 1px solid var(--line);
   background: var(--panel);
-  padding: 14px;
+  padding: 16px 40px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 10px;
+  gap: 12px;
+  width: 100%;
+  align-items: end;
 }
 
 textarea {
@@ -1672,8 +2273,16 @@ textarea {
 }
 
 .composer textarea {
-  min-height: 44px;
-  max-height: 180px;
+  min-height: 50px;
+  max-height: 160px;
+  resize: none;
+  border-radius: 12px;
+  padding: 13px 15px;
+}
+
+.composer button {
+  border-radius: 12px;
+  height: 50px;
 }
 
 @media (max-width: 760px) {
@@ -1705,6 +2314,10 @@ textarea {
 
   .kindlingHeader,
   .kindlingHeaderActions {
+    display: grid;
+  }
+
+  .canonicalCacheBanner {
     display: grid;
   }
 
@@ -1818,3 +2431,1679 @@ textarea {
     height: calc(100vh - 238px);
   }
 }
+
+/* Scored view: High / Medium / Low band tabs */
+.scoredTabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.scoredTab {
+  flex: 1;
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+.scoredTab:hover,
+.scoredTab:focus-visible {
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+.scoredTab.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.scoredTabCount {
+  display: inline-flex;
+  min-width: 22px;
+  height: 20px;
+  padding: 0 6px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: rgba(23, 33, 31, 0.08);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+.scoredTab.active .scoredTabCount {
+  background: rgba(255, 255, 255, 0.22);
+  color: #fff;
+}
+.scoredBandBlurb {
+  margin: 0 0 12px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+.scoredDraftToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.kindlingLoadingPanel {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 220px;
+}
+
+.kindlingLoading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+  font-size: 0.95rem;
+}
+
+.kindlingSpinner {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--muted) 35%, transparent);
+  border-top-color: var(--muted);
+  animation: spin 0.7s linear infinite;
+}
+
+/* ===== Persistent left drawer (app sidebar) ===== */
+:root {
+  --nav-w: 248px;
+  --nav-w-collapsed: 68px;
+}
+
+#app.withNav > section:not(.hidden) {
+  margin-left: var(--nav-w);
+  transition: margin-left 0.18s ease;
+}
+
+#app.withNav.navCollapsed > section:not(.hidden) {
+  margin-left: var(--nav-w-collapsed);
+}
+
+.appNav {
+  position: fixed;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: var(--nav-w);
+  z-index: 40;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 18px 14px 14px;
+  background: #fbfaf6;
+  border-right: 1px solid rgba(200, 195, 184, 0.7);
+  transition: width 0.18s ease;
+}
+
+.appNav.collapsed {
+  width: var(--nav-w-collapsed);
+  padding: 18px 10px 14px;
+}
+
+.appNavTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 4px 6px 10px;
+}
+
+.appNavBrand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  font-weight: 760;
+  color: var(--accent-2);
+  font-size: 20px;
+  cursor: pointer;
+}
+
+.appNav.collapsed {
+  cursor: pointer;
+}
+
+.appNavMark {
+  width: 34px;
+  height: 34px;
+  flex: none;
+  object-fit: cover;
+  border-radius: 8px;
+  border: 1px solid rgba(17, 107, 93, 0.2);
+  background: #fff8ea;
+}
+
+.appNav.collapsed .appNavBrandName,
+.appNav.collapsed .appNavLabel,
+.appNav.collapsed .appNavCount,
+.appNav.collapsed .appNavUserText {
+  display: none;
+}
+
+.appNav.collapsed .appNavTop {
+  justify-content: center;
+}
+
+.appNav.collapsed .appNavCollapse {
+  display: none;
+}
+
+.appNavCollapse {
+  flex: none;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+  font-size: 15px;
+}
+
+.appNavCollapse:hover {
+  background: rgba(23, 33, 31, 0.06);
+}
+
+.appNavList {
+  display: grid;
+  gap: 3px;
+  align-content: start;
+  flex: 1;
+}
+
+.appNavItem {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 10px 12px;
+  text-align: left;
+  background: transparent;
+  border-color: transparent;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 600;
+  border-radius: 10px;
+}
+
+.appNav.collapsed .appNavItem {
+  justify-content: center;
+  padding: 10px;
+}
+
+.appNavItem:hover {
+  background: rgba(23, 33, 31, 0.05);
+}
+
+.appNavItem.active {
+  background: #eef6f3;
+  color: var(--accent-dark);
+}
+
+.appNavIcon {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  color: var(--accent);
+}
+
+.appNavItem.active .appNavIcon {
+  color: var(--accent-dark);
+}
+
+.appNavIcon svg {
+  width: 20px;
+  height: 20px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.appNavLabel {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.appNavCount {
+  flex: none;
+  min-width: 22px;
+  padding: 1px 7px;
+  text-align: center;
+  border-radius: 999px;
+  background: var(--accent-2);
+  color: #fff;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.appNavItem.active .appNavCount {
+  background: var(--accent);
+}
+
+.appNavUser {
+  margin-top: auto;
+  border-top: 1px solid rgba(200, 195, 184, 0.7);
+  padding-top: 12px;
+}
+
+.appNavUserInner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px;
+  border-radius: 12px;
+}
+
+.appNav.collapsed .appNavUserInner {
+  justify-content: center;
+  padding: 6px 0;
+}
+
+.appNavAvatar {
+  flex: none;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  overflow: hidden;
+  display: grid;
+  place-items: center;
+  background: var(--ink);
+  color: #fff;
+  font-weight: 700;
+}
+
+.appNavAvatarImg {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.appNavUserText {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+}
+
+.appNavUserName {
+  font-weight: 650;
+  font-size: 14px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.appNavUserNpub {
+  font-size: 12px;
+  color: var(--muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.appNavLogout {
+  flex: none;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  border-radius: 8px;
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+}
+
+.appNavLogout:hover {
+  background: rgba(186, 85, 55, 0.12);
+  color: var(--accent-2);
+}
+
+.appNavLogout svg {
+  width: 18px;
+  height: 18px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.8;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.appNav.collapsed .appNavLogout {
+  display: none;
+}
+
+/* ===== Lightweight pages (Service Offering, Company List) ===== */
+.servicePage,
+.companyListPage {
+  min-height: 100vh;
+  background: var(--bg);
+}
+
+.pageInner {
+  width: 100%;
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 40px clamp(24px, 5vw, 56px) 56px;
+  display: grid;
+  gap: 20px;
+  align-content: start;
+}
+
+.pageTopHeader {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+}
+
+.pageTopHeader h1 {
+  margin: 0;
+  font-size: 34px;
+}
+
+.pageCount {
+  color: var(--muted);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.pageLoading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 40px 8px;
+  color: var(--muted);
+}
+
+.pageError,
+.pageEmpty {
+  padding: 24px 8px;
+  color: var(--muted);
+}
+
+.companyListRows {
+  display: grid;
+  gap: 6px;
+}
+
+.companyListRow {
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+  background: var(--panel-soft);
+  border: 1px solid rgba(200, 195, 184, 0.7);
+  border-radius: 10px;
+  cursor: pointer;
+  transition: border-color 140ms ease, box-shadow 140ms ease, background 140ms ease;
+}
+
+.companyListRow:hover,
+.companyListRow:focus-visible {
+  border-color: var(--accent);
+  background: var(--panel);
+  box-shadow: var(--shadow-soft);
+  outline: none;
+}
+
+.companyRowMeta {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.companyRowSite {
+  font-size: 13px;
+  color: var(--accent);
+  word-break: break-all;
+}
+
+@media (max-width: 640px) {
+  :root { --nav-w: 220px; }
+  .appNav:not(.collapsed) { box-shadow: var(--shadow-soft); }
+}
+
+/* Company List band tabs sit in the page grid (gap handles spacing). */
+.companyBandTabs {
+  margin-bottom: 0;
+  flex-wrap: wrap;
+}
+.companyListFilters {
+  display: flex;
+  justify-content: flex-end;
+  margin: 10px 0 4px;
+}
+.companyFilterToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+  color: var(--muted);
+  border-radius: 999px;
+  padding: 7px 14px;
+  font-weight: 600;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+.companyFilterToggle:hover,
+.companyFilterToggle:focus-visible {
+  border-color: var(--line-strong);
+  color: var(--ink);
+}
+.companyFilterToggleDot {
+  width: 30px;
+  height: 18px;
+  border-radius: 999px;
+  background: rgba(23, 33, 31, 0.14);
+  position: relative;
+  flex: none;
+  transition: background 0.15s ease;
+}
+.companyFilterToggleDot::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.15s ease;
+}
+.companyFilterToggle.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.companyFilterToggle.active .companyFilterToggleDot {
+  background: rgba(255, 255, 255, 0.35);
+}
+.companyFilterToggle.active .companyFilterToggleDot::after {
+  transform: translateX(12px);
+}
+/* Pager sits above the list — flip the divider to the bottom edge. */
+.companyListPager {
+  margin-top: 0;
+  padding-top: 0;
+  padding-bottom: 12px;
+  border-top: none;
+  border-bottom: 1px solid var(--line);
+}
+
+/* ===== On Deck card actions ===== */
+.focusActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+.focusAction {
+  font-weight: 650;
+}
+.focusActionSent {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.focusActionSnooze {
+  background: var(--panel);
+  border-color: var(--line-strong);
+  color: var(--text-muted, var(--accent-2));
+}
+.focusActionSnooze:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.focusActionDismiss {
+  background: var(--panel);
+  border-color: var(--line-strong);
+  color: var(--accent-2);
+}
+.focusActionGhost {
+  background: var(--panel);
+  border-color: var(--accent);
+  color: var(--accent);
+  margin-left: auto;
+}
+.focusActionGhost:hover {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+/* ===== Results page ===== */
+.resultsPage {
+  min-height: 100vh;
+  background: var(--bg);
+}
+.resultsInner {
+  width: 100%;
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 40px clamp(24px, 5vw, 56px) 56px;
+  display: grid;
+  gap: 16px;
+  align-content: start;
+}
+.resultsTabs {
+  margin-bottom: 0;
+  flex-wrap: wrap;
+}
+.resultsSearch {
+  display: flex;
+  gap: 8px;
+}
+.resultsSearch input {
+  flex: 1;
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--panel);
+}
+.resultsPager {
+  margin-top: 0;
+  padding-top: 0;
+  padding-bottom: 12px;
+  border-top: none;
+  border-bottom: 1px solid var(--line);
+}
+.resultsListPanel {
+  display: grid;
+  gap: 8px;
+}
+.resultRow {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 14px;
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+.resultRowMain {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.resultRowHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.resultRowHead strong {
+  font-size: 15px;
+}
+.resultFit {
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  background: #eef6f3;
+  color: var(--accent-dark);
+}
+.resultFit-medium { background: #fbf3e6; color: var(--pending); }
+.resultFit-low { background: #f1efe9; color: var(--muted); }
+.resultMeta,
+.resultTiming {
+  color: var(--muted);
+  font-size: 13px;
+}
+.resultReason {
+  margin: 2px 0 0;
+  font-size: 14px;
+  color: var(--ink);
+}
+.resultRowActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  flex: none;
+}
+.resultBtn {
+  padding: 7px 11px;
+  font-size: 13px;
+  font-weight: 650;
+}
+.resultBtnGood {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+
+/* ===== Reason / outcome modal ===== */
+.reasonModalRoot {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+}
+.reasonModalBackdrop {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(23, 33, 31, 0.42);
+}
+.reasonModal {
+  width: min(460px, 100%);
+  background: var(--panel);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  padding: 22px;
+  display: grid;
+  gap: 14px;
+}
+.reasonModalTitle {
+  margin: 0;
+  font-size: 20px;
+}
+.reasonModalMessage {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+.reasonModalField {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--muted);
+}
+.reasonModalField select,
+.reasonModalField textarea {
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--ink);
+  font-weight: 400;
+}
+.reasonModalError {
+  margin: 0;
+  color: #9b2d1f;
+  font-size: 13px;
+}
+.reasonModalActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.reasonModalConfirm {
+  background: var(--accent-2);
+  border-color: var(--accent-2);
+  color: #fff;
+}
+
+/* ---- On Deck company details modal ------------------------------------- */
+/* Sits above the left nav (z-index 40) so it reads as a true overlay. */
+.focusDetailBackdrop {
+  z-index: 60;
+  background: rgba(23, 33, 30, 0.55);
+  padding: 0;
+  place-items: stretch;
+}
+
+.focusDetailPanel {
+  width: 80vw;
+  height: 86vh;
+  max-width: none;
+  max-height: none;
+  margin: auto;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: 14px;
+}
+
+.focusDetailHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 20px 26px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-soft);
+}
+
+.focusDetailHeading h2 {
+  margin: 4px 0 2px;
+  font-size: 24px;
+  letter-spacing: 0;
+}
+
+.focusDetailMeta {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+.focusDetailMeta a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+.focusDetailHeaderRight {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.focusDetailFit {
+  font-size: 13px;
+  padding: 4px 12px;
+}
+
+.focusDetailClose {
+  flex: none;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border-radius: 50%;
+  font-size: 16px;
+  line-height: 1;
+  color: var(--muted);
+}
+
+.focusDetailBody {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 22px 26px 30px;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.focusDetailColumns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.focusDetailCard {
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--panel);
+}
+
+.focusDetailCard h3 {
+  margin: 0 0 12px;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.focusDetailCard .focusContacts {
+  margin-top: 0;
+  border-top: none;
+  padding-top: 0;
+}
+
+/* ===== Reviewer feedback card ===== */
+.companyFeedbackCard h3 {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.feedbackSaved {
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+}
+.feedbackVerdicts {
+  display: flex;
+  gap: 8px;
+}
+.feedbackVerdictBtn {
+  flex: 1;
+  padding: 9px 12px;
+  font-size: 14px;
+  font-weight: 650;
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  cursor: pointer;
+}
+.feedbackVerdictGood.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.feedbackVerdictBad.active {
+  background: var(--accent-2);
+  border-color: var(--accent-2);
+  color: #fff;
+}
+.feedbackHint {
+  margin: 14px 0 6px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.feedbackLabels {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.feedbackChip {
+  padding: 5px 11px;
+  font-size: 12px;
+  font-weight: 600;
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  color: var(--ink);
+  cursor: pointer;
+}
+.feedbackChip.active {
+  background: #fbf3e6;
+  border-color: var(--accent-2);
+  color: var(--accent-2);
+}
+.feedbackNote {
+  width: 100%;
+  margin-top: 12px;
+  padding: 9px 11px;
+  font: inherit;
+  font-size: 14px;
+  border: 1px solid var(--line-strong);
+  border-radius: 9px;
+  background: var(--panel);
+  resize: vertical;
+  box-sizing: border-box;
+}
+.feedbackActions {
+  margin-top: 10px;
+  display: flex;
+  justify-content: flex-end;
+}
+.feedbackSave {
+  padding: 8px 16px;
+  font-size: 13px;
+  font-weight: 650;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.feedbackVerdictBtn:disabled,
+.feedbackChip:disabled,
+.feedbackSave:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.focusDetailCard .focusContactsTitle {
+  display: none;
+}
+
+.focusDetailFacts {
+  margin: 14px 0 0;
+  display: grid;
+  gap: 8px;
+}
+
+.focusDetailFacts div {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+.focusDetailFacts dt {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.focusDetailFacts dd {
+  margin: 0;
+  font-weight: 650;
+  text-align: right;
+}
+
+.focusDetailEmpty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 14px;
+}
+
+/* Draft outreach — the headline payoff, pinned to the top of the modal. */
+.focusDraftCard {
+  border: 1px solid var(--accent);
+  border-radius: 12px;
+  background: linear-gradient(180deg, rgba(17, 107, 93, 0.06), rgba(17, 107, 93, 0.02));
+  padding: 18px 20px;
+  box-shadow: 0 1px 0 rgba(17, 107, 93, 0.12);
+}
+
+.focusDraftEmpty {
+  border-style: dashed;
+  background: var(--panel-soft);
+}
+
+.focusDraftTop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.focusDraftLabel {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--accent-dark);
+}
+
+.focusDraftCount {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--muted);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px 9px;
+}
+
+.focusDraftControls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.focusDraftNav {
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  font-size: 16px;
+  line-height: 1;
+}
+
+.focusDraftCopy {
+  padding: 7px 14px;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-size: 13px;
+}
+
+.focusDraftCopy:hover {
+  border-color: var(--accent-dark);
+}
+
+.focusDraftText {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 16px 18px;
+  font-size: 14.5px;
+  line-height: 1.55;
+  max-height: 320px;
+  overflow-y: auto;
+}
+
+/* Rendered markdown inside the draft preview. */
+.focusDraftText > :first-child { margin-top: 0; }
+.focusDraftText > :last-child { margin-bottom: 0; }
+.focusDraftText p { margin: 0 0 12px; }
+.focusDraftText h1,
+.focusDraftText h2,
+.focusDraftText h3,
+.focusDraftText h4 { margin: 14px 0 8px; line-height: 1.3; }
+.focusDraftText h1 { font-size: 18px; }
+.focusDraftText h2 { font-size: 16px; }
+.focusDraftText h3 { font-size: 15px; }
+.focusDraftText ul,
+.focusDraftText ol { margin: 0 0 12px; padding-left: 20px; }
+.focusDraftText li { margin: 2px 0; }
+.focusDraftText hr { border: 0; border-top: 1px solid var(--line); margin: 14px 0; }
+.focusDraftText a { color: var(--accent, #4f8cff); }
+
+/* Enriched profile — readable rows, never raw JSON. */
+.focusProfileGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 14px;
+}
+
+.focusProfileField {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.focusProfileLabel {
+  font-size: 12px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--muted);
+  font-weight: 650;
+}
+
+.focusProfileValue {
+  font-size: 14px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.focusProfileValue a {
+  color: var(--accent);
+  text-decoration: none;
+}
+
+/* Plain, readable column — no pill backgrounds. Short tag-like values and long
+   signal sentences both read cleanly as a stacked list. */
+.profileChips {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.profileChip {
+  display: block;
+  font-size: 13.5px;
+  line-height: 1.5;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.profileSubList {
+  display: grid;
+  gap: 10px;
+}
+
+.profileSubItem {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  background: var(--panel-soft);
+}
+
+.profileNested {
+  margin: 0;
+  display: grid;
+  gap: 8px;
+}
+
+/* Stacked label-above-value reads cleanly for arbitrary content — the old
+   fixed two-column grid cramped long values into a narrow strip. */
+.profileNested > div {
+  display: grid;
+  gap: 2px;
+}
+
+.profileNested dt {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  font-weight: 650;
+}
+
+.profileNested dd {
+  margin: 0;
+  font-size: 13.5px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+/* ---- Signals -------------------------------------------------------- */
+.signalList {
+  display: grid;
+  gap: 10px;
+}
+
+.signalItem {
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--accent);
+  border-radius: 9px;
+  background: var(--panel-soft);
+  display: grid;
+  gap: 7px;
+}
+
+.signalHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.signalType {
+  font-weight: 700;
+  font-size: 13px;
+  color: var(--ink);
+}
+
+.signalRelevance {
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  font-weight: 650;
+  color: var(--accent-dark);
+  background: rgba(17, 107, 93, 0.1);
+  border-radius: 999px;
+  padding: 2px 9px;
+}
+
+.signalSummary {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.signalFoot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.signalMeta {
+  color: var(--muted);
+  font-size: 12.5px;
+}
+
+.signalSource {
+  font-size: 12.5px;
+  font-weight: 650;
+  color: var(--accent);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.signalSource:hover {
+  text-decoration: underline;
+}
+
+@media (max-width: 860px) {
+  .focusDetailPanel {
+    width: 100vw;
+    height: 100vh;
+    border-radius: 0;
+  }
+  .focusDetailColumns {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ===== Reach Out modal (drafts + contacts; log email/call) ===== */
+.reachModalRoot { position: fixed; inset: 0; z-index: 90; }
+.reachBackdrop {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(23, 33, 31, 0.45);
+}
+.reachPanel {
+  width: min(80vw, 1280px);
+  max-height: 88vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+.reachPanelCall { width: min(480px, 100%); }
+.reachHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 20px 22px;
+  border-bottom: 1px solid var(--line);
+}
+.reachHeader h2 { margin: 4px 0 0; font-size: 22px; }
+.reachEyebrow { color: var(--muted); font-size: 13px; font-weight: 650; }
+.reachClose {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 18px;
+  padding: 4px 8px;
+}
+.reachBody {
+  display: grid;
+  grid-template-columns: 1.4fr 1fr;
+  gap: 0;
+  overflow: hidden;
+  flex: 1;
+  min-height: 0;
+}
+.reachCol { padding: 18px 22px; overflow-y: auto; min-height: 0; }
+.reachColDrafts {
+  border-right: 1px solid var(--line);
+  background: var(--panel-soft);
+  /* One email at a time: let the draft fill the column and scroll inside it. */
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.reachColTitle {
+  margin: 0 0 12px;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+}
+.reachDraftList { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.reachDraft {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--panel);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.reachDraftControls { display: flex; align-items: center; gap: 6px; }
+.reachDraftNav {
+  padding: 2px 9px;
+  font-size: 15px;
+  line-height: 1;
+  font-weight: 700;
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  color: var(--ink);
+}
+.reachDraftNav:disabled { opacity: 0.4; cursor: default; }
+.reachDraftHead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--line);
+}
+.reachDraftLabel { font-size: 12px; font-weight: 700; color: var(--muted); }
+.reachDraftCopy { padding: 4px 12px; font-size: 12px; }
+.reachDraftText {
+  margin: 0;
+  padding: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.6;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+.reachContactList { display: grid; gap: 12px; }
+.reachContact { display: grid; gap: 6px; }
+.reachContactName { font-weight: 650; font-size: 14px; }
+.reachContactRole { font-weight: 500; color: var(--muted); font-size: 13px; }
+.reachContactChips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.reachChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--panel-soft);
+  border: 1px solid var(--line);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+}
+.reachChipCopy { padding: 3px 9px; font-size: 12px; }
+.reachMuted { color: var(--muted); font-size: 13px; }
+.reachEmpty { color: var(--muted); font-size: 14px; margin: 0; }
+.reachFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 16px 22px;
+  border-top: 1px solid var(--line);
+}
+.reachFooterNote { color: var(--muted); font-size: 13px; }
+.reachActions { display: flex; gap: 8px; }
+.reachPrimary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.reachCall { background: var(--accent-2); border-color: var(--accent-2); }
+.reachCallForm { padding: 20px 22px; display: grid; gap: 14px; }
+.reachField { display: grid; gap: 6px; font-size: 13px; font-weight: 650; color: var(--muted); }
+.reachField textarea,
+.reachField select {
+  padding: 10px 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  background: var(--panel);
+  color: var(--ink);
+  font-weight: 400;
+}
+.reachError { margin: 0; color: #9b2d1f; font-size: 13px; }
+
+@media (max-width: 680px) {
+  .reachBody { grid-template-columns: 1fr; }
+  .reachColDrafts { border-right: none; border-bottom: 1px solid var(--line); }
+}
+
+.resultBtnUndo {
+  background: var(--panel);
+  border-color: var(--line-strong);
+  color: var(--muted);
+}
+.resultBtnUndo:hover {
+  border-color: var(--accent);
+  color: var(--accent-dark);
+}
+
+/* Per-row ⋮ menu (holds Undo / Resume now) */
+.resultMenu {
+  position: relative;
+}
+.resultMenuToggle {
+  padding: 4px 8px;
+  font-size: 18px;
+  line-height: 1;
+  font-weight: 700;
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+}
+.resultMenuToggle:hover {
+  background: var(--panel);
+  border-color: var(--line-strong);
+  color: var(--accent-dark);
+}
+.resultMenuList {
+  display: none;
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 20;
+  min-width: 150px;
+  padding: 4px;
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+.resultMenu.open .resultMenuList {
+  display: block;
+}
+.resultMenuItem {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  font-size: 13px;
+  font-weight: 600;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  color: var(--ink);
+  cursor: pointer;
+}
+.resultMenuItem:hover {
+  background: var(--panel-soft);
+  color: var(--accent-dark);
+}
+
+/* ---- Floating "Ask Athena" widget ------------------------------------- */
+.athena {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 1200;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 12px;
+}
+.athena.hidden { display: none; }
+
+.athenaLauncher {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 999px;
+  padding: 12px 18px;
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent-dark);
+  box-shadow: var(--shadow);
+  font-weight: 700;
+}
+.athenaLauncher:hover { background: var(--accent-dark); border-color: var(--accent-dark); }
+.athenaLauncher.active { background: var(--accent-dark); }
+.athenaLauncherIcon { font-size: 16px; line-height: 1; }
+
+.athenaPanel {
+  width: min(420px, calc(100vw - 32px));
+  height: min(560px, calc(100vh - 120px));
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.athenaPanel.hidden { display: none; }
+
+.athenaHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-soft);
+}
+.athenaTitle { font-weight: 750; }
+.athenaSpark { color: var(--accent); }
+.athenaHeaderActions { display: flex; gap: 6px; }
+.athenaHeaderActions button {
+  padding: 4px 9px;
+  border-radius: 8px;
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+}
+.athenaHeaderActions button:hover { color: var(--accent-dark); border-color: var(--line); box-shadow: none; transform: none; }
+
+.athenaTabs {
+  display: flex;
+  gap: 6px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--line);
+  scrollbar-width: thin;
+}
+.athenaTab {
+  flex: 0 0 auto;
+  max-width: 150px;
+  padding: 5px 11px;
+  border-radius: 999px;
+  background: var(--panel-soft);
+  border-color: var(--line);
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.athenaTab.active { background: var(--accent); color: #fff; border-color: var(--accent-dark); }
+.athenaTabNew { font-weight: 800; padding: 5px 12px; }
+
+.athenaMessages {
+  flex: 1;
+  overflow-y: auto;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.athenaEmpty { color: var(--muted); font-size: 13px; text-align: center; margin: auto; max-width: 280px; }
+.athenaMessage {
+  max-width: 85%;
+  padding: 9px 12px;
+  border-radius: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 14px;
+  line-height: 1.45;
+}
+.athenaMessage.user { align-self: flex-end; background: var(--accent); color: #fff; border-bottom-right-radius: 4px; }
+.athenaMessage.assistant { align-self: flex-start; background: var(--panel-soft); border: 1px solid var(--line); border-bottom-left-radius: 4px; }
+.athenaMessage.pending { color: var(--pending); font-style: italic; }
+.athenaMessage.error { background: #fbeae5; border-color: var(--accent-2); color: var(--accent-2); }
+
+.athenaStatus { padding: 0 14px 6px; font-size: 12px; color: var(--muted); }
+
+.athenaComposer {
+  display: flex;
+  gap: 8px;
+  padding: 12px;
+  border-top: 1px solid var(--line);
+}
+.athenaComposer textarea {
+  flex: 1;
+  resize: none;
+  max-height: 120px;
+  border: 1px solid var(--line-strong);
+  border-radius: 10px;
+  padding: 9px 11px;
+}
+.athenaComposer button { background: var(--accent); color: #fff; border-color: var(--accent-dark); }
+.athenaComposer button:hover { background: var(--accent-dark); }
+
+.sidebarTopActions { display: flex; gap: 6px; }
+
+/* ---- Ask Athena pinned right drawer ----------------------------------- */
+:root { --athena-w: 384px; }
+
+.athena.pinned {
+  right: 0;
+  top: 0;
+  bottom: 0;
+}
+.athena.pinned .athenaPanel {
+  width: var(--athena-w);
+  height: 100vh;
+  border-radius: 0;
+  border-top: 0;
+  border-bottom: 0;
+  border-right: 0;
+  box-shadow: -12px 0 32px rgba(23, 33, 31, 0.08);
+}
+.athena.pinned .athenaLauncher { display: none; }
+
+.athenaHeaderActions button.active { color: var(--accent-dark); }
+
+#app.athenaPinned > section:not(.hidden) {
+  margin-right: var(--athena-w);
+  transition: margin-right 0.18s ease;
+}
+@media (max-width: 760px) {
+  .athena.pinned .athenaPanel { width: 100vw; }
+  #app.athenaPinned > section:not(.hidden) { margin-right: 0; }
+}
+
+/* ---- Markdown rendering inside chat bubbles ---------------------------- */
+.markdownBody > :first-child { margin-top: 0; }
+.markdownBody > :last-child { margin-bottom: 0; }
+.markdownBody p { margin: 0 0 10px; }
+.markdownBody h1,
+.markdownBody h2,
+.markdownBody h3,
+.markdownBody h4 {
+  margin: 14px 0 8px;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+}
+.markdownBody h1 { font-size: 1.3em; }
+.markdownBody h2 { font-size: 1.18em; }
+.markdownBody h3 { font-size: 1.06em; }
+.markdownBody h4 { font-size: 1em; }
+.markdownBody ul,
+.markdownBody ol { margin: 0 0 10px; padding-left: 1.3em; }
+.markdownBody li { margin: 3px 0; }
+.markdownBody a { color: var(--accent-dark); text-decoration: underline; }
+.markdownBody hr { border: 0; border-top: 1px solid var(--line); margin: 12px 0; }
+.markdownBody code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.88em;
+  background: rgba(17, 107, 93, 0.08);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 1px 5px;
+}
+.markdownBody pre {
+  margin: 0 0 10px;
+  padding: 12px 14px;
+  background: var(--ink);
+  color: #f3f1ea;
+  border-radius: 10px;
+  overflow-x: auto;
+}
+.markdownBody pre code {
+  background: none;
+  border: 0;
+  padding: 0;
+  color: inherit;
+  font-size: 0.86em;
+}
+/* Keep contrast when an assistant bubble ever uses an accent background */
+.message.user .markdownBody a,
+.message.user .markdownBody code { color: #fff; border-color: rgba(255,255,255,0.4); }
+
+/* Settings → Automation card (single control surface for scheduled pipelines) */
+#automationPanel .automationMaster { display: flex; align-items: center; gap: 0.5rem; font-size: 1rem; margin: 0.25rem 0 0.75rem; }
+.automationRow { border-top: 1px solid var(--border, #e5e7eb); padding: 0.6rem 0; }
+.automationRow .automationToggle { display: flex; align-items: center; gap: 0.5rem; }
+.automationRow .automationFields { display: flex; flex-wrap: wrap; gap: 0.75rem; margin: 0.45rem 0 0 1.6rem; }
+.automationRow .automationFields label { display: flex; flex-direction: column; font-size: 0.72rem; color: var(--muted, #6b7280); gap: 0.15rem; }
+.automationRow .automationFields input,
+.automationRow .automationFields select { min-width: 7rem; }
+.automationRow .automationFields input[type="number"] { width: 5.5rem; }
+.automationTargets { display: flex; flex-wrap: wrap; gap: 0.75rem; border-top: 1px solid var(--border, #e5e7eb); padding-top: 0.7rem; margin-top: 0.4rem; }
+.automationTargets label { display: flex; flex-direction: column; font-size: 0.72rem; color: var(--muted, #6b7280); gap: 0.15rem; }
+.automationTargets input { width: 6.5rem; }

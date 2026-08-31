@@ -1,0 +1,83 @@
+{
+  "name": "kindling-auto-industry-enrichment-tick",
+  "description": "Scheduled Kindling auto-enrichment tick. Selects the next industry with unprocessed companies, queues the batch, starts the industry enrichment pipeline, and sends Pete the run link.",
+  "version": 1,
+  "tags": [
+    "kindling",
+    "scheduler",
+    "industry-enrichment",
+    "orchestration"
+  ],
+  "input": {
+    "batchLimit": 21,
+    "publicOrigin": "https://left-owl-hawk.rick.runwingman.com",
+    "autopilotUrl": "http://localhost:3256",
+    "pipelineRunBaseUrl": "https://rick.runwingman.com/pipelines/runs",
+    "dmChannelId": "97ae5c0d-f88c-41e7-9f7a-d64d27a4fd18",
+    "sendDm": true
+  },
+  "steps": [
+    {
+      "id": "select-and-start-industry-enrichment",
+      "name": "select-and-start-industry-enrichment",
+      "description": "Select the next eligible Kindling industry, reserve a batch, and start the enrichment child pipeline.",
+      "type": "code",
+      "function": "kindling.autoIndustryEnrichmentTick",
+      "input": {
+        "pick": {
+          "batchLimit": "$.batchLimit",
+          "publicOrigin": "$.publicOrigin",
+          "autopilotUrl": "$.autopilotUrl",
+          "pipelineRunBaseUrl": "$.pipelineRunBaseUrl",
+          "dmChannelId": "$.dmChannelId",
+          "sendDm": "$.sendDm",
+          "userNpub": "$.userNpub"
+        }
+      },
+      "assign": "$.tick",
+      "display": {
+        "in": [
+          {
+            "label": "Batch Limit",
+            "path": "$.batchLimit",
+            "format": "count"
+          },
+          {
+            "label": "DM Channel",
+            "path": "$.dmChannelId",
+            "format": "text"
+          }
+        ],
+        "out": [
+          {
+            "label": "Status",
+            "path": "$.status",
+            "format": "text"
+          },
+          {
+            "label": "Industry",
+            "path": "$.industry",
+            "format": "text",
+            "empty": "None"
+          },
+          {
+            "label": "Batch Size",
+            "path": "$.batchSize",
+            "format": "count"
+          },
+          {
+            "label": "Child Pipeline Run",
+            "path": "$.autopilotRunId",
+            "format": "text",
+            "empty": "Not started"
+          },
+          {
+            "label": "DM Sent",
+            "path": "$.dmSent"
+          }
+        ]
+      }
+    }
+  ],
+  "default": false
+}

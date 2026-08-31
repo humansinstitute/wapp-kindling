@@ -1,3 +1,5 @@
+import { nip19, getPublicKey, finalizeEvent } from "/vendor/nostr-signer.js";
+
 const PROFILE_CACHE_KEY = "chat_wapp_profiles_v1";
 const PIPELINES_CACHE_KEY = "chat_wapp_pipelines_v1";
 const PROFILE_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -33,8 +35,26 @@ const state = {
   companyCreateOpen: false,
   kindlingStatus: "Ready",
   pollTimer: null,
+  athena: { open: false, pinned: localStorage.getItem("athena_pinned") === "1" },
+  athenaPollTimer: null,
   route: window.location.pathname,
   profiles: loadProfileCache(),
+  focus: { items: [], index: 0, loaded: false, loading: false, error: "", contactPage: 0 },
+  // Shared company-details overlay, openable from the On Deck deck or the
+  // Companies list. `target` carries the scored-assessment context when we have
+  // it (On Deck); from the plain Companies list it stays null.
+  companyModal: { open: false, companyId: "", company: null, target: null, detail: null, loading: false, draftIndex: 0 },
+  servicePage: { profile: null, loaded: false, loading: false, error: "" },
+  companyListPage: { companies: [], total: 0, offset: 0, band: "high", bandCounts: null, hideProcessed: false, loaded: false, loading: false, error: "" },
+  resultsPage: { tab: "waiting", items: [], total: 0, offset: 0, q: "", counts: null, loaded: false, loading: false, error: "" },
+  alertsPage: { feeds: [], hits: [], scheduler: null, loaded: false, loading: false, error: "", saving: false },
+  reasonModal: null,
+  navCollapsed: localStorage.getItem("kindling_nav_collapsed") === "1",
+  userProfile: null,
+  // In-memory Nostr signer for the current page session. Either an extension
+  // signer or an nsec signer; never persisted. Re-derived lazily for the
+  // extension, but a pasted-nsec signer is lost on reload by design.
+  signer: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -161,8 +181,11 @@ function setKindlingView(view) {
 
 function appRoute() {
   const pathname = normalizedPath();
-  if (["/chat", "/settings"].includes(pathname)) return pathname;
-  if (kindlingViewForPath(pathname)) return "/act";
+  if (["/chat", "/settings", "/menu", "/results", "/alerts"].includes(pathname)) return pathname;
+  const view = kindlingViewForPath(pathname);
+  if (view === "service") return "/service";
+  if (view === "companies") return "/companies-list";
+  if (view) return "/act";
   return "/";
 }
 
@@ -172,10 +195,41 @@ function navigate(path) {
   void renderRoute();
 }
 
+// Which sidebar nav item each content section belongs to (null = no sidebar).
+const SECTION_NAV = {
+  focus: "deck",
+  servicePage: "service",
+  companyListPage: "companies",
+  resultsPage: "results",
+  alertsPage: "alerts",
+  shell: "chats",
+  settingsPage: "settings",
+};
+
 function showOnly(id) {
-  for (const sectionId of ["login", "home", "actPage", "settingsPage", "shell"]) {
+  for (const sectionId of ["login", "focus", "servicePage", "companyListPage", "resultsPage", "alertsPage", "home", "actPage", "settingsPage", "shell"]) {
     $(sectionId).classList.toggle("hidden", sectionId !== id);
   }
+  const navKey = SECTION_NAV[id] || null;
+  setChrome(navKey);
+  syncAthenaLauncher();
+}
+
+// Persistent left drawer shown on the primary app screens. Hidden on login,
+// chat, the old menu hub, and the scored/match drilldown (which has its own chrome).
+function setChrome(activeNav) {
+  const nav = $("appNav");
+  const app = $("app");
+  if (!activeNav) {
+    nav.classList.add("hidden");
+    app.classList.remove("withNav");
+    return;
+  }
+  nav.classList.remove("hidden");
+  app.classList.add("withNav");
+  app.classList.toggle("navCollapsed", state.navCollapsed);
+  nav.classList.toggle("collapsed", state.navCollapsed);
+  renderAppNav(activeNav);
 }
 
 function stopPolling() {
@@ -205,6 +259,30 @@ async function renderRoute() {
     return;
   }
 
+  if (state.route === "/service") {
+    showOnly("servicePage");
+    await loadServicePage();
+    return;
+  }
+
+  if (state.route === "/companies-list") {
+    showOnly("companyListPage");
+    await loadCompanyListPage();
+    return;
+  }
+
+  if (state.route === "/results") {
+    showOnly("resultsPage");
+    await loadResultsPage();
+    return;
+  }
+
+  if (state.route === "/alerts") {
+    showOnly("alertsPage");
+    await loadAlertsPage();
+    return;
+  }
+
   if (state.route === "/act") {
     const view = kindlingViewForPath(window.location.pathname);
     if (view) setKindlingView(view);
@@ -213,45 +291,1965 @@ async function renderRoute() {
     return;
   }
 
-  showOnly("home");
+  if (state.route === "/menu") {
+    showOnly("home");
+    return;
+  }
+
+  // Default landing after login: the On Deck call list.
+  showOnly("focus");
+  await loadFocusScreen();
 }
 
-async function login() {
+// The first screen after login: the top-ranked, not-yet-contacted companies
+// shown one at a time so the user can flick through their call list.
+let focusLoadSeq = 0;
+async function loadFocusScreen({ force = false } = {}) {
+  if (state.focus.loaded && !force) {
+    renderFocus();
+    return;
+  }
+  const seq = ++focusLoadSeq;
+  state.focus.loading = true;
+  state.focus.error = "";
+  renderFocus();
+  try {
+    // Pull a few extra so we can drop already-contacted companies and still
+    // land on a full top-21 call list.
+    const data = await api("/api/kindling/top-targets?band=high&limit=40&excludeOutreach=1");
+    if (seq !== focusLoadSeq) return;
+    const items = (data.targets || [])
+      .filter((target) => (target.company?.dataRing || "") !== "contacted")
+      .slice(0, 21);
+    state.focus.items = items;
+    state.focus.index = 0;
+    state.focus.loaded = true;
+    state.focus.loading = false;
+    renderFocus();
+    if (!$("appNav").classList.contains("hidden")) renderAppNav("deck");
+  } catch (err) {
+    if (seq !== focusLoadSeq) return;
+    state.focus.loading = false;
+    state.focus.error = err?.message || String(err);
+    renderFocus();
+  }
+}
+
+function focusStep(delta) {
+  const total = state.focus.items.length;
+  if (!total) return;
+  const next = state.focus.index + delta;
+  if (next < 0 || next >= total) return;
+  state.focus.index = next;
+  state.focus.contactPage = 0; // reset contact pager when the card changes
+  renderFocus();
+}
+
+// Page through a long decision-maker list within the current card (3 at a time).
+function focusContactStep(delta) {
+  state.focus.contactPage = Math.max(0, state.focus.contactPage + delta);
+  renderFocus();
+}
+
+function focusOpenCurrent() {
+  const item = state.focus.items[state.focus.index];
+  if (!item) return;
+  const companyId = item.companyId || item.company?.id || "";
+  state.selectedTargetId = item.id || "";
+  state.selectedCompanyId = companyId;
+  localStorage.setItem("kindling_target", state.selectedTargetId);
+  localStorage.setItem("kindling_company", state.selectedCompanyId);
+  openCompanyModal({ companyId, target: item, company: item.company || item });
+}
+
+// Open the shared company-details overlay. `target` is the scored assessment
+// (On Deck) when available; `company` is whatever summary record we already
+// have so the modal paints instantly, then we hydrate the full record in the
+// background.
+function openCompanyModal({ companyId, target = null, company = null }) {
+  state.companyModal = {
+    open: true,
+    companyId: companyId || "",
+    company: company || target?.company || null,
+    target,
+    detail: null,
+    loading: !!companyId,
+    draftIndex: 0,
+  };
+  renderCompanyModal();
+  if (companyId) void loadCompanyModalDetail(companyId);
+}
+
+async function loadCompanyModalDetail(companyId) {
+  try {
+    const detail = await api(`/api/kindling/companies/${encodeURIComponent(companyId)}`);
+    if (!state.companyModal.open || state.companyModal.companyId !== companyId) return;
+    state.companyModal.detail = detail;
+    state.companyModal.loading = false;
+    renderCompanyModal();
+  } catch (err) {
+    if (!state.companyModal.open || state.companyModal.companyId !== companyId) return;
+    state.companyModal.loading = false;
+    renderCompanyModal();
+  }
+}
+
+async function saveCompanyFeedback(button) {
+  const companyId = state.companyModal.companyId;
+  if (!companyId) return;
+  const verdict = document.querySelector("#companyFeedback [data-feedback-verdict].active")?.dataset.feedbackVerdict || "";
+  const labels = Array.from(document.querySelectorAll("#companyFeedback [data-feedback-label].active"))
+    .map((b) => b.dataset.feedbackLabel);
+  const note = (document.getElementById("feedbackNote")?.value || "").trim();
+  if (!verdict && !labels.length && !note) { alert("Add a verdict, a label, or a reason first."); return; }
+  setBusyElement(button, true, "Saving");
+  try {
+    const data = await api(`/api/kindling/companies/${encodeURIComponent(companyId)}/feedback`, {
+      method: "POST",
+      body: JSON.stringify({ verdict, labels, note }),
+    });
+    if (state.companyModal.open && state.companyModal.companyId === companyId && state.companyModal.detail) {
+      state.companyModal.detail.feedback = data.feedback;
+    }
+    setBusyElement(button, false);
+    if (button?.isConnected) {
+      button.textContent = "Saved ✓";
+      setTimeout(() => { if (button.isConnected) button.textContent = "Save feedback"; }, 1600);
+    }
+  } catch (err) {
+    setBusyElement(button, false);
+    alert(`Couldn't save feedback: ${err?.message || err}`);
+  }
+}
+
+function closeCompanyModal() {
+  if (!state.companyModal.open) return;
+  state.companyModal = { open: false, companyId: "", company: null, target: null, detail: null, loading: false, draftIndex: 0 };
+  renderCompanyModal();
+}
+
+function companyModalDraftStep(delta) {
+  const drafts = state.companyModal.detail?.drafts || [];
+  if (drafts.length < 2) return;
+  const next = Math.min(Math.max(0, state.companyModal.draftIndex + delta), drafts.length - 1);
+  if (next === state.companyModal.draftIndex) return;
+  state.companyModal.draftIndex = next;
+  renderCompanyModal();
+}
+
+function companyModalDraftCopy(button) {
+  const drafts = state.companyModal.detail?.drafts || [];
+  const draft = drafts[Math.min(Math.max(0, state.companyModal.draftIndex), drafts.length - 1)];
+  const text = draft?.pitchText || draft?.body || "";
+  if (!text) return;
+  const done = () => {
+    if (!button) return;
+    const original = button.textContent;
+    button.textContent = "Copied ✓";
+    setTimeout(() => { if (button.isConnected) button.textContent = original; }, 1500);
+  };
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).then(done).catch(() => {});
+  }
+}
+
+// "Sent email" from the call list → move the company to the Waiting list and
+// drop it from the deck.
+async function focusSentCurrent(trigger) {
+  const item = state.focus.items[state.focus.index];
+  if (!item) return;
+  const companyId = item.companyId || item.company?.id;
+  if (!companyId) return;
+  setBusyElement(trigger, true, "Saving");
+  try {
+    await api("/api/kindling/outreach/sent", { method: "POST", body: JSON.stringify({ companyId, channel: "email" }) });
+    removeFocusItem(companyId);
+  } catch (err) {
+    setBusyElement(trigger, false);
+    alert(`Couldn't save: ${err?.message || err}`);
+  }
+}
+
+function renderWebsiteLink(website) {
+  const href = /^https?:\/\//i.test(website) ? website : `https://${website}`;
+  const label = website.replace(/^https?:\/\//i, "").replace(/\/$/, "");
+  return `<a class="focusLink" href="${escapeHtml(href)}" target="_blank" rel="noopener">${escapeHtml(label)}</a>`;
+}
+
+function renderDecisionMakers(people, opts = {}) {
+  if (!Array.isArray(people) || !people.length) return "";
+  // On the deck card we page through contacts 3 at a time so the card stays
+  // short; the details overlay passes no pager and shows everyone.
+  const pageSize = opts.pageSize || 0;
+  let shown = people;
+  let pager = "";
+  if (pageSize && people.length > pageSize) {
+    const pageCount = Math.ceil(people.length / pageSize);
+    const page = Math.min(Math.max(0, opts.page || 0), pageCount - 1);
+    const start = page * pageSize;
+    shown = people.slice(start, start + pageSize);
+    pager = `
+      <nav class="focusContactPager" aria-label="Browse contacts">
+        <button type="button" class="focusContactArrow" data-focus-action="contacts-prev" ${page <= 0 ? "disabled" : ""} aria-label="Previous contacts">‹</button>
+        <span class="focusContactPosition">${start + 1}–${start + shown.length} of ${people.length}</span>
+        <button type="button" class="focusContactArrow" data-focus-action="contacts-next" ${page >= pageCount - 1 ? "disabled" : ""} aria-label="More contacts">›</button>
+      </nav>`;
+  }
+  return `
+    <section class="focusContacts">
+      <h3 class="focusContactsTitle">Decision makers</h3>
+      <div class="focusContactList">
+        ${shown.map((person) => {
+          const name = person.name || "Unknown";
+          const title = person.title || person.role || "";
+          const phone = person.phone || person.mobile || "";
+          const email = person.email || "";
+          const initials = name.split(/\s+/).map((part) => part[0] || "").slice(0, 2).join("").toUpperCase() || "?";
+          const lines = [];
+          if (phone) lines.push(`<a class="focusContactChip" href="tel:${escapeHtml(phone.replace(/\s+/g, ""))}">📞 ${escapeHtml(phone)}</a>`);
+          if (email) lines.push(`<a class="focusContactChip" href="mailto:${escapeHtml(email)}">✉️ ${escapeHtml(email)}</a>`);
+          if (person.linkedinUrl) lines.push(`<a class="focusContactChip" href="${escapeHtml(person.linkedinUrl)}" target="_blank" rel="noopener">in</a>`);
+          return `
+            <div class="focusContact">
+              <span class="focusContactAvatar">${escapeHtml(initials)}</span>
+              <div class="focusContactBody">
+                <div class="focusContactName">${escapeHtml(name)}${title ? ` <span class="focusContactRole">${escapeHtml(title)}</span>` : ""}</div>
+                ${lines.length ? `<div class="focusContactLinks">${lines.join("")}</div>` : `<div class="focusContactLinks focusContactMuted">No direct contact captured</div>`}
+              </div>
+            </div>`;
+        }).join("")}
+      </div>
+      ${pager}
+    </section>`;
+}
+
+function renderFocusCard(target, index, total) {
+  const company = target.company || target;
+  const name = company.name || target.name || "Unknown company";
+  const offering = target.bestOffering?.name || target.bestOfferingName || "No offering selected";
+  const score = Math.round(Number(target.assessmentScore || target.score || 0));
+  const confidence = Math.round(Number(target.confidence || 0) * 100);
+  const meta = [company.industry, company.location].filter(Boolean).join(" · ");
+  const reason = target.reason || target.whyNow || "No reasoning captured yet.";
+  const website = company.website || "";
+  const people = Array.isArray(target.decisionMakers) && target.decisionMakers.length
+    ? target.decisionMakers
+    : (Array.isArray(company.decisionMakers) ? company.decisionMakers : []);
+  // Number of cards still behind this one — drives how many ghost "stack"
+  // layers show (capped at 2). Purely decorative, no real card underneath.
+  const depth = Math.min(2, Math.max(0, total - index - 1));
+  return `
+    <div class="focusCardStack" data-depth="${depth}">
+    <article class="focusCard">
+      <div class="focusCardTop">
+        <span class="focusRank">#${index + 1}</span>
+        <span class="focusScore">${score} fit</span>
+        ${confidence ? `<span class="focusConfidence">confidence ${confidence}%</span>` : ""}
+      </div>
+      <h2 class="focusName">${escapeHtml(name)}</h2>
+      ${meta ? `<p class="focusMeta">${escapeHtml(meta)}</p>` : ""}
+      ${website ? `<p class="focusWebsite">${renderWebsiteLink(website)}</p>` : ""}
+      <p class="focusOffering">${escapeHtml(offering)}</p>
+      <p class="focusReason">${escapeHtml(reason)}</p>
+      ${renderDecisionMakers(people, { pageSize: 3, page: state.focus.contactPage })}
+      <div class="focusActions">
+        <button type="button" class="focusAction focusActionSent" data-focus-action="reach">Reach out →</button>
+        <button type="button" class="focusAction focusActionSnooze" data-focus-action="snooze">Snooze</button>
+        <button type="button" class="focusAction focusActionDismiss" data-focus-action="dismiss">Dismiss</button>
+        <button type="button" class="focusAction focusActionGhost" data-focus-action="details">View details</button>
+      </div>
+    </article>
+    </div>
+    <nav class="focusNav" aria-label="Browse call list">
+      <button type="button" class="focusArrow" data-focus-action="prev" ${index <= 0 ? "disabled" : ""} aria-label="Previous company">‹</button>
+      <span class="focusPosition">${index + 1} of ${total}</span>
+      <button type="button" class="focusArrow" data-focus-action="next" ${index >= total - 1 ? "disabled" : ""} aria-label="Next company">›</button>
+    </nav>
+    <p class="focusHint">Use ← / → or the arrows to flick through your top ${total}.</p>
+  `;
+}
+
+function focusGreetingName() {
+  const name = state.userProfile?.displayName || state.userProfile?.name || "";
+  const first = name.trim().split(/\s+/)[0];
+  return first || "there";
+}
+
+function focusGreetingTime() {
+  const hour = new Date().getHours();
+  if (hour < 12) return "Morning";
+  if (hour < 18) return "Afternoon";
+  return "Evening";
+}
+
+function renderFocus() {
+  const body = $("focusBody");
+  if (!body) return;
+  const total = state.focus.items.length;
+  if (state.focus.index >= total) state.focus.index = Math.max(0, total - 1);
+
+  let lead;
+  if (state.focus.loading && !state.focus.loaded) {
+    lead = `<p class="focusLead">Loading your deck…</p>`;
+  } else if (state.focus.error) {
+    lead = `<p class="focusLead">Couldn't load the deck.</p>`;
+  } else if (!total) {
+    lead = `<p class="focusLead">No fresh cards. You're all caught up.</p>`;
+  } else {
+    lead = `<p class="focusLead"><strong>${total} fresh.</strong> Best fit first.</p>
+      <p class="focusDeckCount">Today's deck — ${state.focus.index + 1} of ${total}</p>`;
+  }
+
+  let stage;
+  if (state.focus.loading && !state.focus.loaded) {
+    stage = `<div class="focusStage"><div class="focusCard focusCardSkeleton" aria-busy="true"></div></div>`;
+  } else if (state.focus.error) {
+    stage = `<div class="focusStage">
+      <p class="focusEmpty">Couldn't load the deck: ${escapeHtml(state.focus.error)}</p>
+      <button type="button" class="focusOpen" data-focus-action="retry">Retry</button>
+    </div>`;
+  } else if (!total) {
+    stage = `<div class="focusStage"><p class="focusEmpty">No ranked companies waiting for outreach. Run scoring or check the Scored view.</p></div>`;
+  } else {
+    stage = `<div class="focusStage">${renderFocusCard(state.focus.items[state.focus.index], state.focus.index, total)}</div>`;
+  }
+
+  body.innerHTML = `
+    <header class="focusGreeting">
+      <h1>${focusGreetingTime()}, ${escapeHtml(focusGreetingName())}</h1>
+      ${lead}
+    </header>
+    ${stage}
+  `;
+}
+
+// Keys already surfaced in dedicated sections (or internal plumbing) — skip them
+// in the generic "Enriched details" grid so we don't repeat or leak noise.
+const FOCUS_PROFILE_HIDDEN_KEYS = new Set([
+  "decisionMakers", "gaps", "parkedReason", "nextQuestions", "response",
+  "changeSummary", "services", "servicesOffered", "signals", "evidence",
+]);
+
+// Signals get a dedicated card — each one a clean stacked block (type → summary →
+// meta → source) instead of the cramped key/value columns the generic renderer
+// produced.
+function renderCompanySignals(signals, loading) {
+  if (!signals.length) return `<p class="focusDetailEmpty">${loading ? "Loading signals…" : "No signals captured yet."}</p>`;
+  return `<div class="signalList">
+    ${signals.map((signal) => {
+      const type = labelFromKey(signal.signalType || signal.type || "Signal");
+      const summary = signal.summary || signal.description || "";
+      const strength = signal.strength ? `${signal.strength} strength` : "";
+      const confidence = signal.confidence ? `${Math.round(Number(signal.confidence) * 100)}% confidence` : "";
+      const when = signal.observedDate || "";
+      const meta = [strength, confidence, when].filter(Boolean).join(" · ");
+      const url = signal.sourceUrl || signal.url || "";
+      return `
+        <div class="signalItem">
+          <div class="signalHead">
+            <span class="signalType">${escapeHtml(type)}</span>
+            ${signal.adaptRelevance ? `<span class="signalRelevance">${escapeHtml(signal.adaptRelevance)}</span>` : ""}
+          </div>
+          ${summary ? `<p class="signalSummary">${escapeHtml(summary)}</p>` : ""}
+          <div class="signalFoot">
+            ${meta ? `<span class="signalMeta">${escapeHtml(meta)}</span>` : ""}
+            ${url ? `<a class="signalSource" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">Source ↗</a>` : ""}
+          </div>
+        </div>`;
+    }).join("")}
+  </div>`;
+}
+
+// Issue labels a reviewer can flag on a company. Mirrors COMPANY_ISSUE_LABELS on
+// the server; the detail payload also carries the authoritative list.
+const COMPANY_ISSUE_LABELS = [
+  { key: "wrong_fit", label: "Wrong fit" },
+  { key: "missing_decision_maker", label: "Missing decision maker" },
+  { key: "duplicate", label: "Duplicate" },
+  { key: "bad_website", label: "Bad website / no website" },
+  { key: "bad_outreach", label: "Bad outreach" },
+  { key: "wrong_industry", label: "Wrong industry" },
+];
+
+// Reviewer feedback card: a good/bad verdict, issue-label chips, and a reason.
+// Toggles are handled with direct class flips (no re-render) so the note keeps
+// focus while editing; the current selection is read from the DOM on save.
+function renderCompanyFeedback(detail) {
+  const feedback = detail?.feedback || null;
+  const labels = (detail?.issueLabels && detail.issueLabels.length) ? detail.issueLabels : COMPANY_ISSUE_LABELS;
+  const selectedLabels = new Set(feedback?.labels || []);
+  const verdict = feedback?.verdict || "";
+  const canEdit = Boolean(state.me?.access?.edit);
+  const savedNote = feedback?.updatedAt
+    ? `<span class="feedbackSaved">Saved ${escapeHtml(shortDate(feedback.updatedAt))}</span>`
+    : "";
+  return `
+    <section class="focusDetailCard companyFeedbackCard" id="companyFeedback">
+      <h3>Reviewer feedback ${savedNote}</h3>
+      <div class="feedbackVerdicts">
+        <button type="button" class="feedbackVerdictBtn feedbackVerdictGood ${verdict === "good" ? "active" : ""}" data-feedback-verdict="good" ${canEdit ? "" : "disabled"}>👍 Good result</button>
+        <button type="button" class="feedbackVerdictBtn feedbackVerdictBad ${verdict === "bad" ? "active" : ""}" data-feedback-verdict="bad" ${canEdit ? "" : "disabled"}>👎 Bad result</button>
+      </div>
+      <p class="feedbackHint">Flag any issues</p>
+      <div class="feedbackLabels">
+        ${labels.map((l) => `<button type="button" class="feedbackChip ${selectedLabels.has(l.key) ? "active" : ""}" data-feedback-label="${escapeHtml(l.key)}" ${canEdit ? "" : "disabled"}>${escapeHtml(l.label)}</button>`).join("")}
+      </div>
+      <textarea class="feedbackNote" id="feedbackNote" rows="2" placeholder="Reason (optional)" ${canEdit ? "" : "disabled"}>${escapeHtml(feedback?.note || "")}</textarea>
+      ${canEdit ? `<div class="feedbackActions">
+        <button type="button" class="feedbackSave" data-feedback-save>Save feedback</button>
+      </div>` : ""}
+    </section>`;
+}
+
+// Render the shared company-details overlay into its global mount node so it can
+// float above any screen (On Deck deck, Companies list, …).
+function renderCompanyModal() {
+  const root = $("companyModalRoot");
+  if (!root) return;
+  const modal = state.companyModal;
+  if (!modal.open) { root.innerHTML = ""; return; }
+
+  const detail = modal.detail;
+  const target = modal.target;
+  const company = detail?.company || modal.company || target?.company || {};
+  const name = company.name || target?.name || "Unknown company";
+  const profile = company.profile || {};
+  const sources = detail?.sources || [];
+  const drafts = detail?.drafts || [];
+  const signals = Array.isArray(detail?.signals) ? detail.signals
+    : (Array.isArray(profile.signals) ? profile.signals : []);
+  const loading = modal.loading;
+
+  // Prefer the deck's scored target. When the modal is opened from the Company
+  // List there's no target, so fall back to the company's best stored service-fit
+  // assessment (from the detail payload) — same "why this fit", offering, score,
+  // caveats and next action the deck shows, instead of a bare facts card.
+  const assessments = Array.isArray(detail?.serviceFitAssessments) ? detail.serviceFitAssessments : [];
+  const bestAssessment = assessments.reduce((best, a) => (!best || Number(a.score || 0) > Number(best.score || 0)) ? a : best, null);
+  const hasAssessment = !!target || !!bestAssessment;
+  const offering = target?.bestOffering?.name || target?.bestOfferingName || bestAssessment?.serviceOffering?.name || "";
+  const score = Math.round(Number(target?.assessmentScore || target?.score || bestAssessment?.score || 0));
+  // Best fit score to surface in the header — from the deck assessment when we
+  // have one, else the company's best service-fit assessment (detail payload),
+  // else the score carried on the list-row record.
+  const bestAssessmentScore = bestAssessment ? Number(bestAssessment.score || 0) : 0;
+  const headerFitRaw = target
+    ? score
+    : (bestAssessmentScore || (modal.company?.fitScore != null ? Number(modal.company.fitScore) : 0));
+  const headerFit = headerFitRaw ? Math.round(headerFitRaw) : null;
+  const headerFitBand = headerFit == null ? "" : (headerFit >= 75 ? "high" : headerFit >= 50 ? "medium" : "low");
+  const confidence = Math.round(Number(target?.confidence ?? bestAssessment?.confidence ?? company.confidence ?? 0) * 100);
+  const reason = target?.reason || target?.whyNow || bestAssessment?.fitExplanation || "No reasoning captured yet.";
+  const nextAction = target?.nextAction || bestAssessment?.recommendedAction || "";
+  const caveats = (Array.isArray(target?.caveats) && target.caveats.length) ? target.caveats
+    : (Array.isArray(bestAssessment?.caveats) ? bestAssessment.caveats : []);
+  // Decision makers: the deck target carries a mapped list; opening from the list
+  // we use the detail payload's people (the company profile's decisionMakers).
+  const people = (Array.isArray(target?.decisionMakers) && target.decisionMakers.length) ? target.decisionMakers
+    : (Array.isArray(detail?.people) && detail.people.length) ? detail.people
+    : (Array.isArray(company.decisionMakers) ? company.decisionMakers : []);
+  const services = Array.isArray(profile.services) ? profile.services
+    : (Array.isArray(profile.servicesOffered) ? profile.servicesOffered : []);
+
+  const eyebrow = [stageLabel(company.enrichmentStatus), hasAssessment ? `${score} fit` : "", confidence ? `${confidence}% confidence` : ""]
+    .filter(Boolean).join(" · ");
+
+  const whyCard = hasAssessment ? `
+    <section class="focusDetailCard">
+      <h3>Why this fit</h3>
+      <p class="focusReason">${escapeHtml(reason)}</p>
+      ${nextAction ? `<p class="focusNext"><strong>Next:</strong> ${escapeHtml(nextAction)}</p>` : ""}
+      ${caveats.length ? `<p class="focusCaveats"><strong>Caveats:</strong> ${escapeHtml(caveats.join("; "))}</p>` : ""}
+      <dl class="focusDetailFacts">
+        ${offering ? `<div><dt>Best offering</dt><dd>${escapeHtml(offering)}</dd></div>` : ""}
+        <div><dt>Fit score</dt><dd>${score} / 100</dd></div>
+        ${confidence ? `<div><dt>Confidence</dt><dd>${confidence}%</dd></div>` : ""}
+      </dl>
+    </section>` : `
+    <section class="focusDetailCard">
+      <h3>Company</h3>
+      <dl class="focusDetailFacts">
+        <div><dt>Industry</dt><dd>${escapeHtml(company.industry || "Unknown")}</dd></div>
+        <div><dt>Location</dt><dd>${escapeHtml(company.location || "Unknown")}</dd></div>
+        <div><dt>Stage</dt><dd>${escapeHtml(stageLabel(company.enrichmentStatus))}</dd></div>
+        ${confidence ? `<div><dt>Confidence</dt><dd>${confidence}%</dd></div>` : ""}
+      </dl>
+    </section>`;
+
+  root.innerHTML = `
+    <div class="modalBackdrop focusDetailBackdrop" data-modal-action="close">
+      <section class="modalPanel focusDetailPanel" role="dialog" aria-modal="true" aria-label="Company details" data-modal-panel>
+        <header class="focusDetailHeader">
+          <div class="focusDetailHeading">
+            <div class="eyebrow">${escapeHtml(eyebrow)}</div>
+            <h2>${escapeHtml(name)}</h2>
+            <p class="focusDetailMeta">${escapeHtml([company.industry, company.location].filter(Boolean).join(" · ") || "")}
+              ${company.website ? ` · ${renderWebsiteLink(company.website)}` : ""}</p>
+          </div>
+          <div class="focusDetailHeaderRight">
+            ${headerFit != null ? `<span class="focusDetailFit resultFit resultFit-${headerFitBand}">${headerFit} fit</span>` : ""}
+            <button type="button" class="focusDetailClose" data-modal-action="close" aria-label="Close">✕</button>
+          </div>
+        </header>
+
+        <div class="focusDetailBody">
+          <div class="focusDetailColumns">
+            ${whyCard}
+            <section class="focusDetailCard">
+              <h3>Decision makers</h3>
+              ${people.length ? renderDecisionMakers(people) : `<p class="focusDetailEmpty">${loading ? "Loading contacts…" : "No named contacts captured yet."}</p>`}
+            </section>
+          </div>
+
+          ${renderFocusDrafts(drafts, loading)}
+
+          ${modal.companyId ? renderCompanyFeedback(detail) : ""}
+
+          ${services.length ? `
+          <section class="focusDetailCard">
+            <h3>Services offered</h3>
+            ${renderProfileValueHtml(services)}
+          </section>` : ""}
+
+          <section class="focusDetailCard">
+            <h3>Enriched details</h3>
+            ${renderFocusProfile(profile, loading)}
+          </section>
+
+          ${signals.length || loading ? `
+          <section class="focusDetailCard">
+            <h3>Signals</h3>
+            ${renderCompanySignals(signals, loading)}
+          </section>` : ""}
+
+          <section class="focusDetailCard">
+            <h3>Sources</h3>
+            <div class="sourceList">
+              ${sources.map((source) => `
+                <a href="${escapeHtml(source.url || "#")}" target="_blank" rel="noreferrer">
+                  <strong>${escapeHtml(source.title || source.sourceType || source.url || "Source")}</strong>
+                  <span>${escapeHtml(source.sourceType || "")}${source.confidence ? ` · confidence ${Number(source.confidence || 0).toFixed(2)}` : ""}</span>
+                </a>
+              `).join("") || `<p class="focusDetailEmpty">${loading ? "Loading sources…" : "No sources recorded yet."}</p>`}
+            </div>
+          </section>
+        </div>
+      </section>
+    </div>`;
+}
+
+// The draft outreach is the payoff of the whole deck — give it pride of place at
+// the top of the modal, and let the user flick through variants if there's more
+// than one.
+function renderFocusDrafts(drafts, loading) {
+  if (!drafts.length) {
+    return `
+      <section class="focusDraftCard focusDraftEmpty">
+        <div class="focusDraftLabel">✷ Draft outreach</div>
+        <p class="focusDetailEmpty">${loading ? "Loading drafts…" : "No outreach draft written yet."}</p>
+      </section>`;
+  }
+  const total = drafts.length;
+  const idx = Math.min(Math.max(0, state.companyModal.draftIndex), total - 1);
+  const draft = drafts[idx];
+  const text = draft.pitchText || draft.body || "";
+  const label = draft.variantLabel ? escapeHtml(draft.variantLabel) : "";
+  // Position + label of the current variant, e.g. "2 of 3 · Consultative".
+  const meta = total > 1
+    ? `${idx + 1} of ${total}${label ? ` · ${label}` : ""}`
+    : label;
+  return `
+    <section class="focusDraftCard">
+      <div class="focusDraftTop">
+        <div class="focusDraftLabel">✷ Draft outreach${meta ? ` <span class="focusDraftCount">${meta}</span>` : ""}</div>
+        <div class="focusDraftControls">
+          ${total > 1 ? `
+            <button type="button" class="focusDraftNav" data-modal-action="draft-prev" ${idx <= 0 ? "disabled" : ""} aria-label="Previous draft">‹</button>
+            <button type="button" class="focusDraftNav" data-modal-action="draft-next" ${idx >= total - 1 ? "disabled" : ""} aria-label="Next draft">›</button>
+          ` : ""}
+          <button type="button" class="focusDraftCopy" data-modal-action="draft-copy">Copy</button>
+        </div>
+      </div>
+      <div class="focusDraftText markdownBody" id="focusDraftText">${renderMarkdown(text) || `<span class="focusDetailEmpty">This draft is empty.</span>`}</div>
+    </section>`;
+}
+
+// Curated, human-readable rendering of the enriched profile blob — no raw JSON.
+function renderFocusProfile(profile, loading) {
+  const entries = Object.entries(profile || {})
+    .filter(([key]) => !FOCUS_PROFILE_HIDDEN_KEYS.has(key))
+    .filter(([, value]) => !isEmptyProfileValue(value));
+  if (!entries.length) return `<p class="focusDetailEmpty">${loading ? "Loading details…" : "No enriched profile captured yet."}</p>`;
+  return `<div class="focusProfileGrid">
+    ${entries.map(([key, value]) => `
+      <div class="focusProfileField">
+        <span class="focusProfileLabel">${escapeHtml(labelFromKey(key))}</span>
+        <div class="focusProfileValue">${renderProfileValueHtml(value) || "—"}</div>
+      </div>
+    `).join("")}
+  </div>`;
+}
+
+function isEmptyProfileValue(value) {
+  if (value === null || value === undefined || value === "") return true;
+  if (Array.isArray(value)) return value.length === 0;
+  if (typeof value === "object") return Object.keys(value).length === 0;
+  return false;
+}
+
+// Recursively render an arbitrary profile value as readable HTML. Arrays of
+// scalars become chips, arrays of objects become stacked sub-cards, objects
+// become labelled rows. Never falls back to JSON.stringify.
+function renderProfileValueHtml(value) {
+  if (isEmptyProfileValue(value)) return "";
+  if (Array.isArray(value)) {
+    const scalars = value.every((entry) => entry === null || typeof entry !== "object");
+    if (scalars) {
+      return `<div class="profileChips">${value.map((entry) => `<span class="profileChip">${escapeHtml(String(entry))}</span>`).join("")}</div>`;
+    }
+    return `<div class="profileSubList">${value.map((entry) => `<div class="profileSubItem">${renderProfileValueHtml(entry)}</div>`).join("")}</div>`;
+  }
+  if (typeof value === "object") {
+    const entries = Object.entries(value).filter(([, entry]) => !isEmptyProfileValue(entry));
+    if (!entries.length) return "";
+    return `<dl class="profileNested">${entries.map(([key, entry]) => `
+      <div><dt>${escapeHtml(labelFromKey(key))}</dt><dd>${renderProfileValueHtml(entry)}</dd></div>
+    `).join("")}</dl>`;
+  }
+  const text = String(value);
+  if (/^https?:\/\//i.test(text)) {
+    return `<a href="${escapeHtml(text)}" target="_blank" rel="noreferrer">${escapeHtml(text.replace(/^https?:\/\//, "").replace(/\/$/, ""))}</a>`;
+  }
+  return escapeHtml(text);
+}
+
+// ---- Sidebar drawer -------------------------------------------------------
+
+const APP_NAV_ITEMS = [
+  { key: "deck", label: "On Deck", route: "/", icon: "deck" },
+  { key: "service", label: "Service Offering", route: "/service-offerings", icon: "offering" },
+  { key: "companies", label: "Company List", route: "/companies", icon: "companies" },
+  { key: "results", label: "Results", route: "/results", icon: "results" },
+  { key: "alerts", label: "Alerts", route: "/alerts", icon: "alerts" },
+  { key: "chats", label: "Chats", route: "/chat", icon: "chats" },
+  { key: "settings", label: "Settings", route: "/settings", icon: "settings" },
+];
+
+const NAV_ICONS = {
+  deck: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 3 8l9 5 9-5-9-5Z"/><path d="m3 13 9 5 9-5"/></svg>',
+  offering: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h10M4 17h7"/></svg>',
+  companies: '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="8" height="16" rx="1"/><rect x="13" y="9" width="8" height="11" rx="1"/></svg>',
+  results: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19V5"/><path d="M4 19h16"/><path d="M8 16v-5"/><path d="M13 16V8"/><path d="M18 16v-3"/></svg>',
+  chats: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.5 7.2L4 21l1.8-5.5A8 8 0 1 1 21 12Z"/></svg>',
+  settings: '<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1l2-1.5-2-3.5-2.4 1a7 7 0 0 0-1.7-1L14.5 3h-5l-.3 2.5a7 7 0 0 0-1.7 1l-2.4-1-2 3.5L3 11a7 7 0 0 0 0 2l-2 1.5 2 3.5 2.4-1a7 7 0 0 0 1.7 1l.3 2.5h5l.3-2.5a7 7 0 0 0 1.7-1l2.4 1 2-3.5-2-1.5a7 7 0 0 0 .1-1Z"/></svg>',
+  alerts: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.7 21a2 2 0 0 1-3.4 0"/></svg>',
+};
+
+function navCountFor(key) {
+  if (key === "deck") return state.focus.loaded ? state.focus.items.length : null;
+  if (key === "companies") {
+    const counts = state.companyListPage.bandCounts;
+    if (!counts) return null;
+    return Number(counts.high || 0) + Number(counts.medium || 0) + Number(counts.low || 0) + Number(counts.notScored || 0);
+  }
+  if (key === "service") {
+    const services = state.servicePage.profile?.version?.structured?.services;
+    return Array.isArray(services) ? services.length : null;
+  }
+  if (key === "results") {
+    const counts = state.resultsPage.counts;
+    if (!counts) return null;
+    // Badge = things still awaiting a response (waiting + aged-out).
+    return Number(counts.waiting || 0) + Number(counts.no_response || 0);
+  }
+  if (key === "alerts") {
+    if (!state.alertsPage.loaded) return null;
+    const queued = state.alertsPage.hits.filter((h) => h.status === "queued" || h.status === "resolving").length;
+    return queued || null;
+  }
+  return null;
+}
+
+function renderAppNav(activeKey) {
+  const list = $("appNavList");
+  if (list) {
+    list.innerHTML = APP_NAV_ITEMS.map((item) => {
+      const count = navCountFor(item.key);
+      return `
+        <button type="button" class="appNavItem ${item.key === activeKey ? "active" : ""}" data-nav="${item.route}" title="${escapeHtml(item.label)}">
+          <span class="appNavIcon">${NAV_ICONS[item.icon] || ""}</span>
+          <span class="appNavLabel">${escapeHtml(item.label)}</span>
+          ${count != null ? `<span class="appNavCount">${count}</span>` : ""}
+        </button>`;
+    }).join("");
+  }
+  renderAppNavUser();
+  const collapse = $("appNavCollapse");
+  if (collapse) {
+    collapse.textContent = state.navCollapsed ? "⟩" : "⟨";
+    collapse.title = state.navCollapsed ? "Expand" : "Collapse";
+  }
+}
+
+function renderAppNavUser() {
+  const el = $("appNavUser");
+  if (!el || !state.me) return;
+  const profile = state.userProfile;
+  const name = profile?.displayName || profile?.name || "Signed in";
+  const npub = state.me.npub || "";
+  const npubShort = npub ? `${npub.slice(0, 10)}…${npub.slice(-4)}` : "";
+  const avatar = profile?.picture
+    ? `<img class="appNavAvatarImg" src="${escapeHtml(profile.picture)}" alt="" />`
+    : `<span class="appNavAvatarInitial">${escapeHtml((name[0] || "?").toUpperCase())}</span>`;
+  el.innerHTML = `
+    <div class="appNavUserInner">
+      <span class="appNavAvatar">${avatar}</span>
+      <span class="appNavUserText">
+        <span class="appNavUserName">${escapeHtml(name)}</span>
+        <span class="appNavUserNpub">${escapeHtml(npubShort)}</span>
+      </span>
+      <button type="button" class="appNavLogout" id="appNavLogout" title="Sign out" aria-label="Sign out">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/></svg>
+      </button>
+    </div>`;
+}
+
+async function ensureUserProfile() {
+  if (!state.me?.pubkey || state.userProfile) return;
+  try {
+    const profile = await resolveProfile({ pubkey: state.me.pubkey });
+    state.userProfile = profile;
+    renderAppNavUser();
+    if (!$("focus").classList.contains("hidden")) renderFocus();
+  } catch {}
+}
+
+function toggleNavCollapsed() {
+  state.navCollapsed = !state.navCollapsed;
+  localStorage.setItem("kindling_nav_collapsed", state.navCollapsed ? "1" : "0");
+  $("app").classList.toggle("navCollapsed", state.navCollapsed);
+  $("appNav").classList.toggle("collapsed", state.navCollapsed);
+  const collapse = $("appNavCollapse");
+  if (collapse) {
+    collapse.textContent = state.navCollapsed ? "⟩" : "⟨";
+    collapse.title = state.navCollapsed ? "Expand" : "Collapse";
+  }
+}
+
+// ---- Service Offering page (read-only profile) ----------------------------
+
+let servicePageSeq = 0;
+async function loadServicePage({ force = false } = {}) {
+  if (state.servicePage.loaded && !force) {
+    renderServicePage();
+    return;
+  }
+  const seq = ++servicePageSeq;
+  state.servicePage.loading = true;
+  state.servicePage.error = "";
+  renderServicePage();
+  try {
+    const data = await api("/api/kindling/profile");
+    if (seq !== servicePageSeq) return;
+    state.servicePage.profile = data.profile || null;
+    state.servicePage.loaded = true;
+    state.servicePage.loading = false;
+    renderServicePage();
+    if (!$("appNav").classList.contains("hidden")) renderAppNav("service");
+  } catch (err) {
+    if (seq !== servicePageSeq) return;
+    state.servicePage.loading = false;
+    state.servicePage.error = err?.message || String(err);
+    renderServicePage();
+  }
+}
+
+function renderServicePage() {
+  const el = $("servicePage");
+  if (!el) return;
+  let body;
+  if (state.servicePage.loading && !state.servicePage.loaded) {
+    body = `<div class="pageLoading"><span class="kindlingSpinner" aria-hidden="true"></span>Loading service offering…</div>`;
+  } else if (state.servicePage.error) {
+    body = `<p class="pageError">Couldn't load the service offering: ${escapeHtml(state.servicePage.error)}</p>
+      <button type="button" data-page-action="retry-service">Retry</button>`;
+  } else {
+    body = `<div class="kindlingPanel serviceProfilePanel">${renderServiceProfile(state.servicePage.profile?.version)}</div>`;
+  }
+  el.innerHTML = `<div class="pageInner serviceOfferingInner">
+    <header class="pageTopHeader"><h1>Service Offering</h1></header>
+    ${body}
+  </div>`;
+}
+
+// ---- Company List page (fast full list) -----------------------------------
+
+const COMPANY_PAGE_SIZE = 25;
+const COMPANY_BANDS = [
+  { key: "high", label: "High Fit", countKey: "high" },
+  { key: "medium", label: "Medium Fit", countKey: "medium" },
+  { key: "low", label: "Low Fit", countKey: "low" },
+  { key: "not_scored", label: "Not Scored", countKey: "notScored" },
+];
+
+let companyListSeq = 0;
+async function loadCompanyListPage({ force = false } = {}) {
+  if (state.companyListPage.loaded && !force) {
+    renderCompanyListPage();
+    return;
+  }
+  const seq = ++companyListSeq;
+  const page = state.companyListPage;
+  page.loading = true;
+  page.error = "";
+  renderCompanyListPage();
+  try {
+    const query = new URLSearchParams({
+      band: page.band,
+      limit: String(COMPANY_PAGE_SIZE),
+      offset: String(Math.max(0, Number(page.offset) || 0)),
+      withBandCounts: "1",
+    });
+    if (page.hideProcessed) query.set("hideProcessed", "1");
+    const data = await api(`/api/kindling/companies?${query}`);
+    if (seq !== companyListSeq) return;
+    page.companies = data.companies || [];
+    page.total = Number(data.total ?? data.companies?.length ?? 0);
+    page.offset = Number(data.offset ?? page.offset ?? 0);
+    if (data.bandCounts) page.bandCounts = data.bandCounts;
+    page.loaded = true;
+    page.loading = false;
+    renderCompanyListPage();
+    if (!$("appNav").classList.contains("hidden")) renderAppNav("companies");
+  } catch (err) {
+    if (seq !== companyListSeq) return;
+    page.loading = false;
+    page.error = err?.message || String(err);
+    renderCompanyListPage();
+  }
+}
+
+function setCompanyBand(band) {
+  if (state.companyListPage.band === band) return;
+  state.companyListPage.band = band;
+  state.companyListPage.offset = 0;
+  void loadCompanyListPage({ force: true });
+}
+
+function toggleCompanyHideProcessed() {
+  const page = state.companyListPage;
+  page.hideProcessed = !page.hideProcessed;
+  page.offset = 0;
+  void loadCompanyListPage({ force: true });
+}
+
+function stepCompanyPage(delta) {
+  const page = state.companyListPage;
+  const next = Math.max(0, (Number(page.offset) || 0) + delta * COMPANY_PAGE_SIZE);
+  if (next === page.offset) return;
+  if (next >= page.total) return;
+  page.offset = next;
+  void loadCompanyListPage({ force: true });
+}
+
+function renderCompanyBandTabs() {
+  const counts = state.companyListPage.bandCounts;
+  const active = state.companyListPage.band;
+  return `<div class="scoredTabs companyBandTabs" role="tablist">
+    ${COMPANY_BANDS.map((band) => {
+      const count = counts ? Number(counts[band.countKey] || 0) : null;
+      return `<button type="button" class="scoredTab ${band.key === active ? "active" : ""}" data-company-band="${band.key}">
+        ${escapeHtml(band.label)}${count != null ? ` <span class="scoredTabCount">${count}</span>` : ""}
+      </button>`;
+    }).join("")}
+  </div>`;
+}
+
+function renderCompanyListPage() {
+  const el = $("companyListPage");
+  if (!el) return;
+  const { companies, total, offset, loading, loaded, error } = state.companyListPage;
+  let body;
+  if (loading && !loaded) {
+    body = `<div class="pageLoading"><span class="kindlingSpinner" aria-hidden="true"></span>Loading companies…</div>`;
+  } else if (error) {
+    body = `<p class="pageError">Couldn't load companies: ${escapeHtml(error)}</p>
+      <button type="button" data-page-action="retry-companies">Retry</button>`;
+  } else if (!companies.length) {
+    body = `<p class="pageEmpty">No companies in this list.</p>`;
+  } else {
+    body = `<div class="kindlingPanel companyTablePanel">${renderCompanyListRows(companies)}</div>`;
+  }
+
+  // Pager (25 per page).
+  let pager = "";
+  if (loaded && total > 0) {
+    const start = companies.length ? offset + 1 : 0;
+    const end = Math.min(total, offset + companies.length);
+    pager = `<div class="pager companyListPager">
+      <span>${start}-${end} of ${total}</span>
+      <div>
+        <button type="button" data-company-page="prev" ${offset <= 0 ? "disabled" : ""}>Previous</button>
+        <button type="button" data-company-page="next" ${offset + companies.length >= total ? "disabled" : ""}>Next</button>
+      </div>
+    </div>`;
+  }
+
+  const count = loaded ? `${total} ${total === 1 ? "company" : "companies"}` : "";
+  el.innerHTML = `<div class="pageInner companyListInner">
+    <header class="pageTopHeader"><h1>Company List</h1>${count ? `<span class="pageCount">${escapeHtml(count)}</span>` : ""}</header>
+    ${renderCompanyBandTabs()}
+    <div class="companyListFilters">
+      <button type="button" class="companyFilterToggle ${state.companyListPage.hideProcessed ? "active" : ""}"
+        data-company-toggle="hideProcessed"
+        role="switch" aria-checked="${state.companyListPage.hideProcessed ? "true" : "false"}">
+        <span class="companyFilterToggleDot" aria-hidden="true"></span>
+        Hide processed (contacted / rejected)
+      </button>
+    </div>
+    ${pager}
+    ${body}
+  </div>`;
+}
+
+// ---- Results: outreach tracking -------------------------------------------
+
+const RESULTS_TABS = [
+  { key: "waiting", label: "Waiting", countKey: "waiting" },
+  { key: "no_response", label: "No Response", countKey: "no_response" },
+  { key: "meeting", label: "Meetings", countKey: "meeting" },
+  { key: "rejected", label: "Rejected", countKey: "rejected" },
+  { key: "snoozed", label: "Snoozed", countKey: "snoozed" },
+];
+
+const REASON_CATEGORY_LABELS = {
+  not_appropriate: "Not appropriate to call",
+  already_contacted: "Previously contacted (outside Kindling)",
+  poor_record: "Poor record",
+  poor_feedback: "Poor feedback after outreach",
+  said_no: "They said no",
+  no_response: "No response",
+  other: "Other",
+};
+
+const RESULTS_PAGE_SIZE = 25;
+
+function shortDate(ts) {
+  if (!ts) return "";
+  const d = new Date(Number(ts));
+  return d.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+}
+
+function daysSince(ts) {
+  if (!ts) return null;
+  return Math.floor((Date.now() - Number(ts)) / (24 * 60 * 60 * 1000));
+}
+
+let resultsSeq = 0;
+async function loadResultsPage({ force = false } = {}) {
+  if (state.resultsPage.loaded && !force) {
+    renderResultsPage();
+    return;
+  }
+  const seq = ++resultsSeq;
+  const page = state.resultsPage;
+  page.loading = true;
+  page.error = "";
+  renderResultsPage();
+  try {
+    const query = new URLSearchParams({
+      tab: page.tab,
+      limit: String(RESULTS_PAGE_SIZE),
+      offset: String(Math.max(0, Number(page.offset) || 0)),
+    });
+    if (page.q) query.set("q", page.q);
+    const data = await api(`/api/kindling/outreach/results?${query}`);
+    if (seq !== resultsSeq) return;
+    page.items = data.items || [];
+    page.total = Number(data.total ?? page.items.length ?? 0);
+    page.offset = Number(data.offset ?? page.offset ?? 0);
+    page.counts = data.counts || page.counts;
+    page.loaded = true;
+    page.loading = false;
+    renderResultsPage();
+    if (!$("appNav").classList.contains("hidden")) renderAppNav("results");
+  } catch (err) {
+    if (seq !== resultsSeq) return;
+    page.loading = false;
+    page.error = err?.message || String(err);
+    renderResultsPage();
+  }
+}
+
+function setResultsTab(tab) {
+  if (state.resultsPage.tab === tab) return;
+  state.resultsPage.tab = tab;
+  state.resultsPage.offset = 0;
+  void loadResultsPage({ force: true });
+}
+
+function stepResultsPage(delta) {
+  const page = state.resultsPage;
+  const next = Math.max(0, (Number(page.offset) || 0) + delta * RESULTS_PAGE_SIZE);
+  if (next === page.offset || next >= page.total) return;
+  page.offset = next;
+  void loadResultsPage({ force: true });
+}
+
+function renderResultsTabs() {
+  const counts = state.resultsPage.counts;
+  const active = state.resultsPage.tab;
+  return `<div class="scoredTabs resultsTabs" role="tablist">
+    ${RESULTS_TABS.map((tab) => {
+      const count = counts ? Number(counts[tab.countKey] || 0) : null;
+      return `<button type="button" class="scoredTab ${tab.key === active ? "active" : ""}" data-results-tab="${tab.key}">
+        ${escapeHtml(tab.label)}${count != null ? ` <span class="scoredTabCount">${count}</span>` : ""}
+      </button>`;
+    }).join("")}
+  </div>`;
+}
+
+function renderResultRow(item, tab) {
+  const company = item.company || {};
+  const name = company.name || "Unknown company";
+  const meta = [company.industry, company.location].filter(Boolean).join(" · ");
+  const fit = item.fitBand && item.fitBand !== "unscored"
+    ? `<span class="resultFit resultFit-${escapeHtml(item.fitBand)}">${escapeHtml(item.fitBand)} fit</span>` : "";
+
+  let timing = "";
+  let actions = "";
+  if (tab === "waiting" || tab === "no_response") {
+    const d = daysSince(item.outreachAt);
+    timing = `<span class="resultTiming">Sent ${escapeHtml(shortDate(item.outreachAt))}${d != null ? ` · ${d}d waiting` : ""}</span>`;
+    actions = `
+      <button type="button" class="resultBtn resultBtnGood" data-result-meeting="${escapeHtml(item.companyId)}">Got a meeting</button>
+      <button type="button" class="resultBtn" data-result-drop="${escapeHtml(item.companyId)}">Dropped…</button>`;
+  } else if (tab === "meeting") {
+    timing = `<span class="resultTiming">Meeting · responded ${escapeHtml(shortDate(item.responseAt))}</span>`;
+  } else if (tab === "rejected") {
+    const cat = REASON_CATEGORY_LABELS[item.reasonCategory] || item.reasonCategory || "Dismissed";
+    timing = `<span class="resultTiming">${escapeHtml(cat)}${item.dismissedFrom === "call_list" ? " · from call list" : item.dismissedFrom === "waiting" ? " · after outreach" : ""}</span>`;
+  } else if (tab === "snoozed") {
+    timing = `<span class="resultTiming">Snoozed${item.snoozedUntil ? ` until ${escapeHtml(shortDate(item.snoozedUntil))}` : ""}</span>`;
+  }
+
+  const reasonLine = (tab === "rejected" && item.reason)
+    ? `<p class="resultReason">${escapeHtml(item.reason)}</p>` : "";
+
+  // Undo always available — pulls the company out of tracking and back onto the
+  // call list. Tucked behind a ⋮ menu so it doesn't crowd each row. On the Snoozed
+  // tab it reads as "resume now" (ends the snooze).
+  const undoLabel = tab === "snoozed" ? "↩ Resume now" : "↩ Undo";
+  const menu = `
+    <div class="resultMenu">
+      <button type="button" class="resultMenuToggle" data-result-menu aria-label="More actions" aria-haspopup="true">⋮</button>
+      <div class="resultMenuList" role="menu">
+        <button type="button" class="resultMenuItem" role="menuitem" data-result-undo="${escapeHtml(item.companyId)}">${undoLabel}</button>
+      </div>
+    </div>`;
+
+  return `
+    <div class="resultRow">
+      <div class="resultRowMain">
+        <div class="resultRowHead">
+          <strong>${escapeHtml(name)}</strong>
+          ${fit}
+        </div>
+        ${meta ? `<span class="resultMeta">${escapeHtml(meta)}</span>` : ""}
+        ${timing}
+        ${reasonLine}
+      </div>
+      <div class="resultRowActions">${actions}${menu}</div>
+    </div>`;
+}
+
+function renderResultsPage() {
+  const el = $("resultsPage");
+  if (!el) return;
+  const { items, total, offset, tab, q, loading, loaded, error } = state.resultsPage;
+  let body;
+  if (loading && !loaded) {
+    body = `<div class="pageLoading"><span class="kindlingSpinner" aria-hidden="true"></span>Loading results…</div>`;
+  } else if (error) {
+    body = `<p class="pageError">Couldn't load results: ${escapeHtml(error)}</p>
+      <button type="button" data-page-action="retry-results">Retry</button>`;
+  } else if (!items.length) {
+    const empty = {
+      waiting: "Nothing waiting. Send outreach from On Deck to start tracking.",
+      no_response: "No silent threads — everyone waiting is still inside the week.",
+      meeting: "No meetings booked yet.",
+      rejected: "No dismissed or dropped companies.",
+      snoozed: "Nothing snoozed. Snooze a company from On Deck to park it for later.",
+    }[tab] || "Nothing here yet.";
+    body = `<p class="pageEmpty">${escapeHtml(empty)}</p>`;
+  } else {
+    body = `<div class="kindlingPanel resultsListPanel">${items.map((item) => renderResultRow(item, tab)).join("")}</div>`;
+  }
+
+  let pager = "";
+  if (loaded && total > RESULTS_PAGE_SIZE) {
+    const start = items.length ? offset + 1 : 0;
+    const end = Math.min(total, offset + items.length);
+    pager = `<div class="pager resultsPager">
+      <span>${start}-${end} of ${total}</span>
+      <div>
+        <button type="button" data-results-page="prev" ${offset <= 0 ? "disabled" : ""}>Previous</button>
+        <button type="button" data-results-page="next" ${offset + items.length >= total ? "disabled" : ""}>Next</button>
+      </div>
+    </div>`;
+  }
+
+  el.innerHTML = `<div class="pageInner resultsInner">
+    <header class="pageTopHeader"><h1>Results</h1><span class="pageCount">Outreach you've sent</span></header>
+    ${renderResultsTabs()}
+    <form class="resultsSearch" data-results-search>
+      <input type="search" id="resultsSearchInput" placeholder="Search company or reason…" value="${escapeHtml(q || "")}" />
+      ${q ? `<button type="button" data-results-clear>Clear</button>` : ""}
+    </form>
+    ${pager}
+    ${body}
+  </div>`;
+}
+
+// ---- Alerts page (RSS hiring-signal ingestion) ----------------------------
+
+let alertsSeq = 0;
+async function loadAlertsPage({ force = false } = {}) {
+  if (state.alertsPage.loaded && !force) {
+    renderAlertsPage();
+    return;
+  }
+  const seq = ++alertsSeq;
+  const page = state.alertsPage;
+  page.loading = true;
+  page.error = "";
+  renderAlertsPage();
+  try {
+    const [feeds, hits, scheduler] = await Promise.all([
+      api("/api/kindling/alert-feeds"),
+      api("/api/kindling/alert-hits?limit=50"),
+      api("/api/kindling/scheduler-settings").catch(() => ({ settings: null })),
+    ]);
+    if (seq !== alertsSeq) return;
+    page.feeds = feeds.feeds || [];
+    page.hits = hits.hits || [];
+    page.scheduler = scheduler.settings || page.scheduler;
+    page.loaded = true;
+    page.loading = false;
+    renderAlertsPage();
+    if (!$("appNav").classList.contains("hidden")) renderAppNav("alerts");
+  } catch (err) {
+    if (seq !== alertsSeq) return;
+    page.loading = false;
+    page.error = err?.message || String(err);
+    renderAlertsPage();
+  }
+}
+
+const ALERT_HIT_BADGE = {
+  queued: { label: "Queued", color: "#8a6d3b", bg: "#fcf3d6" },
+  resolving: { label: "Resolving", color: "#8a6d3b", bg: "#fcf3d6" },
+  matched: { label: "Matched", color: "#1f5c8a", bg: "#dcecf8" },
+  enriched: { label: "Enriched", color: "#1f5c8a", bg: "#dcecf8" },
+  scored: { label: "Scored", color: "#1f5c8a", bg: "#dcecf8" },
+  promoted: { label: "Promoted", color: "#1e6b3a", bg: "#d8f0df" },
+  discarded: { label: "Discarded", color: "#6b6b6b", bg: "#ececec" },
+  failed: { label: "Failed", color: "#8a1f1f", bg: "#f8dcdc" },
+};
+
+function alertHitBadge(status) {
+  const b = ALERT_HIT_BADGE[status] || { label: status || "?", color: "#555", bg: "#eee" };
+  return `<span class="alertBadge" style="color:${b.color};background:${b.bg}">${escapeHtml(b.label)}</span>`;
+}
+
+function fmtAlertTime(ms) {
+  if (!ms) return "—";
+  const d = new Date(Number(ms));
+  if (Number.isNaN(d.getTime())) return "—";
+  const diff = Date.now() - d.getTime();
+  const mins = Math.round(diff / 60000);
+  if (mins < 1) return "just now";
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.round(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return d.toLocaleDateString();
+}
+
+function renderAlertFeedRow(feed, canEdit) {
+  const paused = feed.status === "paused";
+  const stalled = feed.status === "stalled";
+  const statusColor = paused ? "#6b6b6b" : stalled ? "#8a1f1f" : "#1e6b3a";
+  const toggleLabel = paused ? "Activate" : "Pause";
+  const toggleNext = paused ? "active" : "paused";
+  return `
+    <div class="alertFeedRow" style="display:grid;grid-template-columns:1fr auto;gap:8px;padding:12px;border:1px solid var(--border,#e2e2e2);border-radius:10px;margin-bottom:8px">
+      <div>
+        <div style="font-weight:600">${escapeHtml(feed.label)}</div>
+        ${feed.queryNote ? `<div style="font-size:12px;opacity:.75">${escapeHtml(feed.queryNote)}</div>` : ""}
+        <div style="font-size:12px;opacity:.6;word-break:break-all">${escapeHtml(feed.feedUrl)}</div>
+        <div style="font-size:12px;margin-top:4px">
+          <span style="color:${statusColor};font-weight:600">${escapeHtml(feed.status)}</span>
+          · signal <code>${escapeHtml(feed.signalType)}</code>
+          · last run ${fmtAlertTime(feed.lastRunAt)}
+          ${feed.stalledReason ? `· <span style="color:#8a1f1f">${escapeHtml(feed.stalledReason)}</span>` : ""}
+        </div>
+      </div>
+      ${canEdit ? `
+      <div style="display:flex;gap:6px;align-items:flex-start">
+        <button type="button" data-alert-action="toggle-feed" data-feed-id="${escapeHtml(feed.id)}" data-next-status="${toggleNext}">${toggleLabel}</button>
+        <button type="button" class="danger" data-alert-action="delete-feed" data-feed-id="${escapeHtml(feed.id)}" data-feed-label="${escapeHtml(feed.label)}">Delete</button>
+      </div>` : ""}
+    </div>`;
+}
+
+function renderAlertHitRow(hit) {
+  const company = hit.companyId
+    ? `<a href="/companies" data-nav="/companies" style="text-decoration:underline">${escapeHtml(hit.title || "company")}</a>`
+    : escapeHtml(hit.title || "(untitled)");
+  const detail = hit.discardReason
+    ? `<span style="opacity:.7">${escapeHtml(hit.discardReason)}</span>`
+    : hit.link
+      ? `<a href="${escapeHtml(hit.link)}" target="_blank" rel="noopener" style="text-decoration:underline">source</a>`
+      : "";
+  return `
+    <div class="alertHitRow" style="display:grid;grid-template-columns:96px 1fr auto;gap:8px;padding:8px 10px;border-bottom:1px solid var(--border,#eee);align-items:center">
+      <div>${alertHitBadge(hit.status)}</div>
+      <div style="min-width:0">
+        <div style="font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${company}</div>
+        <div style="font-size:12px;opacity:.7">${detail}</div>
+      </div>
+      <div style="font-size:12px;opacity:.6;white-space:nowrap">${fmtAlertTime(hit.createdAt)}</div>
+    </div>`;
+}
+
+function renderAlertsPage() {
+  const el = $("alertsPage");
+  if (!el) return;
+  const page = state.alertsPage;
+  const canEdit = Boolean(state.me?.access?.edit);
+
+  if (page.loading && !page.loaded) {
+    el.innerHTML = `<div class="pageInner"><header class="pageTopHeader"><h1>Alerts</h1></header>
+      <div class="pageLoading"><span class="kindlingSpinner" aria-hidden="true"></span>Loading alerts…</div></div>`;
+    return;
+  }
+  if (page.error) {
+    el.innerHTML = `<div class="pageInner"><header class="pageTopHeader"><h1>Alerts</h1></header>
+      <p class="pageError">Couldn't load alerts: ${escapeHtml(page.error)}</p>
+      <button type="button" data-alert-action="retry">Retry</button></div>`;
+    return;
+  }
+
+  const s = page.scheduler;
+  const alertsOn = Boolean(s?.alertsEnabled);
+  const masterOn = Boolean(s?.enabled);
+  const cadenceMin = Math.max(1, Math.round(Number(s?.cooldowns?.alertsMs ?? 900000) / 60000));
+
+  const masterNote = masterOn
+    ? ""
+    : `<p class="pageEmpty" style="margin-top:4px">⚠︎ The master Automation switch is off, so alerts won't poll until you enable it in <a href="/settings" data-nav="/settings" style="text-decoration:underline">Settings → Automation</a>.</p>`;
+
+  const settingsCard = `
+    <div class="kindlingPanel" style="padding:16px;margin-bottom:16px">
+      <h2 style="margin:0 0 8px">Automation</h2>
+      <div style="display:flex;flex-wrap:wrap;gap:16px;align-items:center">
+        <label style="display:flex;gap:8px;align-items:center">
+          <input type="checkbox" id="alertEnabled" ${alertsOn ? "checked" : ""} ${canEdit ? "" : "disabled"}/>
+          <strong>Alert polling enabled</strong>
+        </label>
+        <label style="display:flex;gap:8px;align-items:center">
+          <span>Poll every (min)</span>
+          <input type="number" min="1" id="alertCadence" value="${cadenceMin}" style="width:80px" ${canEdit ? "" : "disabled"}/>
+        </label>
+        ${canEdit ? `<button type="button" data-alert-action="save-settings" ${page.saving ? "disabled" : ""}>Save</button>` : ""}
+        <button type="button" data-alert-action="refresh">Refresh</button>
+      </div>
+      ${masterNote}
+    </div>`;
+
+  const addForm = canEdit ? `
+    <form class="kindlingPanel alertAddForm" data-alert-action="add-feed" style="padding:16px;margin-bottom:16px;display:grid;gap:10px">
+      <h2 style="margin:0">Add a Google Alert feed</h2>
+      <p style="margin:0;font-size:12px;opacity:.7">In Google Alerts, set <strong>Deliver to → RSS feed</strong>, then paste the feed URL here. See docs/RssAlertIngestion.md.</p>
+      <label style="display:grid;gap:4px"><span>Label</span><input type="text" id="alertNewLabel" placeholder="SEEK: right hand to the owner" required/></label>
+      <label style="display:grid;gap:4px"><span>Feed URL</span><input type="url" id="alertNewUrl" placeholder="https://www.google.com/alerts/feeds/..." required/></label>
+      <label style="display:grid;gap:4px"><span>Query note (optional)</span><input type="text" id="alertNewQuery" placeholder='"right hand to the owner" "operations manager"'/></label>
+      <div><button type="submit">Add feed</button></div>
+    </form>` : "";
+
+  const feeds = page.feeds.length
+    ? page.feeds.map((f) => renderAlertFeedRow(f, canEdit)).join("")
+    : `<p class="pageEmpty">No feeds yet. Add a Google Alerts RSS feed above to start ingesting hiring signals.</p>`;
+
+  const hits = page.hits.length
+    ? `<div class="kindlingPanel" style="padding:0">${page.hits.map(renderAlertHitRow).join("")}</div>`
+    : `<p class="pageEmpty">No alert hits yet. Once feeds poll, matched entries appear here.</p>`;
+
+  el.innerHTML = `<div class="pageInner">
+    <header class="pageTopHeader"><h1>Alerts</h1><span class="pageCount">Hiring-signal feeds → enrich → score → deck</span></header>
+    ${settingsCard}
+    ${addForm}
+    <h2 style="margin:8px 0">Feeds <span style="opacity:.6;font-weight:400">(${page.feeds.length})</span></h2>
+    ${feeds}
+    <h2 style="margin:16px 0 8px">Recent hits <span style="opacity:.6;font-weight:400">(${page.hits.length})</span></h2>
+    ${hits}
+  </div>`;
+}
+
+async function addAlertFeed() {
+  const label = ($("alertNewLabel")?.value || "").trim();
+  const feedUrl = ($("alertNewUrl")?.value || "").trim();
+  const queryNote = ($("alertNewQuery")?.value || "").trim();
+  if (!feedUrl) { setStatus("Feed URL is required"); return; }
+  try {
+    await api("/api/kindling/alert-feeds", {
+      method: "POST",
+      body: JSON.stringify({ label, feedUrl, queryNote }),
+    });
+    setStatus("Alert feed added");
+    await loadAlertsPage({ force: true });
+  } catch (err) {
+    setStatus(err?.message || String(err));
+  }
+}
+
+async function setAlertFeedStatus(feedId, status) {
+  try {
+    await api(`/api/kindling/alert-feeds/${encodeURIComponent(feedId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ status }),
+    });
+    await loadAlertsPage({ force: true });
+  } catch (err) {
+    setStatus(err?.message || String(err));
+  }
+}
+
+async function removeAlertFeed(feedId, label) {
+  if (!window.confirm(`Delete alert feed "${label}"? Its hit history is removed too.`)) return;
+  try {
+    await api(`/api/kindling/alert-feeds/${encodeURIComponent(feedId)}`, { method: "DELETE" });
+    setStatus("Alert feed deleted");
+    await loadAlertsPage({ force: true });
+  } catch (err) {
+    setStatus(err?.message || String(err));
+  }
+}
+
+async function saveAlertSettings() {
+  const page = state.alertsPage;
+  const s = page.scheduler || {};
+  const cadenceMin = Math.max(1, Number($("alertCadence")?.value || 15));
+  const cooldowns = { ...(s.cooldowns || {}), alertsMs: cadenceMin * 60000 };
+  page.saving = true;
+  renderAlertsPage();
+  try {
+    const res = await api("/api/kindling/scheduler-settings", {
+      method: "PATCH",
+      body: JSON.stringify({ alertsEnabled: $("alertEnabled")?.checked, cooldowns }),
+    });
+    page.scheduler = res.settings || page.scheduler;
+    setStatus("Alert settings saved");
+  } catch (err) {
+    setStatus(err?.message || String(err));
+  } finally {
+    page.saving = false;
+    renderAlertsPage();
+  }
+}
+
+// ---- Shared reason / outcome modal ----------------------------------------
+
+// config: { title, message, confirmLabel, requireReason, categories:[{value,label}], onConfirm({reason, category}) }
+function openReasonModal(config) {
+  state.reasonModal = config;
+  const root = $("reasonModalRoot");
+  if (!root) return;
+  const cats = config.categories || [];
+  root.innerHTML = `
+    <div class="reasonModalBackdrop">
+      <div class="reasonModal" role="dialog" aria-modal="true">
+        <h2 class="reasonModalTitle">${escapeHtml(config.title || "Add a reason")}</h2>
+        ${config.message ? `<p class="reasonModalMessage">${escapeHtml(config.message)}</p>` : ""}
+        ${cats.length ? `
+          <label class="reasonModalField">
+            <span>Category</span>
+            <select id="reasonModalCategory">
+              ${cats.map((c) => `<option value="${escapeHtml(c.value)}">${escapeHtml(c.label)}</option>`).join("")}
+            </select>
+          </label>` : ""}
+        <label class="reasonModalField">
+          <span>Reason${config.requireReason ? "" : " (optional)"}</span>
+          <textarea id="reasonModalText" rows="3" placeholder="${escapeHtml(config.placeholder || "What happened / why?")}"></textarea>
+        </label>
+        <div class="reasonModalActions">
+          <button type="button" data-reason-close>Cancel</button>
+          <button type="button" class="reasonModalConfirm" data-reason-confirm>${escapeHtml(config.confirmLabel || "Confirm")}</button>
+        </div>
+      </div>
+    </div>`;
+  root.classList.remove("hidden");
+  const text = $("reasonModalText");
+  if (text) text.focus();
+}
+
+function closeReasonModal() {
+  state.reasonModal = null;
+  const root = $("reasonModalRoot");
+  if (root) {
+    root.classList.add("hidden");
+    root.innerHTML = "";
+  }
+}
+
+async function confirmReasonModal() {
+  const config = state.reasonModal;
+  if (!config) return;
+  const reason = ($("reasonModalText")?.value || "").trim();
+  const category = $("reasonModalCategory")?.value || "";
+  if (config.requireReason && !reason) {
+    const text = $("reasonModalText");
+    if (text) text.focus();
+    return;
+  }
+  const confirmBtn = document.querySelector("[data-reason-confirm]");
+  setBusyElement(confirmBtn, true, "Saving");
+  try {
+    await config.onConfirm({ reason, category });
+    closeReasonModal();
+  } catch (err) {
+    setBusyElement(confirmBtn, false);
+    const modal = document.querySelector(".reasonModal");
+    if (modal && !modal.querySelector(".reasonModalError")) {
+      const p = document.createElement("p");
+      p.className = "reasonModalError";
+      p.textContent = err?.message || String(err);
+      modal.insertBefore(p, modal.querySelector(".reasonModalActions"));
+    }
+  }
+}
+
+// ---- Outreach actions (call list + results) -------------------------------
+
+const DISMISS_CATEGORIES = [
+  { value: "not_appropriate", label: "Not appropriate to call" },
+  { value: "already_contacted", label: "Previously contacted (outside Kindling)" },
+  { value: "poor_record", label: "Poor record" },
+  { value: "poor_feedback", label: "Poor feedback after outreach" },
+  { value: "other", label: "Other" },
+];
+
+const DROP_CATEGORIES = [
+  { value: "said_no", label: "They said no" },
+  { value: "no_response", label: "No response" },
+  { value: "poor_feedback", label: "Poor feedback after outreach" },
+  { value: "other", label: "Other" },
+];
+
+function dismissFromDeck(companyId) {
+  openReasonModal({
+    title: "Dismiss from call list",
+    message: "This company won't be called. Capture why so we can improve targeting.",
+    confirmLabel: "Dismiss",
+    requireReason: true,
+    categories: DISMISS_CATEGORIES,
+    placeholder: "e.g. wrong industry, no decision-maker contact, out of area…",
+    onConfirm: async ({ reason, category }) => {
+      await api("/api/kindling/outreach/dismiss", { method: "POST", body: JSON.stringify({ companyId, reason, reasonCategory: category }) });
+      removeFocusItem(companyId);
+    },
+  });
+}
+
+async function snoozeFromDeck(companyId, trigger) {
+  if (!companyId) return;
+  setBusyElement(trigger, true, "Snoozing");
+  try {
+    await api("/api/kindling/outreach/snooze", { method: "POST", body: JSON.stringify({ companyId }) });
+    removeFocusItem(companyId);
+  } catch (err) {
+    setBusyElement(trigger, false);
+    alert(`Couldn't snooze: ${err?.message || err}`);
+  }
+}
+
+function dropFromResults(companyId) {
+  openReasonModal({
+    title: "Drop this company",
+    message: "Mark this outreach as closed without a meeting.",
+    confirmLabel: "Drop",
+    requireReason: true,
+    categories: DROP_CATEGORIES,
+    placeholder: "What was the outcome?",
+    onConfirm: async ({ reason, category }) => {
+      await api("/api/kindling/outreach/respond", { method: "POST", body: JSON.stringify({ companyId, outcome: "dropped", reason, reasonCategory: category }) });
+      await loadResultsPage({ force: true });
+    },
+  });
+}
+
+function removeFocusItem(companyId) {
+  const items = state.focus.items;
+  const idx = items.findIndex((it) => (it.companyId || it.company?.id) === companyId);
+  if (idx === -1) return;
+  items.splice(idx, 1);
+  if (state.focus.index >= items.length) state.focus.index = Math.max(0, items.length - 1);
+  renderFocus();
+  if (!$("appNav").classList.contains("hidden")) renderAppNav("deck");
+  // Results badge/list will be stale until next visit; force a reload next open.
+  state.resultsPage.loaded = false;
+}
+
+// After a "no answer" call, the company stays on the deck but recirculates to the
+// back so fresh targets come first; the next card slides into the current slot.
+function moveFocusItemToBack(companyId) {
+  const items = state.focus.items;
+  const idx = items.findIndex((it) => (it.companyId || it.company?.id) === companyId);
+  if (idx === -1) return;
+  const [item] = items.splice(idx, 1);
+  items.push(item);
+  if (state.focus.index >= items.length) state.focus.index = Math.max(0, items.length - 1);
+  state.focus.contactPage = 0;
+  renderFocus();
+}
+
+// ---- Reach Out modal (draft emails + contacts; log an email or a call) -----
+// Self-contained: its own dynamically-mounted root + module-level state, so it
+// never collides with the shared company-details overlay.
+let reachState = { open: false, companyId: "", company: null, drafts: [], people: [], loading: false, view: "reach", draftIndex: 0 };
+
+function ensureReachRoot() {
+  let root = document.getElementById("reachModalRoot");
+  if (root) return root;
+  root = document.createElement("div");
+  root.id = "reachModalRoot";
+  root.className = "reachModalRoot hidden";
+  document.body.appendChild(root);
+  root.addEventListener("click", onReachClick);
+  root.addEventListener("submit", onReachSubmit);
+  return root;
+}
+
+function openReachOutModal() {
+  const item = state.focus.items[state.focus.index];
+  if (!item) return;
+  const companyId = item.companyId || item.company?.id || "";
+  if (!companyId) return;
+  reachState = {
+    open: true,
+    companyId,
+    company: item.company || { name: item.name, website: item.website },
+    drafts: [],
+    people: Array.isArray(item.decisionMakers) ? item.decisionMakers : (item.company?.decisionMakers || []),
+    loading: true,
+    view: "reach",
+    draftIndex: 0,
+  };
+  renderReachModal();
+  void loadReachDetail(companyId);
+}
+
+async function loadReachDetail(companyId) {
+  try {
+    const data = await api(`/api/kindling/companies/${encodeURIComponent(companyId)}/outreach`);
+    if (!reachState.open || reachState.companyId !== companyId) return;
+    reachState.company = data.company || reachState.company;
+    reachState.drafts = data.drafts || [];
+    if (Array.isArray(data.people) && data.people.length) reachState.people = data.people;
+    reachState.loading = false;
+    renderReachModal();
+  } catch (err) {
+    if (!reachState.open || reachState.companyId !== companyId) return;
+    reachState.loading = false;
+    renderReachModal();
+  }
+}
+
+function closeReachModal() {
+  reachState.open = false;
+  const root = document.getElementById("reachModalRoot");
+  if (root) { root.classList.add("hidden"); root.innerHTML = ""; }
+}
+
+function renderReachContacts() {
+  const people = reachState.people || [];
+  if (!people.length) {
+    return `<p class="reachEmpty">${reachState.loading ? "Loading contacts…" : "No named contacts captured yet."}</p>`;
+  }
+  return people.map((p) => {
+    const name = p.name || "Unknown";
+    const title = p.title || p.role || "";
+    const phone = p.phone || p.mobile || "";
+    const email = p.email || "";
+    const chips = [];
+    if (phone) chips.push(`<a class="reachChip" href="tel:${escapeHtml(phone.replace(/\s+/g, ""))}">📞 ${escapeHtml(phone)}</a><button type="button" class="reachChipCopy" data-copy="${escapeHtml(phone)}" title="Copy number">Copy</button>`);
+    if (email) chips.push(`<a class="reachChip" href="mailto:${escapeHtml(email)}">✉️ ${escapeHtml(email)}</a><button type="button" class="reachChipCopy" data-copy="${escapeHtml(email)}" title="Copy email">Copy</button>`);
+    return `
+      <div class="reachContact">
+        <div class="reachContactName">${escapeHtml(name)}${title ? ` <span class="reachContactRole">${escapeHtml(title)}</span>` : ""}</div>
+        ${chips.length ? `<div class="reachContactChips">${chips.join("")}</div>` : `<div class="reachContactChips reachMuted">No direct contact captured</div>`}
+      </div>`;
+  }).join("");
+}
+
+function renderReachDrafts() {
+  const drafts = reachState.drafts || [];
+  if (!drafts.length) {
+    return `<p class="reachEmpty">${reachState.loading ? "Loading drafts…" : "No draft emails written yet — copy a contact and write your own."}</p>`;
+  }
+  // Show one email at a time and let the user page through variants, mirroring
+  // the draft pager on the company details modal. More width + one-at-a-time
+  // means each email gets the vertical room to read without a cramped column.
+  const total = drafts.length;
+  const idx = Math.min(Math.max(0, reachState.draftIndex || 0), total - 1);
+  const d = drafts[idx];
+  const text = d.pitchText || d.body || "";
+  const label = d.variantLabel ? escapeHtml(d.variantLabel) : "";
+  const meta = total > 1
+    ? `${idx + 1} of ${total}${label ? ` · ${label}` : ""}`
+    : (label || "Draft 1");
+  return `
+    <section class="reachDraft">
+      <div class="reachDraftHead">
+        <span class="reachDraftLabel">${meta}</span>
+        <div class="reachDraftControls">
+          ${total > 1 ? `
+            <button type="button" class="reachDraftNav" data-reach-action="draft-prev" ${idx <= 0 ? "disabled" : ""} aria-label="Previous draft">‹</button>
+            <button type="button" class="reachDraftNav" data-reach-action="draft-next" ${idx >= total - 1 ? "disabled" : ""} aria-label="Next draft">›</button>
+          ` : ""}
+          <button type="button" class="reachDraftCopy" data-copy-draft="${idx}">Copy</button>
+        </div>
+      </div>
+      <pre class="reachDraftText">${escapeHtml(text) || "(empty)"}</pre>
+    </section>`;
+}
+
+function renderReachModal() {
+  const root = ensureReachRoot();
+  if (!reachState.open) { root.classList.add("hidden"); root.innerHTML = ""; return; }
+  root.classList.remove("hidden");
+  const company = reachState.company || {};
+  const name = company.name || "Company";
+
+  if (reachState.view === "call") {
+    root.innerHTML = `
+      <div class="reachBackdrop" data-reach-action="close">
+        <div class="reachPanel reachPanelCall" role="dialog" aria-modal="true" data-reach-panel>
+          <header class="reachHeader">
+            <div><div class="reachEyebrow">Log a call</div><h2>${escapeHtml(name)}</h2></div>
+            <button type="button" class="reachClose" data-reach-action="close" aria-label="Close">✕</button>
+          </header>
+          <form class="reachCallForm" data-reach-form="call">
+            <label class="reachField">
+              <span>How did the call go?</span>
+              <textarea id="reachCallNotes" rows="4" placeholder="What was said, next steps, who you spoke to…"></textarea>
+            </label>
+            <label class="reachField">
+              <span>Outcome</span>
+              <select id="reachCallOutcome">
+                <option value="meeting">Successful — follow-up meeting</option>
+                <option value="dropped">Unsuccessful — not interested</option>
+                <option value="no_answer">No answer — try again later</option>
+              </select>
+            </label>
+            <label class="reachField" id="reachCallReasonField">
+              <span>If unsuccessful, why?</span>
+              <select id="reachCallCategory">
+                ${DROP_CATEGORIES.map((c) => `<option value="${escapeHtml(c.value)}">${escapeHtml(c.label)}</option>`).join("")}
+              </select>
+            </label>
+            <p class="reachError hidden" id="reachCallError"></p>
+            <div class="reachActions">
+              <button type="button" data-reach-action="back">Back</button>
+              <button type="submit" class="reachPrimary">Save call</button>
+            </div>
+          </form>
+        </div>
+      </div>`;
+    const notes = document.getElementById("reachCallNotes");
+    if (notes) notes.focus();
+    return;
+  }
+
+  root.innerHTML = `
+    <div class="reachBackdrop" data-reach-action="close">
+      <div class="reachPanel" role="dialog" aria-modal="true" data-reach-panel>
+        <header class="reachHeader">
+          <div>
+            <div class="reachEyebrow">Reach out${company.website ? ` · ${renderWebsiteLink(company.website)}` : ""}</div>
+            <h2>${escapeHtml(name)}</h2>
+          </div>
+          <button type="button" class="reachClose" data-reach-action="close" aria-label="Close">✕</button>
+        </header>
+        <div class="reachBody">
+          <section class="reachCol reachColDrafts">
+            <h3 class="reachColTitle">Draft emails</h3>
+            <div class="reachDraftList">${renderReachDrafts()}</div>
+          </section>
+          <section class="reachCol reachColContacts">
+            <h3 class="reachColTitle">Contacts</h3>
+            <div class="reachContactList">${renderReachContacts()}</div>
+          </section>
+        </div>
+        <footer class="reachFooter">
+          <span class="reachFooterNote">Logs the outreach against ${escapeHtml(name)} (timestamped now).</span>
+          <div class="reachActions">
+            <button type="button" class="reachPrimary" data-reach-action="email">I emailed them</button>
+            <button type="button" class="reachPrimary reachCall" data-reach-action="call">I called them</button>
+          </div>
+        </footer>
+      </div>
+    </div>`;
+}
+
+function onReachClick(event) {
+  const copyDraft = event.target.closest("[data-copy-draft]");
+  if (copyDraft) { reachCopy((reachState.drafts[Number(copyDraft.dataset.copyDraft)] || {}).pitchText || "", copyDraft); return; }
+  const copyEl = event.target.closest("[data-copy]");
+  if (copyEl) { reachCopy(copyEl.dataset.copy || "", copyEl); return; }
+  const action = event.target.closest("[data-reach-action]")?.dataset.reachAction;
+  if (!action) return;
+  if (action === "close") {
+    if (!event.target.closest("[data-reach-panel]") || event.target.closest("button")) closeReachModal();
+    return;
+  }
+  if (action === "draft-prev") { reachDraftStep(-1); return; }
+  if (action === "draft-next") { reachDraftStep(1); return; }
+  if (action === "back") { reachState.view = "reach"; renderReachModal(); return; }
+  if (action === "email") void reachMarkEmailed(event.target.closest("[data-reach-action]"));
+  if (action === "call") { reachState.view = "call"; renderReachModal(); }
+}
+
+function reachDraftStep(delta) {
+  const drafts = reachState.drafts || [];
+  if (drafts.length < 2) return;
+  const next = Math.min(Math.max(0, (reachState.draftIndex || 0) + delta), drafts.length - 1);
+  if (next === reachState.draftIndex) return;
+  reachState.draftIndex = next;
+  renderReachModal();
+}
+
+function onReachSubmit(event) {
+  if (!event.target.closest('[data-reach-form="call"]')) return;
+  event.preventDefault();
+  void reachSubmitCall();
+}
+
+function reachCopy(text, button) {
+  if (!text || !navigator.clipboard?.writeText) return;
+  navigator.clipboard.writeText(text).then(() => {
+    if (!button) return;
+    const original = button.textContent;
+    button.textContent = "Copied ✓";
+    setTimeout(() => { if (button.isConnected) button.textContent = original; }, 1400);
+  }).catch(() => {});
+}
+
+async function reachMarkEmailed(button) {
+  const companyId = reachState.companyId;
+  setBusyElement(button, true, "Saving");
+  try {
+    await api("/api/kindling/outreach/sent", { method: "POST", body: JSON.stringify({ companyId, channel: "email" }) });
+    closeReachModal();
+    removeFocusItem(companyId);
+  } catch (err) {
+    setBusyElement(button, false);
+    alert(`Couldn't save: ${err?.message || err}`);
+  }
+}
+
+async function reachSubmitCall() {
+  const companyId = reachState.companyId;
+  const notes = (document.getElementById("reachCallNotes")?.value || "").trim();
+  const outcome = document.getElementById("reachCallOutcome")?.value || "meeting";
+  const category = document.getElementById("reachCallCategory")?.value || "other";
+  const errEl = document.getElementById("reachCallError");
+  if (outcome === "dropped" && !notes) {
+    if (errEl) { errEl.textContent = "Add a quick note on what happened."; errEl.classList.remove("hidden"); }
+    document.getElementById("reachCallNotes")?.focus();
+    return;
+  }
+  const body = { companyId, outcome, channel: "call", notes };
+  if (outcome === "dropped") { body.reason = notes; body.reasonCategory = category; }
+  const submitBtn = document.querySelector('[data-reach-form="call"] .reachPrimary');
+  setBusyElement(submitBtn, true, "Saving");
+  try {
+    const data = await api("/api/kindling/outreach/respond", { method: "POST", body: JSON.stringify(body) });
+    closeReachModal();
+    // "No answer" keeps the company on the deck (server state "on_deck"); recirculate
+    // it to the back, unless the 3rd attempt today auto-snoozed it out.
+    if (outcome === "no_answer" && data.result?.state === "on_deck" && !data.result?.snoozedUntil) {
+      moveFocusItemToBack(companyId);
+    } else {
+      removeFocusItem(companyId);
+    }
+  } catch (err) {
+    setBusyElement(submitBtn, false);
+    if (errEl) { errEl.textContent = err?.message || String(err); errEl.classList.remove("hidden"); }
+  }
+}
+
+// While the Reach Out modal is open, swallow deck shortcuts (capture phase runs
+// before the deck/keydown handlers) and let Escape close it.
+document.addEventListener("keydown", (event) => {
+  if (!reachState.open) return;
+  if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closeReachModal(); return; }
+  if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
+  if (["ArrowLeft", "ArrowRight", "Enter"].includes(event.key)) event.stopPropagation();
+}, true);
+
+// ---- Login signers --------------------------------------------------------
+//
+// Both login methods and NIP-98 pipeline authorization go through a small signer
+// abstraction so adding nsec support doesn't leave pipeline actions broken for
+// users without a browser extension.
+//
+//   { kind, getPublicKey() => 64-hex, signEvent(event) => signedEvent, clear() }
+
+// Wraps a NIP-07 browser extension (window.nostr).
+function makeExtensionSigner() {
+  return {
+    kind: "extension",
+    getPublicKey: () => window.nostr.getPublicKey(),
+    signEvent: (event) => window.nostr.signEvent(event),
+    clear() {},
+  };
+}
+
+// Wraps a decoded nsec secret key, signing entirely in this tab. The raw secret
+// stays closed over here and is never returned, logged, or sent anywhere.
+function makeNsecSigner(secretKey) {
+  let key = secretKey;
+  return {
+    kind: "nsec",
+    getPublicKey: async () => getPublicKey(key),
+    signEvent: async (event) => {
+      if (!key) throw new Error("Signer was cleared. Reconnect a Nostr signer.");
+      return finalizeEvent(event, key);
+    },
+    clear() {
+      if (key) key.fill?.(0);
+      key = null;
+    },
+  };
+}
+
+// HTTPS is required for nsec entry on remote origins; localhost dev is exempt.
+function nsecLoginAllowed() {
+  if (location.protocol === "https:") return true;
+  return ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
+}
+
+// Shared tail for every login method: challenge → sign → verify → boot.
+async function completeLoginWithSigner(signer) {
+  const pubkey = await signer.getPublicKey();
+  const challenge = await api("/api/auth/challenge", {
+    method: "POST",
+    body: JSON.stringify({ pubkey }),
+  });
+  const event = await signer.signEvent({
+    kind: 22242,
+    created_at: Math.floor(Date.now() / 1000),
+    tags: [["challenge", challenge.nonce], ["client", "kindling-wapp"]],
+    content: challenge.content,
+  });
+  const result = await api("/api/auth/verify", {
+    method: "POST",
+    body: JSON.stringify({ event }),
+  });
+  state.signer = signer;
+  state.token = result.token;
+  state.me = result;
+  localStorage.setItem("chat_wapp_token", result.token);
+  await bootApp();
+}
+
+async function loginWithExtension() {
   $("loginError").textContent = "";
   if (!window.nostr) {
     $("loginError").textContent = "No Nostr browser extension was found.";
     return;
   }
   try {
-    const pubkey = await window.nostr.getPublicKey();
-    const challenge = await api("/api/auth/challenge", {
-      method: "POST",
-      body: JSON.stringify({ pubkey }),
-    });
-    const event = await window.nostr.signEvent({
-      kind: 22242,
-      created_at: Math.floor(Date.now() / 1000),
-      tags: [["challenge", challenge.nonce], ["client", "kindling-wapp"]],
-      content: challenge.content,
-    });
-    const result = await api("/api/auth/verify", {
-      method: "POST",
-      body: JSON.stringify({ event }),
-    });
-    state.token = result.token;
-    state.me = result;
-    localStorage.setItem("chat_wapp_token", result.token);
-    await bootApp();
+    await completeLoginWithSigner(makeExtensionSigner());
   } catch (error) {
+    clearSigner();
     $("loginError").textContent = error.message;
+  }
+}
+
+async function loginWithNsec() {
+  $("loginError").textContent = "";
+  const input = $("nsecInput");
+  const value = (input?.value || "").trim();
+  if (!nsecLoginAllowed()) {
+    $("loginError").textContent = "Pasting an NSEC requires a secure (HTTPS) connection.";
+    return;
+  }
+  if (!value.startsWith("nsec1")) {
+    if (input) input.value = "";
+    $("loginError").textContent = "That doesn't look like an nsec key. It should start with \"nsec1\".";
+    return;
+  }
+  let signer = null;
+  try {
+    let decoded;
+    try {
+      decoded = nip19.decode(value);
+    } catch {
+      throw new Error("Invalid NSEC — the key could not be decoded.");
+    }
+    if (decoded.type !== "nsec") {
+      throw new Error("That's a valid Nostr key but not an nsec private key.");
+    }
+    signer = makeNsecSigner(decoded.data);
+    // Drop the secret from the DOM as soon as it's decoded into memory.
+    if (input) input.value = "";
+    await completeLoginWithSigner(signer);
+  } catch (error) {
+    signer?.clear();
+    if (state.signer === signer) state.signer = null;
+    if (input) input.value = "";
+    // error.message here is one of our own sanitized strings or a server error
+    // ("...not allowed to log in...", "Challenge expired", network failure) —
+    // never the secret key.
+    $("loginError").textContent = error.message || "Could not sign in with that NSEC.";
+  }
+}
+
+// Drop the in-memory signer (logout, token expiry, failed login). The bearer
+// token in localStorage is handled separately by logout().
+function clearSigner() {
+  state.signer?.clear?.();
+  state.signer = null;
+}
+
+// Choose which login method is visible. The extension path stays the default.
+function setLoginMethod(method) {
+  const isNsec = method === "nsec";
+  $("loginExtension")?.classList.toggle("hidden", isNsec);
+  $("loginNsec")?.classList.toggle("hidden", !isNsec);
+  $("loginError").textContent = "";
+  if (isNsec) {
+    const input = $("nsecInput");
+    if (input) {
+      input.value = "";
+      input.disabled = !nsecLoginAllowed();
+    }
+    const note = $("nsecHttpsNote");
+    if (note) note.classList.toggle("hidden", nsecLoginAllowed());
+    const submit = $("nsecLoginButton");
+    if (submit) submit.disabled = !nsecLoginAllowed();
   }
 }
 
 async function bootApp() {
   try {
     state.me = await api("/api/me");
-    $("npub").textContent = state.me.npub;
+    const npubEl = $("npub");
+    if (npubEl) npubEl.textContent = state.me.npub;
     syncAccessUi();
+    void ensureUserProfile();
     await renderRoute();
   } catch {
     logout();
@@ -259,6 +2257,7 @@ async function bootApp() {
 }
 
 function logout() {
+  clearSigner();
   state.token = "";
   state.me = null;
   state.activeChatId = "";
@@ -296,24 +2295,131 @@ async function loadChats() {
 }
 
 async function loadSettings() {
-  const [payload, roles] = await Promise.all([
+  const [payload, roles, scheduler] = await Promise.all([
     api("/api/settings"),
     api("/api/kindling/pipeline-roles"),
+    api("/api/kindling/scheduler-settings").catch(() => ({ settings: null })),
   ]);
   state.settings = payload.settings;
   state.accessRules = payload.accessRules || [];
   state.pipelineRoles = roles.pipelineRoles || [];
+  state.schedulerSettings = scheduler.settings || null;
   renderSettings();
   renderPipelineOptions();
   renderSettingsRoleMappings();
   renderAccessRules();
+  renderAutomationCard();
 }
 
+// Single source of truth for scheduling, surfaced on the Settings page.
+const AUTOMATION_ACTIONS = [
+  { key: "acquisition", label: "Acquisition (find companies)", flag: "acquisitionEnabled", role: "scan_target_list", roles: ["scan_target_list"], cooldown: "acquisitionMs" },
+  { key: "enrichment", label: "Enrichment (incl. people & contacts)", flag: "enrichmentEnabled", role: "enrich_company", roles: ["enrich_company", "enrich_industry_segment"], cooldown: "enrichmentMs" },
+  { key: "scoring", label: "Scoring (service-fit)", flag: "scoringEnabled", role: "score_company_service_fit", roles: ["score_company_service_fit"], cooldown: "scoringMs" },
+  { key: "outreach", label: "Outreach drafting", flag: "outreachEnabled", role: "draft_outreach", roles: ["draft_outreach"], cooldown: "outreachMs" },
+];
+const AUTOMATION_MODELS = [
+  { value: "", label: "Default (Autopilot)" },
+  { value: "claude-haiku-4-5-20251001", label: "Haiku (cheap/fast)" },
+  { value: "claude-sonnet-4-6", label: "Sonnet" },
+  { value: "claude-opus-4-8", label: "Opus" },
+];
+const AUTOMATION_AGENTS = [
+  { value: "", label: "Default (OpenCode)" },
+  { value: "codex", label: "Codex" },
+  { value: "claude", label: "Claude" },
+  { value: "goose", label: "Goose" },
+  { value: "opencode", label: "OpenCode" },
+];
+
+function renderAutomationCard() {
+  const body = $("automationBody");
+  if (!body) return;
+  const s = state.schedulerSettings;
+  const canEdit = Boolean(state.me?.access?.edit);
+  if (!s) { body.innerHTML = "<p>Scheduler settings unavailable.</p>"; return; }
+  const conc = s.perRoleConcurrency || {};
+  const agents = s.agents || {};
+  const models = s.models || {};
+  const cooldowns = s.cooldowns || {};
+  const modelOpts = (sel) => AUTOMATION_MODELS
+    .map((o) => `<option value="${o.value}" ${(sel || "") === o.value ? "selected" : ""}>${o.label}</option>`).join("");
+  const agentOpts = (sel) => AUTOMATION_AGENTS
+    .map((o) => `<option value="${o.value}" ${(sel || "") === o.value ? "selected" : ""}>${o.label}</option>`).join("");
+  const rows = AUTOMATION_ACTIONS.map((a) => `
+    <div class="automationRow">
+      <label class="automationToggle"><input type="checkbox" id="auto_${a.key}" ${s[a.flag] ? "checked" : ""}/> <strong>${a.label}</strong></label>
+      <div class="automationFields">
+        <label><span>Concurrency</span><input type="number" min="1" max="20" id="auto_conc_${a.key}" value="${Number(conc[a.role] || 1)}"/></label>
+        <label><span>Every (min)</span><input type="number" min="0" id="auto_cd_${a.key}" value="${Math.round(Number(cooldowns[a.cooldown] || 0) / 60000)}"/></label>
+        <label><span>Agent</span><select id="auto_agent_${a.key}">${agentOpts(agents[a.role])}</select></label>
+        <label><span>Model</span><select id="auto_model_${a.key}">${modelOpts(models[a.role])}</select></label>
+      </div>
+    </div>`).join("");
+  body.innerHTML = `
+    <label class="automationMaster"><input type="checkbox" id="auto_enabled" ${s.enabled ? "checked" : ""}/> <strong>Automation enabled (master switch)</strong></label>
+    ${rows}
+    <div class="automationTargets">
+      <label><span>Target pool</span><input type="number" min="1" id="auto_pool" value="${Number(s.targetPoolSize || 0)}"/></label>
+      <label><span>Enriched floor</span><input type="number" min="1" id="auto_floor" value="${Number(s.enrichedFloor || 0)}"/></label>
+      <label><span>Top targets</span><input type="number" min="1" id="auto_toptarget" value="${Number(s.topTargetCount || 0)}"/></label>
+      <label><span>Outreach target</span><input type="number" min="1" id="auto_outreachtarget" value="${Number(s.outreachTargetCount || 0)}"/></label>
+    </div>`;
+  for (const el of body.querySelectorAll("input,select")) el.disabled = !canEdit;
+  const btn = $("saveAutomationButton"); if (btn) btn.disabled = !canEdit;
+  const st = $("automationStatus"); if (st) st.textContent = s.enabled ? "Running" : "Paused";
+}
+
+async function saveAutomation() {
+  const s = state.schedulerSettings || {};
+  const conc = { ...(s.perRoleConcurrency || {}) };
+  const agents = { ...(s.agents || {}) };
+  const models = { ...(s.models || {}) };
+  const cooldowns = { ...(s.cooldowns || {}) };
+  for (const a of AUTOMATION_ACTIONS) {
+    conc[a.role] = Math.max(1, Number($(`auto_conc_${a.key}`).value || 1));
+    cooldowns[a.cooldown] = Math.max(0, Number($(`auto_cd_${a.key}`).value || 0)) * 60000;
+    const agent = $(`auto_agent_${a.key}`).value;
+    const m = $(`auto_model_${a.key}`).value;
+    for (const r of a.roles) agents[r] = agent;
+    for (const r of a.roles) models[r] = m;
+  }
+  try {
+    const res = await api("/api/kindling/scheduler-settings", {
+      method: "PATCH",
+      body: JSON.stringify({
+        enabled: $("auto_enabled").checked,
+        acquisitionEnabled: $("auto_acquisition").checked,
+        enrichmentEnabled: $("auto_enrichment").checked,
+        scoringEnabled: $("auto_scoring").checked,
+        outreachEnabled: $("auto_outreach").checked,
+        targetPoolSize: Number($("auto_pool").value || 0),
+        enrichedFloor: Number($("auto_floor").value || 0),
+        topTargetCount: Number($("auto_toptarget").value || 0),
+        outreachTargetCount: Number($("auto_outreachtarget").value || 0),
+        perRoleConcurrency: conc,
+        cooldowns,
+        agents,
+        models,
+      }),
+    });
+    state.schedulerSettings = res.settings || state.schedulerSettings;
+    renderAutomationCard();
+    setStatus("Automation saved");
+  } catch (error) {
+    setStatus(error.message);
+  }
+}
+
+// Monotonic load token: lets stale (slower) responses be discarded so rapid
+// clicks can't have an earlier request overwrite a newer view.
 let kindlingLoadSeq = 0;
+// When true, the main view content shows a loading placeholder so a tab switch
+// gives instant feedback instead of looking dead until the fetch resolves.
 let kindlingViewLoading = false;
 
 function kindlingViewLabel(view) {
-  const labels = {
+  const map = {
     service: "Service Offerings",
     companies: "Companies",
     enriched: "Enriched Companies",
@@ -322,7 +2428,7 @@ function kindlingViewLabel(view) {
     research: "Research Desk",
     admin: "Pipeline admin",
   };
-  return labels[view] || "view";
+  return map[view] || "view";
 }
 
 function companyPageKeyFor(view) {
@@ -359,6 +2465,15 @@ function applyCompanyList(filtered) {
     limit: Number(filtered.limit ?? 20),
     offset: Number(filtered.offset ?? Number(state.kindlingPaging[companyPageKeyFor(state.activeKindlingView)] || 0)),
   };
+  if (filtered.canonicalApi) {
+    k.canonicalApi = filtered.canonicalApi;
+  } else if (filtered.source || filtered.syncCursor !== undefined) {
+    k.canonicalApi = {
+      ...(k.canonicalApi || {}),
+      companySource: filtered.source || k.canonicalApi?.companySource,
+      syncCursor: filtered.syncCursor ?? k.canonicalApi?.syncCursor,
+    };
+  }
 }
 
 function applyTargets(targets) {
@@ -402,12 +2517,14 @@ function applyWorkQueue(workQueue) {
   };
 }
 
+// Page within a single list without re-fetching the whole screen (and the
+// expensive summary endpoint). Only the affected list is requested.
 async function loadKindlingList(listKey) {
   if (!state.kindling) return loadKindlingScreen();
   const view = state.activeKindlingView;
   kindlingViewLoading = false;
   const seq = ++kindlingLoadSeq;
-  setKindlingStatus("Loading page...");
+  setKindlingStatus("Loading page…");
   try {
     if (listKey === "companies" || listKey === "enriched") {
       const filtered = await api(`/api/kindling/companies?${buildCompanyQuery(view)}`);
@@ -446,14 +2563,20 @@ async function loadKindlingScreen() {
   const needsResearch = view === "research";
   const needsScoring = view === "targets" || view === "match";
   const needsTargets = view === "targets" || view === "match";
+
   const companyQuery = buildCompanyQuery(view);
   const targetQuery = buildTargetQuery();
   const industryOffset = Math.max(0, Number(state.kindlingPaging.industries || 0));
   const workQueueOffset = Math.max(0, Number(state.kindlingPaging.workQueue || 0));
+
   const seq = ++kindlingLoadSeq;
-  setKindlingStatus("Loading...");
+  setKindlingStatus("Loading…");
+  // Paint the destination view (rail + active tab + loading placeholder) right
+  // away so the click registers visually instead of looking unresponsive.
   kindlingViewLoading = true;
   renderKindling();
+
+  // Single round of independent requests — no second serial Promise.all round.
   const [summary, targets, enrichmentIndustries, filtered, scheduler, schedulerPreview, workQueue, scoringOfferings, rankingRuns] = await Promise.all([
     api("/api/kindling/summary?compact=1"),
     needsTargets ? api(`/api/kindling/top-targets?${targetQuery}`) : Promise.resolve({ targets: [], total: 0, returned: 0, limit: 20, offset: Number(targetQuery.get("offset") || 0) }),
@@ -465,7 +2588,10 @@ async function loadKindlingScreen() {
     needsScoring ? api("/api/kindling/scoring/offerings") : Promise.resolve({ profile: null, offerings: [], marketProfileVersionId: "" }),
     needsResearch || needsScoring ? api("/api/kindling/initial-ranking/runs?limit=10") : Promise.resolve({ runs: [] }),
   ]);
+
+  // A newer load was started while these requests were in flight — discard.
   if (seq !== kindlingLoadSeq) return;
+
   state.kindling = {
     ...summary,
     scheduler: scheduler.settings || null,
@@ -481,6 +2607,7 @@ async function loadKindlingScreen() {
   applyTargets(targets);
   applyIndustries(enrichmentIndustries);
   applyWorkQueue(workQueue);
+
   if (needsCompanyList && state.selectedCompanyId && !state.kindling.companies?.some((company) => company.id === state.selectedCompanyId)) {
     if (state.activeKindlingView !== "match") state.selectedCompanyId = "";
   }
@@ -495,7 +2622,7 @@ async function loadKindlingScreen() {
   }
   kindlingViewLoading = false;
   renderKindling();
-  if (state.kindlingStatus === "Loading...") setKindlingStatus("Ready");
+  if (state.kindlingStatus === "Loading…") setKindlingStatus("Ready");
 }
 
 function escapeHtml(value) {
@@ -504,6 +2631,58 @@ function escapeHtml(value) {
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;");
+}
+
+// Minimal, escape-first markdown renderer for first-party outreach drafts.
+// Supports the subset the pipeline emits: headings, paragraphs, bold/italic,
+// links, ordered/unordered lists, and horizontal rules. Escaping happens before
+// any markdown tokens are interpreted, so the output is safe to inject.
+function renderInlineMarkdown(text) {
+  return text
+    .replace(/`([^`]+)`/g, "<code>$1</code>")
+    .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+|mailto:[^\s)]+)\)/g,
+      (_, label, href) => `<a href="${href}" target="_blank" rel="noopener noreferrer">${label}</a>`)
+    .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/__([^_]+)__/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>")
+    .replace(/(^|[^_\w])_([^_\n]+)_(?!\w)/g, "$1<em>$2</em>");
+}
+
+function renderMarkdown(md) {
+  const lines = escapeHtml(md).split(/\r?\n/);
+  const out = [];
+  let para = [];
+  let list = null; // { type: "ul" | "ol", items: [] }
+  let code = null; // { lines: [] } while inside a ``` fenced block
+  const flushPara = () => {
+    if (para.length) { out.push(`<p>${para.map(renderInlineMarkdown).join("<br>")}</p>`); para = []; }
+  };
+  const flushList = () => {
+    if (list) { out.push(`<${list.type}>${list.items.map((i) => `<li>${renderInlineMarkdown(i)}</li>`).join("")}</${list.type}>`); list = null; }
+  };
+  for (const line of lines) {
+    const fence = line.trim().match(/^```/);
+    if (code) {
+      if (fence) { out.push(`<pre><code>${code.lines.join("\n")}</code></pre>`); code = null; }
+      else code.lines.push(line);
+      continue;
+    }
+    if (fence) { flushPara(); flushList(); code = { lines: [] }; continue; }
+    const t = line.trim();
+    if (!t) { flushPara(); flushList(); continue; }
+    if (/^([-*_])(?:\s*\1){2,}$/.test(t)) { flushPara(); flushList(); out.push("<hr>"); continue; }
+    const heading = t.match(/^(#{1,6})\s+(.*)$/);
+    if (heading) { flushPara(); flushList(); const lvl = heading[1].length; out.push(`<h${lvl}>${renderInlineMarkdown(heading[2])}</h${lvl}>`); continue; }
+    const ul = t.match(/^[-*]\s+(.*)$/);
+    const ol = t.match(/^\d+\.\s+(.*)$/);
+    if (ul) { flushPara(); if (!list || list.type !== "ul") { flushList(); list = { type: "ul", items: [] }; } list.items.push(ul[1]); continue; }
+    if (ol) { flushPara(); if (!list || list.type !== "ol") { flushList(); list = { type: "ol", items: [] }; } list.items.push(ol[1]); continue; }
+    flushList();
+    para.push(t);
+  }
+  if (code) out.push(`<pre><code>${code.lines.join("\n")}</code></pre>`);
+  flushPara(); flushList();
+  return out.join("");
 }
 
 function selectedCompany() {
@@ -576,6 +2755,7 @@ function renderPager(page = {}, key) {
 
 function renderKindling() {
   const data = state.kindling || {};
+  const canonical = data.canonicalApi || {};
   const company = selectedCompany();
   const canEdit = Boolean(state.me?.access?.edit);
   if (state.activeKindlingView === "act") {
@@ -600,12 +2780,30 @@ function renderKindling() {
             <span>Kindling</span>
           </div>
           <h1>Business development workspace</h1>
+          <p class="canonicalApiStatus" title="${escapeHtml(data.canonicalApi?.apiBaseUrl || "")}">
+            Company source: ${escapeHtml(data.canonicalApi?.companySource || "loading")}
+            · cursor ${escapeHtml(data.canonicalApi?.syncCursor ?? "not synced")}
+            · ${escapeHtml(canonical.cacheState || "unknown cache")}
+          </p>
         </div>
         <div class="kindlingHeaderActions">
           <button type="button" data-action="home">Home</button>
           <button type="button" data-action="refresh-kindling">Refresh</button>
+          ${canonical.companySource === "canonical-api" ? `<button type="button" data-action="sync-canonical">${canonical.syncInProgress ? "Continue API sync" : "Authorize API sync"}</button>` : ""}
         </div>
       </header>
+      ${canonical.companySource === "canonical-api" ? `
+        <section class="canonicalCacheBanner ${canonical.current ? "current" : "stale"}" role="status">
+          <div>
+            <strong>${canonical.current ? "Company cache is current" : canonical.cacheState === "empty" ? "No canonical companies cached" : "Showing cached company data"}</strong>
+            <span>${canonical.current
+              ? `Kindling API is reachable and the last browser-authorized sync completed ${escapeHtml(formatDate(canonical.lastSyncAt))}.`
+              : `This cache is not confirmed current.${canonical.lastSyncAt ? ` Last complete sync: ${escapeHtml(formatDate(canonical.lastSyncAt))}.` : " It has not completed an authorized sync."}`}</span>
+            ${canonical.lastError ? `<small>${escapeHtml(canonical.lastError)}</small>` : ""}
+          </div>
+          ${canonical.current ? "" : "<p>Reconnect your Nostr signer and choose <strong>Authorize API sync</strong> to recover. Cached records remain readable while the API is unavailable or access is denied.</p>"}
+        </section>
+      ` : ""}
       <div class="kindlingWorkspace">
         <aside class="workflowRail" aria-label="Kindling workspace sections">
           ${views.map(([key, label, meta], index) => `
@@ -639,11 +2837,10 @@ function renderKindlingView(data, company, canEdit) {
   if (kindlingViewLoading) {
     return `
       <section class="kindlingPanel kindlingLoadingPanel">
-        <div class="kindlingLoading"><span class="kindlingSpinner" aria-hidden="true"></span>Loading ${escapeHtml(kindlingViewLabel(state.activeKindlingView))}...</div>
+        <div class="kindlingLoading"><span class="kindlingSpinner" aria-hidden="true"></span>Loading ${escapeHtml(kindlingViewLabel(state.activeKindlingView))}…</div>
       </section>
     `;
   }
-
   if (state.activeKindlingView === "research") return renderResearchDeskView(data, canEdit);
 
   if (state.activeKindlingView === "service") return `
@@ -678,7 +2875,7 @@ function renderKindlingView(data, company, canEdit) {
             <h2>${state.activeKindlingView === "enriched" ? "Enriched Companies" : "Companies"}</h2>
             <span>${companyListShownLabel(data)}</span>
           </div>
-          ${state.activeKindlingView === "companies" ? `<button type="button" data-action="open-company-create" ${canEdit ? "" : "disabled"}>New company</button>` : ""}
+          ${state.activeKindlingView === "companies" && data.canonicalApi?.companySource !== "canonical-api" ? `<button type="button" data-action="open-company-create" ${canEdit ? "" : "disabled"}>New company</button>` : ""}
         </div>
         ${state.activeKindlingView === "companies" ? renderCompanyStageFilters() : ""}
         ${renderCompanyFilters(state.activeKindlingView === "enriched")}
@@ -689,7 +2886,7 @@ function renderKindlingView(data, company, canEdit) {
   `;
 
   if (state.activeKindlingView === "targets") return `
-    <section class="kindlingGrid two targetReviewLayout">
+    <section class="kindlingGrid targetReviewLayout">
       <div class="kindlingPanel">
         <div class="panelHeader">
           <div>
@@ -701,17 +2898,6 @@ function renderKindlingView(data, company, canEdit) {
         ${renderScoredFilters()}
         ${renderTopTargets(data.topTargets || data.targets || [])}
         ${renderPager(data.topTargetList, "targets")}
-      </div>
-      <div class="kindlingPanel">
-        <div class="panelHeader">
-          <div>
-            <h2>Scoring controls</h2>
-            <span>${Number(data.scoringOfferings?.length || 0)} active offerings</span>
-          </div>
-        </div>
-        ${renderScoringControls(data, canEdit)}
-        <h2 class="sectionSubhead">Ranking runs</h2>
-        ${renderRankingRuns(data.rankingRuns || [])}
       </div>
     </section>
   `;
@@ -1028,8 +3214,12 @@ function renderWorkQueue(items, canEdit) {
 
 function renderTopTargets(targets) {
   if (!targets.length) return "<p>No ranked targets yet. Run scoring and rebuild the top-target list.</p>";
+  // The "#" is the company's position in this call list (1-based within the
+  // current band + page), not its global composite rank — so removing one
+  // reindexes the rest. Offset keeps numbering continuous across pages.
+  const base = Math.max(0, Number(state.kindling?.topTargetList?.offset || 0));
   return `<div class="targetList topTargetList">
-    ${targets.map((target) => {
+    ${targets.map((target, index) => {
       const company = target.company || target;
       const name = company.name || target.name || "Unknown company";
       const offering = target.bestOffering?.name || target.bestOfferingName || "No offering selected";
@@ -1038,7 +3228,7 @@ function renderTopTargets(targets) {
       const confidence = Number(target.confidence || 0);
       return `
         <button type="button" data-open-match="${escapeHtml(target.id || "")}" data-select-company="${escapeHtml(target.companyId || company.id || "")}">
-          <span class="targetRank">#${Number(target.rank || 0)} - ${Math.round(score)}</span>
+          <span class="targetRank">#${base + index + 1} - ${Math.round(score)}</span>
           <strong>${escapeHtml(name)}</strong>
           <span>${escapeHtml(offering)} - confidence ${Math.round(confidence * 100)}%</span>
           ${target.hasOutreachDraft ? `<small>${Number(target.outreachDraftCount || 1)} outreach draft${Number(target.outreachDraftCount || 1) === 1 ? "" : "s"} ready</small>` : ""}
@@ -1060,10 +3250,10 @@ function renderScoredFilters() {
       ${label} <span class="scoredTabCount">${Number(counts[key] || 0)}</span>
     </button>`;
   const blurb = band === "high"
-    ? "Your call list. Work these top-down."
+    ? "Your call list — work these top-down."
     : band === "medium"
-      ? "There is an angle. Reach out by email first and see if they respond."
-      : "Parked for now. Low fit.";
+      ? "We can see an angle — reach out by email first and see if they respond."
+      : "Parked for now — low fit.";
   return `
     <div class="scoredTabs" role="tablist">
       ${tab("high", "High fit")}
@@ -1072,7 +3262,7 @@ function renderScoredFilters() {
     </div>
     <p class="scoredBandBlurb">${escapeHtml(blurb)}</p>
     <form class="companyFilters scoredFilters" data-form="scored-filters">
-      <label class="checkboxLabel"><input id="filterHasOutreachDraft" type="checkbox" ${draftOnly ? "checked" : ""} /> Drafted outreach only</label>
+      <label class="scoredDraftToggle"><input type="checkbox" id="filterHasOutreachDraft" ${draftOnly ? "checked" : ""}/> Drafted outreach only</label>
       <div class="filterActions">
         <button type="submit">Apply</button>
       </div>
@@ -1112,7 +3302,6 @@ function renderMatchView(data, canEdit) {
             <h2>${escapeHtml(company.name)}</h2>
             <span>${escapeHtml(company.industry || "Unknown")} - ${escapeHtml(company.location || "Unknown")}</span>
           </div>
-          ${company.id ? `<button type="button" data-select-company="${escapeHtml(company.id)}">Full profile</button>` : ""}
         </div>
         <dl class="kindlingFacts">
           <div><dt>Website</dt><dd>${company.website ? `<a href="${escapeHtml(company.website)}" target="_blank" rel="noreferrer">${escapeHtml(company.website)}</a>` : "No website"}</dd></div>
@@ -1123,6 +3312,9 @@ function renderMatchView(data, canEdit) {
         <section class="scanDetailSection">
           <h3>Company details</h3>
           ${renderProfileSummary(company.profile || {})}
+          <div class="formActions">
+            <button type="button" data-select-company="${escapeHtml(company.id)}">Show full profile</button>
+          </div>
         </section>
       </div>
       <div class="kindlingPanel">
@@ -1167,38 +3359,6 @@ function renderAssessmentDrivers(assessment) {
   `).join("")}</div>`;
 }
 
-function renderScoringControls(data, canEdit) {
-  const companies = data.companies || [];
-  const selected = selectedCompany();
-  const offerings = data.scoringOfferings || [];
-  return `
-    <form class="kindlingActionForm scoringForm" data-form="score-company">
-      <label>
-        <span>Company</span>
-        <select id="scoreCompanyId">
-          <option value="">Select company</option>
-          ${companies.map((company) => `<option value="${escapeHtml(company.id)}" ${company.id === selected?.id ? "selected" : ""}>${escapeHtml(company.name)}</option>`).join("")}
-        </select>
-      </label>
-      <label>
-        <span>Service offering</span>
-        <select id="scoreOfferingId">
-          <option value="">Select offering</option>
-          ${offerings.map((offering) => `<option value="${escapeHtml(offering.id)}">${escapeHtml(offering.name || offering.key || offering.id)}</option>`).join("")}
-        </select>
-      </label>
-      <label>
-        <span>Reason</span>
-        <input id="scoreReason" value="Manual UI service-fit validation" />
-      </label>
-      <div class="formActions">
-        <button type="submit" ${canEdit && companies.length && offerings.length ? "" : "disabled"}>Score fit</button>
-      </div>
-    </form>
-    ${!offerings.length ? "<p>No active scoring offerings. Update the service profile first.</p>" : ""}
-  `;
-}
-
 function renderRankingRuns(runs) {
   if (!runs.length) return "<p>No ranking runs yet.</p>";
   return `<div class="compactList rankingRunList">
@@ -1218,17 +3378,20 @@ function renderServiceProfile(version) {
     <p>No service profile has been created yet.</p>
   `;
   const profile = version.structured || {};
+  const summary = profile.summary || version.summary || "";
   return `
-    <div class="serviceProfileHeader">
-      <div>
-        <h2>${escapeHtml(profile.title || "Company profile")}</h2>
-        <span>Version ${escapeHtml(version.versionNumber || "New")}</span>
+    <section class="aboutAdapt">
+      <div class="aboutAdaptTop">
+        <span class="aboutEyebrow">About Adapt</span>
+        <span class="aboutVersion">Version ${escapeHtml(version.versionNumber || "New")}</span>
       </div>
-    </div>
-    <section class="profileSection profileLead">
-      <h3>Summary</h3>
-      <p>${escapeHtml(profile.summary || version.summary || "")}</p>
-      ${profile.positioningStatement ? `<p>${escapeHtml(profile.positioningStatement)}</p>` : ""}
+      <h2>${escapeHtml(profile.title || "Company profile")}</h2>
+      ${summary ? `<p class="aboutSummary">${escapeHtml(summary)}</p>` : ""}
+      ${profile.positioningStatement ? `
+        <div class="aboutPositioning">
+          <strong>Positioning</strong>
+          <p>${escapeHtml(profile.positioningStatement)}</p>
+        </div>` : ""}
     </section>
     ${renderServiceLines(profile.services || [])}
     ${renderProfileGroup("Ideal customer profile", profile.idealCustomerProfile)}
@@ -1246,12 +3409,16 @@ function renderServiceProfile(version) {
 
 function renderServiceLines(services) {
   if (!Array.isArray(services) || !services.length) return "";
+  const count = services.length;
   return `
-    <section class="profileSection">
-      <h3>Services</h3>
-      <div class="serviceLineList">
+    <section class="profileSection offersSection">
+      <div class="offersHeader">
+        <h3>What Adapt offers</h3>
+        <span class="offersCount">${count} service${count === 1 ? "" : "s"}</span>
+      </div>
+      <div class="serviceCardGrid">
         ${services.map((service) => `
-          <article class="serviceLine">
+          <article class="serviceCard">
             <h4>${escapeHtml(service.name || "Service")}</h4>
             <p>${escapeHtml(service.description || "")}</p>
             ${renderInlineList("Benefits", service.benefits)}
@@ -1509,7 +3676,7 @@ function renderCompanyFilters(enrichedOnly = false) {
       <input id="filterLocation" value="${escapeHtml(filters.location || "")}" placeholder="Location" />
       <select id="filterDataRing">
         ${option("", "Any data ring", filters.dataRing || "")}
-        ${["found", "enhanced", "ranked", "scored", "outreach_ready", "contacted"].map((value) => option(value, value, filters.dataRing || "")).join("")}
+        ${["found", "enhanced", "ranked", "scored", "outreach_ready", "contacted", "parked"].map((value) => option(value, value, filters.dataRing || "")).join("")}
       </select>
       <select id="filterDuplicate">
         ${option("", "Any duplicate status", filters.duplicateStatus || "")}
@@ -1530,6 +3697,33 @@ function renderCompanyFilters(enrichedOnly = false) {
       </div>
     </form>
   `;
+}
+
+function renderCompanyListRows(companies) {
+  if (!companies.length) return "<p>No companies yet.</p>";
+  return `<div class="companyTable companyListRows">
+    ${companies.map((company) => {
+      const meta = [company.industry, company.location].filter(Boolean).join(" · ") || "No details yet";
+      const site = company.website
+        ? `<a class="companyRowSite" href="${escapeHtml(/^https?:\/\//i.test(company.website) ? company.website : `https://${company.website}`)}" target="_blank" rel="noopener">${escapeHtml(company.website)}</a>`
+        : "";
+      const fitPill = company.fitScore != null
+        ? `<span class="companyRowFit resultFit resultFit-${escapeHtml(company.fitBand || "high")}">${company.fitScore} fit</span>`
+        : "";
+      return `
+        <div class="companyListRow" data-open-company="${escapeHtml(company.id)}" role="button" tabindex="0">
+          <span class="companyRowMain">
+            <strong>${escapeHtml(company.name)}</strong>
+            <span class="companyRowBadges">
+              ${fitPill}
+              <small>${escapeHtml(stageLabel(company.enrichmentStatus))}</small>
+            </span>
+          </span>
+          <span class="companyRowMeta">${escapeHtml(meta)}</span>
+          ${site}
+        </div>`;
+    }).join("")}
+  </div>`;
 }
 
 function renderCompanyTable(companies) {
@@ -1560,7 +3754,7 @@ function renderCompanyEditor(company, canEdit) {
     <input id="editCompanyLocation" value="${escapeHtml(company.location)}" placeholder="Location" />
     <input id="editCompanyWebsite" value="${escapeHtml(company.website)}" placeholder="Website" />
     <select id="editCompanyDataRing">
-      ${["seed", "manual", "enriched", "outreach_ready"].map((value) => `<option value="${value}" ${company.dataRing === value ? "selected" : ""}>${value}</option>`).join("")}
+      ${["found", "enhanced", "ranked", "scored", "outreach_ready", "contacted", "parked"].map((value) => `<option value="${value}" ${company.dataRing === value ? "selected" : ""}>${value}</option>`).join("")}
     </select>
     <select id="editCompanyDuplicate">
       ${["unknown", "unique", "possible_duplicate", "duplicate"].map((value) => `<option value="${value}" ${company.duplicateStatus === value ? "selected" : ""}>${value}</option>`).join("")}
@@ -1615,7 +3809,10 @@ function renderCompanyProfileModal(canEdit) {
             <div class="eyebrow">${escapeHtml(stageLabel(company.enrichmentStatus))}</div>
             <h2>${escapeHtml(company.name)}</h2>
           </div>
-          <button type="button" data-action="close-company-profile">Close</button>
+          <div class="rowActions">
+            ${detail?.companySource === "canonical-api" ? '<button type="button" data-action="refresh-canonical-company">Refresh from API</button>' : ""}
+            <button type="button" data-action="close-company-profile">Close</button>
+          </div>
         </header>
         <div class="companyProfileGrid">
           <section>
@@ -1693,8 +3890,9 @@ function formatProfileValue(value) {
 }
 
 function formatDate(value) {
-  const timestamp = Number(value || 0);
-  if (!timestamp) return "";
+  const numeric = Number(value || 0);
+  const timestamp = Number.isFinite(numeric) && numeric > 0 ? numeric : Date.parse(String(value || ""));
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return "";
   return new Date(timestamp).toLocaleString();
 }
 
@@ -1738,6 +3936,37 @@ async function runSchedulerOnce(dryRun) {
 async function refreshKindlingSoon() {
   await new Promise((resolve) => setTimeout(resolve, 900));
   await loadKindlingScreen();
+}
+
+async function syncCanonicalCompaniesWithSigner() {
+  let step = await api("/api/kindling/canonical-sync", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+  for (let requestCount = 0; step.requiresCanonicalAuth; requestCount += 1) {
+    if (requestCount >= 100) throw new Error("Canonical sync exceeded 100 pages; retry after checking API paging");
+    const stage = step.stage === "snapshot" ? "company snapshot" : step.stage === "changes" ? "company changes" : "API bootstrap";
+    setKindlingStatus(`Authorizing ${stage}…`);
+    const canonicalAuthorization = await signNip98Request(step.canonicalRequest);
+    step = await api("/api/kindling/canonical-sync", {
+      method: "POST",
+      body: JSON.stringify({ syncId: step.syncId, canonicalAuthorization }),
+    });
+    if (state.kindling && step.canonicalApi) {
+      state.kindling.canonicalApi = step.canonicalApi;
+      renderKindling();
+    }
+  }
+  return step;
+}
+
+async function refreshCanonicalCompanyWithSigner(companyId) {
+  const prepared = await api(`/api/kindling/canonical-targets/${encodeURIComponent(companyId)}/request`);
+  const canonicalAuthorization = await signNip98Request(prepared.canonicalRequest);
+  return api(`/api/kindling/canonical-targets/${encodeURIComponent(companyId)}/refresh`, {
+    method: "POST",
+    body: JSON.stringify({ canonicalAuthorization }),
+  });
 }
 
 async function handleKindlingSubmit(event) {
@@ -1828,17 +4057,6 @@ async function handleKindlingSubmit(event) {
       });
       await loadKindlingScreen();
       setKindlingStatus("Scheduler settings saved");
-    }
-    if (form.dataset.form === "score-company") {
-      setKindlingStatus("Queueing service-fit scoring");
-      await startKindlingPipeline("/api/kindling/service-assessments", {
-        companyId: $("scoreCompanyId").value,
-        serviceOfferingId: $("scoreOfferingId").value,
-        marketProfileVersionId: state.kindling?.marketProfileVersionId || "",
-        reason: $("scoreReason").value.trim(),
-      });
-      await refreshKindlingSoon();
-      setKindlingStatus("Service-fit scoring queued");
     }
     if (form.dataset.form === "company-profile" && selectedCompany()) {
       setKindlingStatus("Saving profile");
@@ -1967,9 +4185,9 @@ async function handleKindlingClick(event) {
     };
     state.kindlingPaging.targets = 0;
     saveKindlingFilters();
-    setKindlingStatus("Loading...");
+    setKindlingStatus("Loading…");
     await loadKindlingList("targets");
-    const labels = { high: "High-fit call list", medium: "Medium-fit list", low: "Low-fit parked list" };
+    const labels = { high: "High-fit call list", medium: "Medium-fit list", low: "Low-fit (parked)" };
     setKindlingStatus(labels[state.kindlingFilters.band] || "Scored");
     return;
   }
@@ -1982,28 +4200,40 @@ async function handleKindlingClick(event) {
     localStorage.setItem("kindling_company", state.selectedCompanyId);
     state.companyProfileOpen = false;
     state.companyDetail = null;
+    // Switch to the match view immediately using the target data we already
+    // have, then fill in the company detail in the background — no full reload.
     setKindlingView("match");
     kindlingViewLoading = false;
     if (window.location.pathname !== "/match") history.pushState({}, "", "/match");
     state.route = "/match";
     renderKindling();
     setKindlingStatus("Loading match");
-    if (companyId) {
-      state.companyDetail = await api(`/api/kindling/companies/${encodeURIComponent(companyId)}`);
-      if (state.selectedCompanyId === companyId) renderKindling();
+    if (selectedTarget(state.kindling)) {
+      if (companyId) {
+        const detail = await api(`/api/kindling/companies/${encodeURIComponent(companyId)}`);
+        if (state.selectedCompanyId === companyId && state.activeKindlingView === "match") {
+          state.companyDetail = detail;
+          renderKindling();
+        }
+      }
+      setKindlingStatus("Match loaded");
+    } else {
+      // No scored list in memory (e.g. deep link) — fall back to a full load.
+      await loadKindlingScreen();
     }
-    setKindlingStatus("Match loaded");
     return;
   }
   const selectButton = event.target.closest("[data-select-company]");
   if (selectButton) {
     const companyId = selectButton.dataset.selectCompany;
     state.selectedCompanyId = companyId;
-    localStorage.setItem("kindling_company", state.selectedCompanyId);
+    localStorage.setItem("kindling_company", companyId);
     state.scanJobDetail = null;
     state.companyProfileOpen = true;
     state.companyDetail = null;
     kindlingViewLoading = false;
+    // Open the modal immediately with the company we already have, then load
+    // the full detail (sources/activity/drafts) in the background.
     renderKindling();
     setKindlingStatus("Loading company profile");
     const detail = await api(`/api/kindling/companies/${encodeURIComponent(companyId)}`);
@@ -2017,6 +4247,19 @@ async function handleKindlingClick(event) {
   const action = event.target.closest("[data-action]")?.dataset.action;
   if (action === "home") navigate("/");
   if (action === "refresh-kindling") await loadKindlingScreen();
+  if (action === "sync-canonical") {
+    setKindlingStatus("Preparing canonical API sync");
+    const result = await syncCanonicalCompaniesWithSigner();
+    await loadKindlingScreen();
+    setKindlingStatus(`Canonical sync complete · ${Number(result.applied || 0)} changes applied`);
+  }
+  if (action === "refresh-canonical-company" && state.selectedCompanyId) {
+    setKindlingStatus("Authorizing company refresh");
+    await refreshCanonicalCompanyWithSigner(state.selectedCompanyId);
+    state.companyDetail = await api(`/api/kindling/companies/${encodeURIComponent(state.selectedCompanyId)}`);
+    renderKindling();
+    setKindlingStatus("Company refreshed from canonical API");
+  }
   if (action === "scheduler-dry-run") {
     setKindlingStatus("Running scheduler dry run");
     await runSchedulerOnce(true);
@@ -2117,9 +4360,11 @@ function handleKindlingChange(event) {
 
 function renderSettings() {
   $("autopilotUrlInput").value = state.settings?.autopilotUrl || "";
+  $("publicOriginInput").value = state.settings?.publicOrigin || "";
   $("pipelineInput").value = state.settings?.defaultPipeline || "";
+  $("snoozeDaysInput").value = state.settings?.snoozeDays || 1;
   const canEdit = Boolean(state.me?.access?.edit);
-  for (const id of ["autopilotUrlInput", "pipelineInput", "pipelineSelect", "loadPipelinesButton", "saveSettingsButton", "researchDeskButton", "accessNpubInput", "accessRoleSelect", "addAccessButton"]) {
+  for (const id of ["autopilotUrlInput", "publicOriginInput", "pipelineInput", "snoozeDaysInput", "pipelineSelect", "loadPipelinesButton", "saveSettingsButton", "researchDeskButton", "accessNpubInput", "accessRoleSelect", "addAccessButton"]) {
     $(id).disabled = !canEdit;
   }
 }
@@ -2342,7 +4587,9 @@ async function saveSettings() {
       method: "PUT",
       body: JSON.stringify({
         autopilotUrl: $("autopilotUrlInput").value.trim(),
+        publicOrigin: $("publicOriginInput").value.trim(),
         defaultPipeline: $("pipelineInput").value.trim(),
+        snoozeDays: Math.max(1, Math.min(365, Math.floor(Number($("snoozeDaysInput").value) || 1))),
       }),
     });
     state.settings = payload.settings;
@@ -2433,22 +4680,25 @@ async function removeAccessRule(rule) {
   }
 }
 
+// Full-screen Chats view: previous chats as a horizontally-scrolling tab strip,
+// mirroring the floating widget's style.
 function renderChats() {
-  const list = $("chatList");
-  list.innerHTML = "";
+  const bar = $("chatTabs");
+  if (!bar) return;
+  bar.innerHTML = "";
   for (const chat of state.chats) {
     const button = document.createElement("button");
-    button.className = `chatItem${chat.id === state.activeChatId ? " active" : ""}`;
-    button.innerHTML = `<strong></strong><span></span>`;
-    button.querySelector("strong").textContent = chat.title;
-    button.querySelector("span").textContent = chat.preview || "No messages yet";
+    button.type = "button";
+    button.className = `athenaTab${chat.id === state.activeChatId ? " active" : ""}`;
+    button.textContent = chat.title || "New chat";
+    button.title = chat.title || "New chat";
     button.addEventListener("click", async () => {
       state.activeChatId = chat.id;
       localStorage.setItem("chat_wapp_chat", chat.id);
       renderChats();
       await loadActiveChat();
     });
-    list.appendChild(button);
+    bar.appendChild(button);
   }
 }
 
@@ -2474,7 +4724,14 @@ function renderMessages(messages) {
   for (const message of messages) {
     const node = document.createElement("div");
     node.className = `message ${message.role} ${message.status}`;
-    node.textContent = message.status === "pending" ? "Thinking..." : message.content;
+    if (message.status === "pending") {
+      node.textContent = "Thinking...";
+    } else if (message.role === "assistant") {
+      node.classList.add("markdownBody");
+      node.innerHTML = renderMarkdown(message.content || "");
+    } else {
+      node.textContent = message.content;
+    }
     box.appendChild(node);
   }
   box.scrollTop = box.scrollHeight;
@@ -2490,6 +4747,28 @@ function syncAccessUi() {
   }
 }
 
+// Shared chat-send core used by both the full-screen chat and the floating
+// Ask Athena widget. Posts the user message, and if the backend asks for a
+// NIP-98 pipeline authorization, signs it and starts the run. `onProgress` is
+// called with the interim message list (user + pending assistant) so the UI can
+// echo the message immediately, before signing completes.
+async function postChatMessage(content, onProgress) {
+  const payload = await api(`/api/chats/${encodeURIComponent(state.activeChatId)}/messages`, {
+    method: "POST",
+    body: JSON.stringify({ content }),
+  });
+  if (onProgress) onProgress(payload.messages || []);
+  if (payload.requiresAutopilotAuth && payload.triggerRequest) {
+    const autopilotAuthorization = await signNip98Request(payload.triggerRequest);
+    const started = await api(`/api/pipeline-runs/${encodeURIComponent(payload.runId)}/start`, {
+      method: "POST",
+      body: JSON.stringify({ autopilotAuthorization }),
+    });
+    return started.messages || payload.messages || [];
+  }
+  return payload.messages || [];
+}
+
 async function sendMessage(event) {
   event.preventDefault();
   if (!state.me?.access?.edit) return;
@@ -2499,20 +4778,9 @@ async function sendMessage(event) {
   input.value = "";
   $("sendButton").disabled = true;
   try {
-    const payload = await api(`/api/chats/${encodeURIComponent(state.activeChatId)}/messages`, {
-      method: "POST",
-      body: JSON.stringify({ content }),
-    });
-    renderMessages(payload.messages || []);
-    if (payload.requiresAutopilotAuth && payload.triggerRequest) {
-      setStatus("Authorizing pipeline");
-      const autopilotAuthorization = await signNip98Request(payload.triggerRequest);
-      const started = await api(`/api/pipeline-runs/${encodeURIComponent(payload.runId)}/start`, {
-        method: "POST",
-        body: JSON.stringify({ autopilotAuthorization }),
-      });
-      renderMessages(started.messages || []);
-    }
+    setStatus("Authorizing pipeline");
+    const messages = await postChatMessage(content, (interim) => renderMessages(interim));
+    renderMessages(messages);
     await loadChats();
   } catch (error) {
     setStatus(error.message);
@@ -2522,8 +4790,252 @@ async function sendMessage(event) {
   }
 }
 
+// ---- Floating "Ask Athena" widget ----------------------------------------
+// A read-only chat that overlays every app page. Shares state.activeChatId and
+// the chats list with the full-screen Chats view, so it always shows the most
+// recent thread; "+" starts a new one. Live updates via its own poll loop.
+
+function athenaEditable() {
+  return Boolean(state.me?.access?.edit);
+}
+
+function setAthenaStatus(text) {
+  const el = $("athenaStatus");
+  if (el) el.textContent = text;
+}
+
+async function openAthena() {
+  if (!state.token || !state.me) return;
+  state.athena.open = true;
+  $("athenaPanel").classList.remove("hidden");
+  $("athenaLauncher").classList.add("active");
+  try {
+    await loadChats();
+    if (!state.activeChatId || !state.chats.find((chat) => chat.id === state.activeChatId)) {
+      if (state.chats[0]) {
+        state.activeChatId = state.chats[0].id;
+        localStorage.setItem("chat_wapp_chat", state.activeChatId);
+      } else if (athenaEditable()) {
+        await newAthenaChat();
+      }
+    }
+    renderAthenaTabs();
+    if (state.activeChatId) await loadAthenaChat();
+    else renderAthenaMessages([]);
+  } catch (error) {
+    setAthenaStatus(error.message);
+  }
+  syncAthenaAccess();
+  applyAthenaChrome();
+  startAthenaPolling();
+  $("athenaInput")?.focus();
+}
+
+function closeAthena() {
+  state.athena.open = false;
+  state.athena.pinned = false;
+  localStorage.setItem("athena_pinned", "0");
+  $("athenaPanel").classList.add("hidden");
+  $("athenaLauncher").classList.remove("active");
+  applyAthenaChrome();
+  stopAthenaPolling();
+}
+
+function toggleAthena() {
+  if (state.athena.open) closeAthena();
+  else void openAthena();
+}
+
+// Toggle the docked right-hand drawer. Pinning implies open; the panel then
+// persists across pages until unpinned or closed.
+function toggleAthenaPin() {
+  state.athena.pinned = !state.athena.pinned;
+  localStorage.setItem("athena_pinned", state.athena.pinned ? "1" : "0");
+  if (state.athena.pinned && !state.athena.open) {
+    void openAthena();
+    return;
+  }
+  applyAthenaChrome();
+}
+
+// Apply pinned/floating chrome: docks the panel as a right column and pushes the
+// page content over so it isn't covered. Hidden on /chat and when signed out.
+function applyAthenaChrome() {
+  const root = $("athena");
+  const app = $("app");
+  const pinBtn = $("athenaPin");
+  if (!root || !app) return;
+  const visible = !root.classList.contains("hidden");
+  const pinned = state.athena.pinned && state.athena.open && visible;
+  root.classList.toggle("pinned", pinned);
+  app.classList.toggle("athenaPinned", pinned);
+  if (pinBtn) {
+    pinBtn.textContent = state.athena.pinned ? "⇤" : "⇥";
+    pinBtn.title = state.athena.pinned ? "Unpin" : "Pin to side";
+    pinBtn.classList.toggle("active", state.athena.pinned);
+  }
+}
+
+function selectAthenaChat(chatId) {
+  state.activeChatId = chatId;
+  localStorage.setItem("chat_wapp_chat", chatId);
+  renderAthenaTabs();
+  void loadAthenaChat();
+  $("athenaInput")?.focus();
+}
+
+async function newAthenaChat() {
+  if (!athenaEditable()) return;
+  const payload = await api("/api/chats", { method: "POST", body: "{}" });
+  state.activeChatId = payload.chat.id;
+  localStorage.setItem("chat_wapp_chat", state.activeChatId);
+  await loadChats();
+  renderAthenaTabs();
+  await loadAthenaChat();
+  $("athenaInput")?.focus();
+}
+
+async function loadAthenaChat() {
+  if (!state.activeChatId) return;
+  const payload = await api(`/api/chats/${encodeURIComponent(state.activeChatId)}/messages`);
+  renderAthenaMessages(payload.messages || []);
+}
+
+function renderAthenaTabs() {
+  const bar = $("athenaTabs");
+  if (!bar) return;
+  bar.innerHTML = "";
+  for (const chat of state.chats.slice(0, 5)) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.className = `athenaTab${chat.id === state.activeChatId ? " active" : ""}`;
+    btn.textContent = chat.title || "New chat";
+    btn.title = chat.title || "New chat";
+    btn.addEventListener("click", () => selectAthenaChat(chat.id));
+    bar.appendChild(btn);
+  }
+  const plus = document.createElement("button");
+  plus.type = "button";
+  plus.className = "athenaTab athenaTabNew";
+  plus.textContent = "+";
+  plus.title = "New chat";
+  plus.disabled = !athenaEditable();
+  plus.addEventListener("click", () => void newAthenaChat());
+  bar.appendChild(plus);
+}
+
+function renderAthenaMessages(messages) {
+  const box = $("athenaMessages");
+  if (!box) return;
+  box.innerHTML = "";
+  if (!messages.length) {
+    const empty = document.createElement("div");
+    empty.className = "athenaEmpty";
+    empty.textContent = athenaEditable()
+      ? "Ask about the system, data, or processes. Athena is read-only — it never changes anything."
+      : "You have read-only access. Ask an editor to chat with Athena.";
+    box.appendChild(empty);
+  }
+  for (const message of messages) {
+    const node = document.createElement("div");
+    node.className = `athenaMessage ${message.role} ${message.status}`;
+    if (message.status === "pending") {
+      node.textContent = "Thinking…";
+    } else if (message.role === "assistant") {
+      node.classList.add("markdownBody");
+      node.innerHTML = renderMarkdown(message.content || "");
+    } else {
+      node.textContent = message.content;
+    }
+    box.appendChild(node);
+  }
+  box.scrollTop = box.scrollHeight;
+  const pending = messages.some((message) => message.status === "pending");
+  setAthenaStatus(pending ? "Athena is thinking…" : "Ready");
+}
+
+function syncAthenaAccess() {
+  const canEdit = athenaEditable();
+  for (const id of ["athenaInput", "athenaSend"]) {
+    const el = $(id);
+    if (el) el.disabled = !canEdit;
+  }
+}
+
+async function sendAthenaMessage(event) {
+  event.preventDefault();
+  if (!athenaEditable()) return;
+  const input = $("athenaInput");
+  const content = input.value.trim();
+  if (!content || !state.activeChatId) return;
+  input.value = "";
+  $("athenaSend").disabled = true;
+  try {
+    setAthenaStatus("Authorizing…");
+    const messages = await postChatMessage(content, (interim) => renderAthenaMessages(interim));
+    renderAthenaMessages(messages);
+    await loadChats();
+    renderAthenaTabs();
+  } catch (error) {
+    setAthenaStatus(error.message);
+  } finally {
+    $("athenaSend").disabled = !athenaEditable();
+    if (athenaEditable()) input.focus();
+  }
+}
+
+function startAthenaPolling() {
+  stopAthenaPolling();
+  state.athenaPollTimer = setInterval(async () => {
+    if (state.athena.open && state.activeChatId && state.token) {
+      await loadAthenaChat().catch(() => undefined);
+      await loadChats().catch(() => undefined);
+      renderAthenaTabs();
+    }
+  }, 1500);
+}
+
+function stopAthenaPolling() {
+  if (state.athenaPollTimer) clearInterval(state.athenaPollTimer);
+  state.athenaPollTimer = null;
+}
+
+// Show the launcher on every app page once signed in; hide it on the login
+// screen and on the full-screen /chat view (where it would be redundant).
+function syncAthenaLauncher() {
+  const root = $("athena");
+  if (!root) return;
+  const hide = !(state.token && state.me) || state.route === "/chat";
+  root.classList.toggle("hidden", hide);
+  if (hide) {
+    // Don't lose the pinned preference when passing through /chat — just undock.
+    root.classList.remove("pinned");
+    $("app")?.classList.remove("athenaPinned");
+    return;
+  }
+  // Re-dock the pinned drawer when returning to a normal page.
+  if (state.athena.pinned && !state.athena.open) {
+    void openAthena();
+    return;
+  }
+  applyAthenaChrome();
+}
+
+// Resolve the signer to use for a NIP-98 (kind 27235) pipeline authorization.
+// Prefer the active in-memory signer; fall back to a fresh extension signer if
+// the page reloaded onto a restored bearer session. An nsec signer cannot be
+// restored after reload, so we ask the user to reconnect one.
+function currentSigner() {
+  if (state.signer) return state.signer;
+  if (window.nostr) {
+    state.signer = makeExtensionSigner();
+    return state.signer;
+  }
+  throw new Error("Reconnect a Nostr signer to authorize this request.");
+}
+
 async function signNip98Request(triggerRequest) {
-  if (!window.nostr) throw new Error("No Nostr browser extension was found.");
+  const signer = currentSigner();
   const tags = [
     ["u", triggerRequest.url],
     ["method", triggerRequest.method || "POST"],
@@ -2532,7 +5044,7 @@ async function signNip98Request(triggerRequest) {
     const bodyJson = JSON.stringify(triggerRequest.body);
     tags.push(["payload", await sha256Hex(bodyJson)]);
   }
-  const event = await window.nostr.signEvent({
+  const event = await signer.signEvent({
     kind: 27235,
     created_at: Math.floor(Date.now() / 1000),
     tags,
@@ -2566,8 +5078,15 @@ function startPolling() {
   }, 1500);
 }
 
-$("loginButton").addEventListener("click", login);
-$("logoutButton").addEventListener("click", logout);
+$("loginButton").addEventListener("click", loginWithExtension);
+$("showNsecLogin")?.addEventListener("click", () => setLoginMethod("nsec"));
+$("showExtensionLogin")?.addEventListener("click", () => setLoginMethod("extension"));
+$("nsecLoginButton")?.addEventListener("click", loginWithNsec);
+$("loginNsec")?.addEventListener("submit", (event) => {
+  event.preventDefault();
+  void loginWithNsec();
+});
+$("logoutButton")?.addEventListener("click", logout);
 $("newChatButton").addEventListener("click", newChat);
 $("homeActButton").addEventListener("click", () => {
   setKindlingView("companies");
@@ -2594,23 +5113,274 @@ $("homeResearchButton").addEventListener("click", () => {
   navigate("/researchdesk");
 });
 $("homeChatButton").addEventListener("click", () => navigate("/chat"));
+
+// Floating Ask Athena widget
+$("athenaLauncher")?.addEventListener("click", toggleAthena);
+$("athenaPin")?.addEventListener("click", toggleAthenaPin);
+$("athenaClose")?.addEventListener("click", closeAthena);
+$("athenaExpand")?.addEventListener("click", () => { closeAthena(); navigate("/chat"); });
+$("athenaComposer")?.addEventListener("submit", sendAthenaMessage);
+$("athenaInput")?.addEventListener("keydown", (event) => {
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    $("athenaComposer").requestSubmit();
+  }
+});
 $("homeSettingsButton").addEventListener("click", () => navigate("/settings"));
 $("settingsHomeButton").addEventListener("click", () => navigate("/"));
+$("homeFocusButton").addEventListener("click", () => navigate("/"));
+
+// Sidebar drawer interactions
+$("appNavList").addEventListener("click", (event) => {
+  const route = event.target.closest("[data-nav]")?.dataset.nav;
+  if (route) navigate(route);
+});
+$("appNavCollapse").addEventListener("click", (event) => {
+  event.stopPropagation();
+  toggleNavCollapsed();
+});
+$("appNavUser").addEventListener("click", (event) => {
+  if (event.target.closest("#appNavLogout")) logout();
+});
+// Clicking the logo toggles the drawer; clicking empty space in a collapsed
+// drawer re-expands it (the collapse button is hidden while collapsed).
+$("appNav").addEventListener("click", (event) => {
+  if (event.target.closest("#appNavCollapse, [data-nav], #appNavUser")) return;
+  if (event.target.closest(".appNavBrand")) {
+    toggleNavCollapsed();
+  } else if (state.navCollapsed) {
+    toggleNavCollapsed();
+  }
+});
+
+// Lightweight page retry buttons
+$("servicePage").addEventListener("click", (event) => {
+  if (event.target.closest('[data-page-action="retry-service"]')) void loadServicePage({ force: true });
+});
+$("companyListPage").addEventListener("click", (event) => {
+  if (event.target.closest('[data-page-action="retry-companies"]')) {
+    void loadCompanyListPage({ force: true });
+    return;
+  }
+  const band = event.target.closest("[data-company-band]")?.dataset.companyBand;
+  if (band) {
+    setCompanyBand(band);
+    return;
+  }
+  if (event.target.closest('[data-company-toggle="hideProcessed"]')) {
+    toggleCompanyHideProcessed();
+    return;
+  }
+  const page = event.target.closest("[data-company-page]")?.dataset.companyPage;
+  if (page) { stepCompanyPage(page === "next" ? 1 : -1); return; }
+  // Open the shared details overlay for a row — but let the inline website link
+  // behave like a normal link.
+  if (event.target.closest("a")) return;
+  const row = event.target.closest("[data-open-company]");
+  if (row) {
+    const companyId = row.dataset.openCompany;
+    const company = (state.companyListPage.companies || []).find((c) => c.id === companyId) || null;
+    openCompanyModal({ companyId, company });
+  }
+});
+$("companyListPage").addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  const row = event.target.closest?.("[data-open-company]");
+  if (!row) return;
+  event.preventDefault();
+  const companyId = row.dataset.openCompany;
+  const company = (state.companyListPage.companies || []).find((c) => c.id === companyId) || null;
+  openCompanyModal({ companyId, company });
+});
+
+$("focus").addEventListener("click", (event) => {
+  const trigger = event.target.closest("[data-focus-action]");
+  const action = trigger?.dataset.focusAction;
+  if (!action) return;
+  if (action === "prev") focusStep(-1);
+  else if (action === "next") focusStep(1);
+  else if (action === "contacts-prev") focusContactStep(-1);
+  else if (action === "contacts-next") focusContactStep(1);
+  else if (action === "open" || action === "details") focusOpenCurrent();
+  else if (action === "retry") void loadFocusScreen({ force: true });
+  else if (action === "sent") void focusSentCurrent(trigger);
+  else if (action === "reach") openReachOutModal();
+  else if (action === "snooze") {
+    const item = state.focus.items[state.focus.index];
+    if (item) void snoozeFromDeck(item.companyId || item.company?.id, trigger);
+  }
+  else if (action === "dismiss") {
+    const item = state.focus.items[state.focus.index];
+    if (item) dismissFromDeck(item.companyId || item.company?.id);
+  }
+});
+
+// Shared company-details overlay interactions (mounted globally so it works from
+// any screen).
+$("companyModalRoot").addEventListener("click", (event) => {
+  // Reviewer feedback controls toggle in place (no re-render) so the note keeps focus.
+  const verdictBtn = event.target.closest("[data-feedback-verdict]");
+  if (verdictBtn) {
+    const wasActive = verdictBtn.classList.contains("active");
+    document.querySelectorAll("#companyFeedback [data-feedback-verdict]").forEach((b) => b.classList.remove("active"));
+    if (!wasActive) verdictBtn.classList.add("active");
+    return;
+  }
+  const labelBtn = event.target.closest("[data-feedback-label]");
+  if (labelBtn) { labelBtn.classList.toggle("active"); return; }
+  if (event.target.closest("[data-feedback-save]")) { void saveCompanyFeedback(event.target.closest("[data-feedback-save]")); return; }
+
+  const trigger = event.target.closest("[data-modal-action]");
+  const action = trigger?.dataset.modalAction;
+  if (!action) return;
+  if (action === "close") {
+    // Close on the backdrop itself or the Close button — not on clicks inside
+    // the panel (links, text selection, draft nav, etc.).
+    if (!event.target.closest("[data-modal-panel]") || trigger.tagName === "BUTTON") closeCompanyModal();
+    return;
+  }
+  if (action === "draft-prev") companyModalDraftStep(-1);
+  else if (action === "draft-next") companyModalDraftStep(1);
+  else if (action === "draft-copy") companyModalDraftCopy(trigger);
+});
+document.addEventListener("keydown", (event) => {
+  if (state.reasonModal) {
+    if (event.key === "Escape") closeReasonModal();
+    return;
+  }
+  // The company-details overlay can be open over any screen — Escape closes it
+  // and swallows the deck shortcuts while it's up.
+  if (state.companyModal.open) {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeCompanyModal();
+    }
+    return;
+  }
+  if ($("focus").classList.contains("hidden")) return;
+  if (event.target instanceof HTMLInputElement || event.target instanceof HTMLTextAreaElement) return;
+  if (event.key === "ArrowLeft") {
+    event.preventDefault();
+    focusStep(-1);
+  } else if (event.key === "ArrowRight") {
+    event.preventDefault();
+    focusStep(1);
+  } else if (event.key === "Enter") {
+    event.preventDefault();
+    focusOpenCurrent();
+  }
+});
+
+// Results page interactions
+$("resultsPage").addEventListener("click", (event) => {
+  if (event.target.closest('[data-page-action="retry-results"]')) { void loadResultsPage({ force: true }); return; }
+  const tab = event.target.closest("[data-results-tab]")?.dataset.resultsTab;
+  if (tab) { setResultsTab(tab); return; }
+  const pg = event.target.closest("[data-results-page]")?.dataset.resultsPage;
+  if (pg) { stepResultsPage(pg === "next" ? 1 : -1); return; }
+  if (event.target.closest("[data-results-clear]")) {
+    state.resultsPage.q = "";
+    state.resultsPage.offset = 0;
+    void loadResultsPage({ force: true });
+    return;
+  }
+  const meetingId = event.target.closest("[data-result-meeting]")?.dataset.resultMeeting;
+  if (meetingId) {
+    const btn = event.target.closest("[data-result-meeting]");
+    setBusyElement(btn, true, "Saving");
+    void api("/api/kindling/outreach/respond", { method: "POST", body: JSON.stringify({ companyId: meetingId, outcome: "meeting" }) })
+      .then(() => loadResultsPage({ force: true }))
+      .catch((err) => { setBusyElement(btn, false); alert(`Couldn't save: ${err?.message || err}`); });
+    return;
+  }
+  const dropId = event.target.closest("[data-result-drop]")?.dataset.resultDrop;
+  if (dropId) { dropFromResults(dropId); return; }
+  const menuToggle = event.target.closest("[data-result-menu]");
+  if (menuToggle) {
+    const menu = menuToggle.closest(".resultMenu");
+    const wasOpen = menu.classList.contains("open");
+    $("resultsPage").querySelectorAll(".resultMenu.open").forEach((m) => m.classList.remove("open"));
+    if (!wasOpen) menu.classList.add("open");
+    return;
+  }
+  const undoId = event.target.closest("[data-result-undo]")?.dataset.resultUndo;
+  if (undoId) {
+    const btn = event.target.closest("[data-result-undo]");
+    setBusyElement(btn, true, "Undoing");
+    void api("/api/kindling/outreach/undo", { method: "POST", body: JSON.stringify({ companyId: undoId }) })
+      .then(() => {
+        state.focus.loaded = false; // deck must refetch — this company is back
+        return loadResultsPage({ force: true });
+      })
+      .catch((err) => { setBusyElement(btn, false); alert(`Couldn't undo: ${err?.message || err}`); });
+  }
+});
+$("resultsPage").addEventListener("submit", (event) => {
+  if (!event.target.closest("[data-results-search]")) return;
+  event.preventDefault();
+  state.resultsPage.q = ($("resultsSearchInput")?.value || "").trim();
+  state.resultsPage.offset = 0;
+  void loadResultsPage({ force: true });
+});
+// Close any open row menu when clicking outside of it.
+document.addEventListener("click", (event) => {
+  if (event.target.closest(".resultMenu")) return;
+  $("resultsPage")?.querySelectorAll(".resultMenu.open").forEach((m) => m.classList.remove("open"));
+});
+
+// Alerts page interactions
+$("alertsPage").addEventListener("click", (event) => {
+  const navLink = event.target.closest("[data-nav]");
+  if (navLink) { event.preventDefault(); navigate(navLink.dataset.nav); return; }
+  const actionEl = event.target.closest("[data-alert-action]");
+  if (!actionEl) return;
+  const action = actionEl.dataset.alertAction;
+  if (action === "retry" || action === "refresh") { void loadAlertsPage({ force: true }); return; }
+  if (action === "save-settings") { void saveAlertSettings(); return; }
+  if (action === "toggle-feed") { void setAlertFeedStatus(actionEl.dataset.feedId, actionEl.dataset.nextStatus); return; }
+  if (action === "delete-feed") { void removeAlertFeed(actionEl.dataset.feedId, actionEl.dataset.feedLabel || ""); return; }
+});
+$("alertsPage").addEventListener("submit", (event) => {
+  if (!event.target.closest('[data-alert-action="add-feed"]')) return;
+  event.preventDefault();
+  void addAlertFeed();
+});
+
+// Reason / outcome modal interactions
+$("reasonModalRoot").addEventListener("click", (event) => {
+  if (event.target.closest("[data-reason-confirm]")) { void confirmReasonModal(); return; }
+  if (event.target.closest("[data-reason-close]")) { closeReasonModal(); return; }
+  // Only a click on the backdrop itself (outside the modal box) dismisses; clicks
+  // on the dropdown/textarea/etc. inside the modal must not close it.
+  if (event.target.classList.contains("reasonModalBackdrop")) closeReasonModal();
+});
+
 $("researchDeskButton").addEventListener("click", () => {
   setKindlingView("research");
   navigate("/researchdesk");
 });
+// NOTE: capture the button element synchronously — event.currentTarget is null
+// inside the async .finally (after dispatch ends), which previously left the
+// button stuck disabled on "Working".
 $("saveSettingsButton").addEventListener("click", (event) => {
-  setBusyElement(event.currentTarget, true);
-  void saveSettings().finally(() => setBusyElement(event.currentTarget, false));
+  const btn = event.currentTarget;
+  setBusyElement(btn, true);
+  void saveSettings().finally(() => setBusyElement(btn, false));
+});
+$("saveAutomationButton")?.addEventListener("click", (event) => {
+  const btn = event.currentTarget;
+  setBusyElement(btn, true);
+  void saveAutomation().finally(() => setBusyElement(btn, false));
 });
 $("loadPipelinesButton").addEventListener("click", (event) => {
-  setBusyElement(event.currentTarget, true);
-  void loadPipelines().finally(() => setBusyElement(event.currentTarget, false));
+  const btn = event.currentTarget;
+  setBusyElement(btn, true);
+  void loadPipelines().finally(() => setBusyElement(btn, false));
 });
 $("addAccessButton").addEventListener("click", (event) => {
-  setBusyElement(event.currentTarget, true);
-  void addAccess().finally(() => setBusyElement(event.currentTarget, false));
+  const btn = event.currentTarget;
+  setBusyElement(btn, true);
+  void addAccess().finally(() => setBusyElement(btn, false));
 });
 $("pipelineSelect").addEventListener("change", () => {
   if ($("pipelineSelect").value) $("pipelineInput").value = $("pipelineSelect").value;

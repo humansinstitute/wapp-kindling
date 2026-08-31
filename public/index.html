@@ -8,12 +8,47 @@
   </head>
   <body>
     <main id="app">
+      <aside class="appNav hidden" id="appNav">
+        <div class="appNavTop">
+          <div class="appNavBrand">
+            <img class="appNavMark" src="/assets/kindling-campfire-logo.png" alt="" />
+            <span class="appNavBrandName">Kindling</span>
+          </div>
+          <button class="appNavCollapse" id="appNavCollapse" type="button" title="Collapse" aria-label="Collapse sidebar">⟨</button>
+        </div>
+        <nav class="appNavList" id="appNavList"></nav>
+        <div class="appNavUser" id="appNavUser"></div>
+      </aside>
+
       <section class="login" id="login">
         <div>
           <h1>Kindling</h1>
           <p>Sign in with Nostr to build service offerings, scan target lists, and draft outreach with Wingman Autopilot pipelines.</p>
         </div>
-        <button id="loginButton">Sign in with Nostr</button>
+
+        <div class="loginMethod" id="loginExtension">
+          <button id="loginButton">Sign in with Nostr</button>
+          <button type="button" class="loginLink" id="showNsecLogin">No extension? Paste an NSEC key</button>
+        </div>
+
+        <form class="loginMethod hidden" id="loginNsec" autocomplete="off">
+          <label class="nsecLabel" for="nsecInput">Nostr private key (nsec)</label>
+          <input
+            id="nsecInput"
+            type="password"
+            name="nsec"
+            placeholder="nsec1…"
+            autocomplete="current-password"
+            autocapitalize="off"
+            autocorrect="off"
+            spellcheck="false"
+          />
+          <button type="submit" id="nsecLoginButton">Sign in with NSEC</button>
+          <p class="nsecNote">Your key is used only in this browser tab to sign the login challenge and pipeline authorization. It is never saved by Kindling or sent to the server.</p>
+          <p class="nsecNote nsecHttpsNote hidden" id="nsecHttpsNote">NSEC login requires a secure (HTTPS) connection.</p>
+          <button type="button" class="loginLink" id="showExtensionLogin">Use a browser extension instead</button>
+        </form>
+
         <p class="error" id="loginError"></p>
       </section>
 
@@ -35,13 +70,30 @@
             <button id="homeResearchButton" type="button"><span>06</span><strong>Research Desk</strong></button>
           </div>
           <div class="homeUtilities">
+            <button id="homeFocusButton" type="button">Call list</button>
             <button id="homeSettingsButton" type="button">Settings</button>
             <button id="homeChatButton" type="button">Chat</button>
           </div>
         </div>
       </section>
 
+      <section class="focus hidden" id="focus">
+        <div class="focusInner" id="focusBody"></div>
+      </section>
+
+      <section class="servicePage hidden" id="servicePage"></section>
+
+      <section class="companyListPage hidden" id="companyListPage"></section>
+
+      <section class="resultsPage hidden" id="resultsPage"></section>
+
+      <section class="alertsPage hidden" id="alertsPage"></section>
+
       <section class="actPage hidden" id="actPage"></section>
+
+      <div class="reasonModalRoot hidden" id="reasonModalRoot"></div>
+
+      <div class="companyModalRoot" id="companyModalRoot"></div>
 
       <section class="settingsPage hidden" id="settingsPage">
         <div class="settingsFrame">
@@ -57,9 +109,17 @@
                 <input id="autopilotUrlInput" type="url" placeholder="http://127.0.0.1:3256" />
               </label>
               <label>
+                <span>Public origin (webhook callbacks)</span>
+                <input id="publicOriginInput" type="url" placeholder="http://localhost:43000" />
+              </label>
+              <label>
                 <span>Default chat pipeline</span>
                 <select id="pipelineSelect"></select>
                 <input id="pipelineInput" type="text" placeholder="chat-wapp-agent-response" />
+              </label>
+              <label>
+                <span>Snooze days (call list)</span>
+                <input id="snoozeDaysInput" type="number" min="1" max="365" step="1" placeholder="1" />
               </label>
               <div class="settingsRoleHeader">
                 <h3>Kindling pipeline roles</h3>
@@ -72,6 +132,17 @@
               </div>
               <div class="settingsActions">
                 <button id="researchDeskButton" type="button">Research Desk</button>
+              </div>
+            </div>
+            <div class="settingsPanel" id="automationPanel">
+              <div class="settingsRoleHeader">
+                <h2>Automation</h2>
+                <p id="automationStatus">Loading…</p>
+              </div>
+              <p class="schedulerHelp">The single control for scheduled pipelines. Turn on the master switch, then enable each pipeline. No background scripts — everything runs from here.</p>
+              <div id="automationBody"></div>
+              <div class="settingsActions">
+                <button id="saveAutomationButton" type="button">Save automation</button>
               </div>
             </div>
             <div class="settingsPanel">
@@ -95,30 +166,48 @@
       </section>
 
       <section class="shell hidden" id="shell">
-        <aside class="sidebar">
-          <div class="sidebarTop">
-            <div>
-              <div class="eyebrow">Signed in</div>
-              <div class="npub" id="npub"></div>
+        <div class="chatScreen">
+          <header class="chatScreenHeader">
+            <div class="chatScreenTitle">
+              <span class="eyebrow"><span class="athenaSpark">✦</span> Ask Athena</span>
+              <h1 id="chatTitle">New chat</h1>
             </div>
-            <button id="logoutButton" title="Sign out">Sign out</button>
-          </div>
-          <button class="newChat" id="newChatButton">New chat</button>
-          <nav id="chatList" class="chatList"></nav>
-        </aside>
-
-        <section class="chatPane">
-          <header class="chatHeader">
-            <h2 id="chatTitle">New chat</h2>
-            <div class="status" id="status">Ready</div>
+            <div class="chatScreenActions">
+              <span class="status" id="status">Ready</span>
+              <button class="newChat" id="newChatButton" type="button">+ New chat</button>
+            </div>
           </header>
+          <nav class="chatTabs" id="chatTabs" aria-label="Previous chats"></nav>
           <div class="messages" id="messages"></div>
           <form class="composer" id="composer">
-            <textarea id="messageInput" rows="1" placeholder="Send a message"></textarea>
+            <textarea id="messageInput" rows="1" placeholder="Ask Athena anything — read-only"></textarea>
             <button id="sendButton" type="submit">Send</button>
           </form>
-        </section>
+        </div>
       </section>
+
+      <div class="athena hidden" id="athena">
+        <section class="athenaPanel hidden" id="athenaPanel" aria-label="Ask Athena">
+          <header class="athenaHeader">
+            <div class="athenaTitle"><span class="athenaSpark">✦</span> Ask Athena</div>
+            <div class="athenaHeaderActions">
+              <button id="athenaPin" type="button" title="Pin to side" aria-label="Pin to side">⇥</button>
+              <button id="athenaExpand" type="button" title="Open full Chats view" aria-label="Open full Chats view">⤢</button>
+              <button id="athenaClose" type="button" title="Close" aria-label="Close">✕</button>
+            </div>
+          </header>
+          <div class="athenaTabs" id="athenaTabs"></div>
+          <div class="athenaMessages" id="athenaMessages"></div>
+          <div class="athenaStatus" id="athenaStatus">Ready</div>
+          <form class="athenaComposer" id="athenaComposer">
+            <textarea id="athenaInput" rows="1" placeholder="Ask Athena anything — read-only"></textarea>
+            <button id="athenaSend" type="submit">Send</button>
+          </form>
+        </section>
+        <button class="athenaLauncher" id="athenaLauncher" type="button" aria-label="Ask Athena">
+          <span class="athenaLauncherIcon">✦</span><span class="athenaLauncherText">Ask Athena</span>
+        </button>
+      </div>
     </main>
     <script type="module" src="/app.js"></script>
   </body>

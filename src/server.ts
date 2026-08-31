@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
@@ -18,6 +19,18 @@ import {
   verifyNip98Request,
 } from "./auth.ts";
 import { APP_NPUB, IS_TOWER_DB_RUNTIME, PIPELINE_NAME, PORT, PUBLIC_ORIGIN, WINGMAN_URL, isTowerDbRuntime } from "./config.ts";
+import { KINDLING_COMPANY_SOURCE } from "./config.ts";
+import {
+  cachedCanonicalTarget,
+  CanonicalApiError,
+  canonicalApiStatus,
+  CanonicalSyncConflictError,
+  continueCanonicalSync,
+  prepareCanonicalSync,
+  prepareCanonicalTargetRequest,
+  refreshCanonicalTarget,
+  type CanonicalTarget,
+} from "./canonical-api.ts";
 import {
   acquireSchedulerLock,
   companyDataRingFilterValues,
@@ -31,14 +44,25 @@ import {
   mapMessage,
   normalizeCompanyDataRing,
   normalizeCompanyExecutionStatus,
+  normalizeNameKey,
+  normalizeWebsiteKey,
   releaseSchedulerLock,
+  resolveDuplicateGroupForCompany,
   setSetting,
   updateSchedulerSettings,
+  createAlertFeed,
+  listAlertFeeds,
+  getAlertFeed,
+  updateAlertFeed,
+  deleteAlertFeed,
+  listAlertHits,
   type AccessRole,
   type AppSettings,
   type Message,
+  type SchedulerSettings,
   type SchedulerSettingsPatch,
 } from "./db.ts";
+import { runAutomatedAlertLoop } from "./alerts.ts";
 import { buildPipelineTriggerRequest, startPreparedChatPipeline, type PipelineTriggerRequest } from "./pipeline.ts";
 import { initializeTowerDbRuntime } from "./tower-db.ts";
 import {
@@ -69,6 +93,7 @@ import {
   towerStoreEnabled,
   type TowerTargetSegment,
 } from "./tower-store.ts";
+import { splitPitchVariants } from "./outreach-variants.ts";
 
 const PUBLIC_DIR = join(import.meta.dir, "..", "public");
 const COMPANY_LIST_LIMIT = 500;
@@ -1180,10 +1205,36 @@ function toServerAutopilotUrl(value: string) {
   return value.replace(/\/$/, "");
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+function startOfDay(ts: number): number {
+  const d = new Date(ts);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+}
+
+// How many days a snooze pushes a call-list item out for. Configurable in
+// Settings; defaults to 1 (reappears tomorrow morning).
+function getSnoozeDays(): number {
+  const raw = Number(getSetting("snoozeDays"));
+  return Number.isFinite(raw) && raw >= 1 ? Math.min(365, Math.floor(raw)) : 1;
+}
+
+// The WApp's own public origin, used to build pipeline webhook/write-back URLs
+// that Autopilot calls AFTER a run finishes. Prefer an explicit config (DB
+// setting, then env) over the localhost:PORT fallback — the fallback is fragile
+// (a stray server process with the wrong PORT, a changed port, or off-box
+// pipeline execution all break callbacks). A stable public URL wins.
+function configuredPublicOrigin(): string {
+  return (getSetting("publicOrigin") || PUBLIC_ORIGIN || "").replace(/\/$/, "");
+}
+
 function getAppSettings(): AppSettings {
   return {
     autopilotUrl: (getSetting("autopilotUrl") || WINGMAN_URL || "").replace(/\/$/, ""),
+    publicOrigin: configuredPublicOrigin(),
     defaultPipeline: getSetting("defaultPipeline") || PIPELINE_NAME,
+    snoozeDays: getSnoozeDays(),
   };
 }
 
@@ -1262,6 +1313,7 @@ function mapCompany(row: Record<string, unknown>) {
     profile: jsonParse<Record<string, unknown>>(row.profile_json, {}),
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
+    companySource: KINDLING_COMPANY_SOURCE,
   };
 }
 
@@ -1276,8 +1328,11 @@ function mapCompanyListItem(row: Record<string, unknown>) {
     duplicateStatus: String(row.duplicate_status),
     enrichmentStatus: normalizeCompanyExecutionStatus(row.enrichment_status),
     confidence: Number(row.confidence ?? 0),
+    fitScore: row.fit_score == null ? null : Math.round(Number(row.fit_score)),
+    fitBand: row.fit_score == null ? null : scoreBand(Number(row.fit_score)),
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
+    companySource: KINDLING_COMPANY_SOURCE,
   };
 }
 
@@ -1733,6 +1788,12 @@ function schedulerSettingsPatchFromBody(body: Record<string, unknown>): Schedule
   if (body.cooldowns !== undefined || body.cooldowns_json !== undefined) {
     patch.cooldowns = parseJsonObjectField(body.cooldowns ?? body.cooldowns_json, {}) as Record<string, number>;
   }
+  if (body.agents !== undefined || body.agents_json !== undefined) {
+    patch.agents = parseJsonObjectField(body.agents ?? body.agents_json, {}) as Record<string, string>;
+  }
+  if (body.models !== undefined || body.models_json !== undefined) {
+    patch.models = parseJsonObjectField(body.models ?? body.models_json, {}) as Record<string, string>;
+  }
   return patch;
 }
 
@@ -1763,8 +1824,37 @@ type SchedulerRoleEvaluation = {
 };
 
 function scheduledPipelineModelForRole(roleKey: string) {
+  // Settings-page Automation card wins; fall back to env for backwards compat.
+  const configured = getSchedulerSettings().models?.[roleKey];
+  if (configured) return configured;
   if (roleKey === "draft_outreach") return SCHEDULED_OUTREACH_PIPELINE_MODEL;
   return SCHEDULED_PIPELINE_MODEL;
+}
+
+function scheduledPipelineAgentForRole(roleKey: string) {
+  return getSchedulerSettings().agents?.[roleKey] || SCHEDULED_PIPELINE_AGENT;
+}
+
+// Which pipeline roles each scheduler action drives. Toggling an action in the
+// Automation card also enables/disables these roles, so there is one switch.
+const SCHEDULER_ACTION_ROLES: Record<string, string[]> = {
+  acquisition: ["scan_target_list"],
+  enrichment: ["enrich_company", "enrich_industry_segment"],
+  scoring: ["score_company_service_fit"],
+  outreach: ["draft_outreach"],
+};
+
+function syncPipelineRolesToScheduler(settings: SchedulerSettings, now = Date.now()) {
+  const actionEnabled: Record<string, boolean> = {
+    acquisition: settings.acquisitionEnabled,
+    enrichment: settings.enrichmentEnabled,
+    scoring: settings.scoringEnabled,
+    outreach: settings.outreachEnabled,
+  };
+  const setRole = db.query("UPDATE pipeline_roles SET enabled = ?1, updated_at = ?2 WHERE role_key = ?3");
+  for (const [action, roleKeys] of Object.entries(SCHEDULER_ACTION_ROLES)) {
+    for (const roleKey of roleKeys) setRole.run(actionEnabled[action] ? 1 : 0, now, roleKey);
+  }
 }
 
 type SchedulerDryRunDecision = {
@@ -1863,11 +1953,12 @@ function recentSchedulerLaunch(action: SchedulerActionKey, roleKey: string, cool
 }
 
 function scheduledKindlingOrigin() {
-  if (PUBLIC_ORIGIN) return PUBLIC_ORIGIN;
+  const configured = configuredPublicOrigin();
+  if (configured) return configured;
   const testDbPath = process.env.CHAT_WAPP_DB_PATH || "";
   const runningContractTests = /kindling-api-|test\.sqlite$/.test(testDbPath);
   if (PORT === 3256 && !runningContractTests) {
-    throw new Error("CHAT_WAPP_PUBLIC_ORIGIN must point at the Kindling WApp origin before scheduled automation can start");
+    throw new Error("Set the WApp public origin (Settings publicOrigin or CHAT_WAPP_PUBLIC_ORIGIN) before scheduled automation can start");
   }
   return `http://localhost:${PORT}`;
 }
@@ -2000,13 +2091,20 @@ function schedulerCompanyCounts() {
   const row = db.query(`
     SELECT
       COUNT(*) AS total_count,
-      SUM(CASE WHEN data_ring != 'parked' THEN 1 ELSE 0 END) AS active_pool_count,
+      -- Gate counts drive acquisition/enrichment replenishment, so they must
+      -- count only ACTIVE fuel. 'parked'/'processed' are dead (never come back
+      -- on their own) and 'contacted' is already being worked, so none of them
+      -- count toward the "do we have enough" floors. As targets get worked or
+      -- rejected these counts drop, which is what makes the funnel self-refill.
+      SUM(CASE WHEN data_ring NOT IN ('parked', 'processed') THEN 1 ELSE 0 END) AS active_pool_count,
       SUM(CASE
+        WHEN data_ring IN ('parked', 'processed', 'contacted') THEN 0
         WHEN enrichment_status = 'complete'
-          OR data_ring IN ('enhanced', 'ranked', 'scored', 'outreach_ready', 'outreach', 'contacted')
+          OR data_ring IN ('enhanced', 'ranked', 'scored', 'outreach_ready', 'outreach')
         THEN 1 ELSE 0 END) AS enriched_count,
       SUM(CASE
-        WHEN EXISTS (SELECT 1 FROM service_fit_assessments sfa WHERE sfa.company_id = companies.id)
+        WHEN data_ring NOT IN ('parked', 'processed', 'contacted')
+          AND EXISTS (SELECT 1 FROM service_fit_assessments sfa WHERE sfa.company_id = companies.id)
         THEN 1 ELSE 0 END) AS scored_count,
       SUM(CASE
         WHEN data_ring IN ('outreach_ready', 'outreach', 'contacted')
@@ -2062,7 +2160,10 @@ function acquisitionSegmentGeographyKey(segmentId: string | null, geographyText:
 }
 
 function countAcquisitionCoverageCompanies(filters: { segmentId?: string | null; geographyText?: string | null } = {}): AcquisitionCoverageCounts {
-  const clauses = ["c.data_ring != 'parked'"];
+  // 'processed' (rejected/dropped) is dead like 'parked' — exclude it from the
+  // acquisition pool so rejected companies leave a real deficit and the funnel
+  // acquires fresh replacements.
+  const clauses = ["c.data_ring NOT IN ('parked', 'processed')"];
   const values: string[] = [];
   const segmentId = String(filters.segmentId ?? "").trim();
   if (segmentId) {
@@ -2130,6 +2231,9 @@ function countAcquisitionCoverageCompanies(filters: { segmentId?: string | null;
     enriched: Number(row?.enriched_count ?? 0),
     scored: Number(row?.scored_count ?? 0),
     outreachReady: Number(row?.outreach_ready_count ?? 0),
+    // processed is excluded from the acquisition pool by the WHERE clause above,
+    // so it is always 0 here; the dashboard reports it via countCoverageCompanies.
+    processed: 0,
     parked: Number(row?.parked_count ?? 0),
     stale: Number(row?.stale_count ?? 0),
   };
@@ -2357,7 +2461,7 @@ function selectEnrichmentDryRun(settings = getSchedulerSettings()) {
       AND wq.status IN ('queued', 'failed')
       AND (wq.next_run_after_at IS NULL OR wq.next_run_after_at <= ?1)
       AND COALESCE(wq.locked_by_run_id, '') = ''
-      AND c.data_ring NOT IN ('parked', 'contacted')
+      AND c.data_ring NOT IN ('parked', 'contacted', 'processed')
     ORDER BY CASE WHEN wq.status = 'queued' THEN 0 ELSE 1 END,
       wq.priority ASC,
       COALESCE(wq.next_run_after_at, 0) ASC,
@@ -2395,7 +2499,7 @@ function selectEnrichmentDryRun(settings = getSchedulerSettings()) {
     LEFT JOIN target_segments ts ON ts.id = cseg.segment_id
     LEFT JOIN sources s ON s.company_id = c.id
     WHERE c.enrichment_status IN ('not_started', 'failed')
-      AND c.data_ring NOT IN ('parked', 'contacted')
+      AND c.data_ring NOT IN ('parked', 'contacted', 'processed')
       AND NOT EXISTS (
         SELECT 1
         FROM enrichment_requests er
@@ -2429,6 +2533,50 @@ function selectEnrichmentDryRun(settings = getSchedulerSettings()) {
   };
 }
 
+// Alert-origin enrichment (requestKind = 'alert') is time-sensitive: a fresh
+// hiring signal should enrich immediately, so these queue items are exempt from
+// the enrichedFloor gate that throttles routine batch enrichment. Returns the
+// same shape as selectEnrichmentDryRun's queued branch, or null when none due.
+function selectAlertEnrichmentDryRun(now = Date.now()) {
+  const queued = db.query(`
+    SELECT wq.*, c.id AS company_id, c.name, c.location, c.industry, c.website, c.data_ring,
+      c.duplicate_status, c.enrichment_status, c.confidence, c.profile_json, c.created_at AS company_created_at,
+      c.updated_at AS company_updated_at
+    FROM work_queue wq
+    JOIN companies c ON c.id = wq.target_id AND wq.target_type = 'company'
+    WHERE wq.kind = 'company_enrichment'
+      AND wq.status IN ('queued', 'failed')
+      AND json_extract(wq.context_json, '$.requestKind') = 'alert'
+      AND (wq.next_run_after_at IS NULL OR wq.next_run_after_at <= ?1)
+      AND COALESCE(wq.locked_by_run_id, '') = ''
+      AND c.data_ring NOT IN ('parked', 'contacted', 'processed')
+    ORDER BY wq.priority ASC, COALESCE(wq.next_run_after_at, 0) ASC, wq.updated_at ASC, lower(c.name) ASC
+    LIMIT 1
+  `).get(now) as Record<string, unknown> | null;
+  if (!queued) return { item: null, reason: "no due alert-origin enrichment work" };
+  return {
+    item: {
+      kind: "work_queue",
+      queueItem: mapWorkQueueItem(queued),
+      company: mapCompany({
+        id: queued.company_id,
+        name: queued.name,
+        location: queued.location,
+        industry: queued.industry,
+        website: queued.website,
+        data_ring: queued.data_ring,
+        duplicate_status: queued.duplicate_status,
+        enrichment_status: queued.enrichment_status,
+        confidence: queued.confidence,
+        profile_json: queued.profile_json,
+        created_at: queued.company_created_at,
+        updated_at: queued.company_updated_at,
+      }),
+    },
+    reason: `alert-origin enrichment ${String(queued.id)} is due for ${String(queued.name)} (floor-exempt)`,
+  };
+}
+
 function selectScoringDryRun(settings = getSchedulerSettings()) {
   const counts = schedulerCompanyCounts();
   const activeScoring = listActiveScoringOfferings();
@@ -2459,7 +2607,8 @@ function selectScoringCandidateRows(marketProfileVersionId: string, offeringCoun
     LEFT JOIN company_segments cseg ON cseg.company_id = c.id
     LEFT JOIN target_segments ts ON ts.id = cseg.segment_id
     WHERE (c.enrichment_status = 'complete' OR c.data_ring IN ('enhanced', 'ranked', 'stale'))
-      AND c.data_ring NOT IN ('scored', 'outreach_ready', 'outreach', 'contacted', 'parked')
+      AND c.data_ring NOT IN ('scored', 'outreach_ready', 'outreach', 'contacted', 'parked', 'processed')
+      AND c.duplicate_status != 'duplicate'
       AND (
         SELECT COUNT(DISTINCT sfa.service_offering_id)
         FROM service_fit_assessments sfa
@@ -2506,7 +2655,8 @@ function selectOutreachDryRun(settings = getSchedulerSettings()) {
       FROM target_list_items tli
       JOIN companies c ON c.id = tli.company_id
       WHERE tli.target_list_run_id = ?1
-        AND c.data_ring NOT IN ('contacted', 'parked')
+        AND c.data_ring NOT IN ('contacted', 'parked', 'processed')
+        AND EXISTS (SELECT 1 FROM service_fit_assessments sfa WHERE sfa.company_id = tli.company_id)
         AND NOT EXISTS (SELECT 1 FROM outreach_drafts od WHERE od.company_id = tli.company_id)
         AND NOT EXISTS (
           SELECT 1
@@ -2550,15 +2700,12 @@ function selectOutreachDryRun(settings = getSchedulerSettings()) {
     }
   }
   const row = db.query(`
-    SELECT c.*, tr.id AS ranking_id, tr.rank AS ranking_rank, tr.reason AS ranking_reason
+    SELECT c.*
     FROM companies c
-    LEFT JOIN target_rankings tr ON tr.company_id = c.id
     WHERE EXISTS (SELECT 1 FROM service_fit_assessments sfa WHERE sfa.company_id = c.id)
-      AND c.data_ring NOT IN ('contacted', 'parked')
+      AND c.data_ring NOT IN ('contacted', 'parked', 'processed')
       AND NOT EXISTS (SELECT 1 FROM outreach_drafts od WHERE od.company_id = c.id)
-    ORDER BY CASE WHEN tr.rank IS NULL THEN 1 ELSE 0 END ASC,
-      tr.rank ASC,
-      c.confidence DESC,
+    ORDER BY c.confidence DESC,
       c.updated_at ASC,
       lower(c.name) ASC
     LIMIT 1
@@ -2568,11 +2715,6 @@ function selectOutreachDryRun(settings = getSchedulerSettings()) {
     item: {
       kind: "company",
       company: mapCompany(row),
-      ranking: row.ranking_id ? {
-        id: String(row.ranking_id),
-        rank: Number(row.ranking_rank ?? 0),
-        reason: String(row.ranking_reason ?? ""),
-      } : null,
     },
     reason: `outreach-ready target is ${counts.outreachReady}/${settings.outreachTargetCount}; company ${String(row.name)} is ready for outreach drafting`,
   };
@@ -3690,14 +3832,6 @@ const KINDLING_IMPORT_TABLES = {
     "created_at",
     "updated_at",
   ],
-  target_rankings: [
-    "id",
-    "company_id",
-    "rank",
-    "reason",
-    "score_json",
-    "created_at",
-  ],
   ranking_runs: [
     "id",
     "ranking_type",
@@ -3927,7 +4061,6 @@ function importKindlingData(body: Record<string, unknown>) {
     "scan_strategy_attempts",
     "work_queue",
     "enrichment_requests",
-    "target_rankings",
     "ranking_runs",
     "ranking_items",
     "target_list_runs",
@@ -4008,6 +4141,11 @@ const defaultScoringOfferingTemplates = [
   { key: "reducing_owner_dependence", name: "Reducing owner dependence", variantKey: "reducing_owner_dependence", kind: "positioning_variant" },
 ] as const;
 
+function primaryOfferingKeyFromTitle(title: string) {
+  if (/^adapt\s+lumia\b/i.test(title)) return "adapt_lumia";
+  return slugKey(title);
+}
+
 function slugKey(value: unknown) {
   const slug = String(value ?? "")
     .trim()
@@ -4025,6 +4163,31 @@ function readableName(value: unknown, fallback: string) {
 
 function valuesArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : [];
+}
+
+function primaryServiceOfferingFromProfile(structured: Record<string, unknown>): ExtractedServiceOffering | null {
+  const title = readableName(
+    structured.serviceOfferingName
+      ?? structured.offeringName
+      ?? structured.title
+      ?? structured.name,
+    "",
+  );
+  const services = valuesArray(structured.services);
+  if (!title || services.length === 0) return null;
+  return {
+    key: slugKey(structured.serviceOfferingKey ?? structured.offeringKey ?? primaryOfferingKeyFromTitle(title)),
+    name: title,
+    variantKey: "",
+    structured: {
+      ...structured,
+      kind: "primary_service_offering",
+      source: "market_profile_structured",
+      scoringUnit: "company_to_primary_offer",
+      services,
+    },
+    status: "active",
+  };
 }
 
 type ExtractedServiceOffering = {
@@ -4105,6 +4268,9 @@ function addOfferingValue(
 }
 
 function extractServiceOfferingsFromProfile(structured: Record<string, unknown>): ExtractedServiceOffering[] {
+  const primaryOffering = primaryServiceOfferingFromProfile(structured);
+  if (primaryOffering) return [primaryOffering];
+
   const offerings = new Map<string, ExtractedServiceOffering>();
   for (const key of ["services", "serviceLines", "serviceOfferings", "offerings"]) {
     for (const value of valuesArray(structured[key])) addOfferingValue(offerings, value, "service_line");
@@ -4112,13 +4278,15 @@ function extractServiceOfferingsFromProfile(structured: Record<string, unknown>)
   for (const key of ["variants", "serviceVariants", "positioningVariants", "scoringVariants"]) {
     for (const value of valuesArray(structured[key])) addOfferingValue(offerings, value, "positioning_variant");
   }
-  for (const template of defaultScoringOfferingTemplates) {
-    addExtractedOffering(offerings, {
-      key: template.key,
-      name: template.name,
-      variantKey: template.variantKey,
-      structured: { kind: template.kind, source: "default_scoring_catalog" },
-    });
+  if (offerings.size === 0) {
+    for (const template of defaultScoringOfferingTemplates) {
+      addExtractedOffering(offerings, {
+        key: template.key,
+        name: template.name,
+        variantKey: template.variantKey,
+        structured: { kind: template.kind, source: "default_scoring_catalog" },
+      });
+    }
   }
   return [...offerings.values()];
 }
@@ -4156,6 +4324,30 @@ function replaceServiceOfferingsForMarketProfileVersion(marketProfileVersionId: 
     );
   }
   return offerings;
+}
+
+// Single source of truth for outreach voice: the same guide the scheduled
+// "Update Outreach" review session uses. Injected into draft_outreach pipeline
+// context so the drafting agents write in-voice at source (not corrected after).
+let outreachVoiceGuideCache: { text: string; at: number } | null = null;
+function readOutreachVoiceGuide(): string {
+  const now = Date.now();
+  if (outreachVoiceGuideCache && now - outreachVoiceGuideCache.at < 5 * 60 * 1000) {
+    return outreachVoiceGuideCache.text;
+  }
+  let text = "";
+  try {
+    const guide = readFileSync(join(process.cwd(), "docs/outreach-voice-guide.md"), "utf8");
+    let examples = "";
+    try {
+      examples = readFileSync(join(process.cwd(), "docs/Outreach-emails.md"), "utf8");
+    } catch { /* exemplars optional */ }
+    text = examples
+      ? `${guide}\n\n---\n\n# Real example emails (voice reference, do not copy verbatim)\n\n${examples}`
+      : guide;
+  } catch { /* guide optional; pipeline falls back to profile outreachVoice */ }
+  outreachVoiceGuideCache = { text, at: now };
+  return text;
 }
 
 function mapServiceOffering(row: Record<string, unknown>) {
@@ -4428,7 +4620,10 @@ function persistServiceFitAssessment(input: { body: Record<string, unknown>; run
     JSON.stringify(assessmentJson),
     now,
   );
-  db.query("UPDATE companies SET data_ring = 'scored', updated_at = ?1 WHERE id = ?2").run(now, payload.companyId);
+  // Never resurrect a terminal company into 'scored'. A late/duplicate scoring
+  // callback for a company we've already contacted, processed (rejected) or
+  // parked must not pull it back onto the active deck.
+  db.query("UPDATE companies SET data_ring = 'scored', updated_at = ?1 WHERE id = ?2 AND data_ring NOT IN ('contacted', 'processed', 'parked')").run(now, payload.companyId);
   db.query("UPDATE work_queue SET status = 'complete', error = '', updated_at = ?1 WHERE id = ?2 AND kind = 'service_fit_assessment'")
     .run(now, String(input.run.local_request_id ?? ""));
   if (!existing) {
@@ -4514,6 +4709,68 @@ function recordActivity(targetType: string, targetId: string, actor: string, act
   return id;
 }
 
+// ---- Per-company reviewer feedback ---------------------------------------
+
+const COMPANY_VERDICTS = ["good", "bad"] as const;
+
+// Structured issue labels a reviewer can attach to a company. Stable keys are
+// stored; labels are display-only.
+const COMPANY_ISSUE_LABELS = [
+  { key: "wrong_fit", label: "Wrong fit" },
+  { key: "missing_decision_maker", label: "Missing decision maker" },
+  { key: "duplicate", label: "Duplicate" },
+  { key: "bad_website", label: "Bad website / no website" },
+  { key: "bad_outreach", label: "Bad outreach" },
+  { key: "wrong_industry", label: "Wrong industry" },
+] as const;
+const COMPANY_ISSUE_LABEL_KEYS = new Set(COMPANY_ISSUE_LABELS.map((l) => l.key));
+
+function normalizeVerdict(value: unknown): string | null {
+  const v = String(value ?? "").trim().toLowerCase();
+  return (COMPANY_VERDICTS as readonly string[]).includes(v) ? v : null;
+}
+
+function normalizeIssueLabels(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const seen = new Set<string>();
+  for (const raw of value) {
+    const key = String(raw ?? "").trim();
+    if (COMPANY_ISSUE_LABEL_KEYS.has(key as never)) seen.add(key);
+  }
+  return [...seen];
+}
+
+function mapCompanyFeedback(row: Record<string, unknown> | null) {
+  if (!row) return null;
+  return {
+    companyId: String(row.company_id),
+    verdict: row.verdict == null ? null : String(row.verdict),
+    labels: jsonParse<string[]>(row.labels_json, []),
+    note: String(row.note ?? ""),
+    actor: String(row.actor ?? ""),
+    createdAt: Number(row.created_at ?? 0),
+    updatedAt: Number(row.updated_at ?? 0),
+  };
+}
+
+function getCompanyFeedback(companyId: string) {
+  return mapCompanyFeedback(db.query("SELECT * FROM company_feedback WHERE company_id = ?1").get(companyId) as Record<string, unknown> | null);
+}
+
+function upsertCompanyFeedback(companyId: string, patch: { verdict: string | null; labels: string[]; note: string; actor: string }) {
+  const now = Date.now();
+  const labelsJson = JSON.stringify(patch.labels);
+  const existing = db.query("SELECT company_id FROM company_feedback WHERE company_id = ?1").get(companyId);
+  if (existing) {
+    db.query("UPDATE company_feedback SET verdict = ?2, labels_json = ?3, note = ?4, actor = ?5, updated_at = ?6 WHERE company_id = ?1")
+      .run(companyId, patch.verdict, labelsJson, patch.note, patch.actor, now);
+  } else {
+    db.query("INSERT INTO company_feedback (company_id, verdict, labels_json, note, actor, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)")
+      .run(companyId, patch.verdict, labelsJson, patch.note, patch.actor, now);
+  }
+  return getCompanyFeedback(companyId);
+}
+
 function clampTargetCount(value: unknown): number {
   const parsed = Math.floor(Number(value));
   if (!Number.isFinite(parsed) || parsed < 1) return 25;
@@ -4587,6 +4844,7 @@ type CoverageCompanyCounts = {
   enriched: number;
   scored: number;
   outreachReady: number;
+  processed: number;
   parked: number;
   stale: number;
 };
@@ -4600,6 +4858,7 @@ function emptyCoverageCompanyCounts(): CoverageCompanyCounts {
     enriched: 0,
     scored: 0,
     outreachReady: 0,
+    processed: 0,
     parked: 0,
     stale: 0,
   };
@@ -4642,12 +4901,14 @@ function countCoverageCompanies(filters: { segmentId?: string | null; geographyT
         ELSE 0
       END) AS weak_source_count,
       SUM(CASE
+        WHEN c.data_ring IN ('parked', 'processed') THEN 0
         WHEN c.enrichment_status = 'complete'
           OR c.data_ring IN ('enhanced', 'agent', 'enriched', 'ranked', 'scored', 'outreach_ready', 'outreach', 'contacted')
         THEN 1 ELSE 0
       END) AS enriched_count,
       SUM(CASE
-        WHEN EXISTS (SELECT 1 FROM service_fit_assessments sfa WHERE sfa.company_id = c.id)
+        WHEN c.data_ring NOT IN ('parked', 'processed')
+          AND EXISTS (SELECT 1 FROM service_fit_assessments sfa WHERE sfa.company_id = c.id)
         THEN 1 ELSE 0
       END) AS scored_count,
       SUM(CASE
@@ -4655,6 +4916,7 @@ function countCoverageCompanies(filters: { segmentId?: string | null; geographyT
           OR EXISTS (SELECT 1 FROM outreach_drafts od WHERE od.company_id = c.id)
         THEN 1 ELSE 0
       END) AS outreach_ready_count,
+      SUM(CASE WHEN c.data_ring = 'processed' THEN 1 ELSE 0 END) AS processed_count,
       SUM(CASE WHEN c.data_ring = 'parked' THEN 1 ELSE 0 END) AS parked_count,
       SUM(CASE WHEN c.data_ring = 'stale' THEN 1 ELSE 0 END) AS stale_count
     FROM companies c
@@ -4668,6 +4930,7 @@ function countCoverageCompanies(filters: { segmentId?: string | null; geographyT
     enriched: Number(row?.enriched_count ?? 0),
     scored: Number(row?.scored_count ?? 0),
     outreachReady: Number(row?.outreach_ready_count ?? 0),
+    processed: Number(row?.processed_count ?? 0),
     parked: Number(row?.parked_count ?? 0),
     stale: Number(row?.stale_count ?? 0),
   };
@@ -4681,6 +4944,7 @@ function addCoverageCounts(target: CoverageCompanyCounts, source: CoverageCompan
   target.enriched += source.enriched;
   target.scored += source.scored;
   target.outreachReady += source.outreachReady;
+  target.processed += source.processed;
   target.parked += source.parked;
   target.stale += source.stale;
 }
@@ -5034,7 +5298,7 @@ const INDUSTRY_ENRICHMENT_STRATEGIES = [
   {
     key: "people_team",
     label: "People and team",
-    instruction: "Identify publicly listed employees, partners, team pages, leadership, or hiring signals without collecting private data.",
+    instruction: "Identify named decision-makers and senior leaders (directors, MD/CEO, owners, heads of practice or department). Crawl /our-people/, /team/, /about/ and individual staff profile pages. For each, capture name, title, and publicly-listed business contact details (direct email, phone/mobile, LinkedIn URL), and infer the email pattern (e.g. firstnamelastname@domain). Treat company-published business contact details as public; do not scrape gated or private personal data. Return a structured decisionMakers array on profilePatch plus one signal per decision-maker (signal_type 'decision_maker_contact').",
   },
   {
     key: "fit_signals",
@@ -5084,7 +5348,7 @@ function buildKindlingTriggerRequestWithSettings(input: {
         userPubkey: input.userPubkey,
         userNpub: input.userNpub,
         message: input.message,
-        agent: SCHEDULED_PIPELINE_AGENT,
+        agent: scheduledPipelineAgentForRole(input.roleKey),
         model: scheduledPipelineModelForRole(input.roleKey),
         workingDirectory: SCHEDULED_PIPELINE_WORKING_DIRECTORY,
         localContext: input.context,
@@ -5127,6 +5391,20 @@ function createKindlingRun(input: {
   return id;
 }
 
+// A company is "processed" (already engaged) once we've contacted or rejected
+// it — i.e. it sits in a terminal ring or carries any outreach_results row. The
+// Company List "hide processed" toggle removes these so the user can focus on
+// fresh, un-actioned targets (e.g. only high-fit companies not yet worked).
+function engagedExclusionClause(alias = "companies") {
+  return `${alias}.data_ring NOT IN ('processed', 'contacted')`
+    + ` AND NOT EXISTS (SELECT 1 FROM outreach_results o WHERE o.company_id = ${alias}.id)`;
+}
+
+function wantsHideProcessed(filters: URLSearchParams | null) {
+  const value = filters?.get("hideProcessed");
+  return value === "1" || value === "true";
+}
+
 function buildCompanyFilterQuery(filters: URLSearchParams | null = null) {
   const clauses: string[] = [];
   const values: string[] = [];
@@ -5135,6 +5413,9 @@ function buildCompanyFilterQuery(filters: URLSearchParams | null = null) {
     values.push(value);
     clauses.push(`${column} = ?${values.length}`);
   };
+  if (KINDLING_COMPANY_SOURCE === "canonical-api") {
+    clauses.push("EXISTS (SELECT 1 FROM canonical_company_cache canonical WHERE canonical.company_id = companies.id)");
+  }
   add("industry", filters?.get("industry") || null);
   add("location", filters?.get("location") || null);
   const dataRing = filters?.get("dataRing") || null;
@@ -5155,8 +5436,48 @@ function buildCompanyFilterQuery(filters: URLSearchParams | null = null) {
   }
   if (filters?.get("hasWebsite") === "yes") clauses.push("website IS NOT NULL AND website != ''");
   if (filters?.get("hasWebsite") === "no") clauses.push("(website IS NULL OR website = '')");
+  if (wantsHideProcessed(filters)) clauses.push(engagedExclusionClause("companies"));
+  // Fit band, derived from a company's BEST service-fit assessment score.
+  // "not_scored" = no assessment row at all.
+  const band = String(filters?.get("band") || "").toLowerCase();
+  const maxScoreExpr = "(SELECT MAX(sfa.score) FROM service_fit_assessments sfa WHERE sfa.company_id = companies.id)";
+  if (band === "high") clauses.push(`${maxScoreExpr} >= 75`);
+  else if (band === "medium") clauses.push(`${maxScoreExpr} >= 50 AND ${maxScoreExpr} < 75`);
+  else if (band === "low") clauses.push(`${maxScoreExpr} IS NOT NULL AND ${maxScoreExpr} < 50`);
+  else if (band === "not_scored" || band === "unscored") clauses.push(`${maxScoreExpr} IS NULL`);
   const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
   return { where, values };
+}
+
+function companyBandCounts(filters: URLSearchParams | null = null) {
+  // The band tab counts mirror the active "hide processed" toggle so, e.g., the
+  // High Fit tab shows the number of fresh un-actioned high-fit targets.
+  const countClauses = [];
+  if (KINDLING_COMPANY_SOURCE === "canonical-api") {
+    countClauses.push("EXISTS (SELECT 1 FROM canonical_company_cache canonical WHERE canonical.company_id = c.id)");
+  }
+  if (wantsHideProcessed(filters)) countClauses.push(engagedExclusionClause("c"));
+  const where = countClauses.length ? `WHERE ${countClauses.join(" AND ")}` : "";
+  const row = db.query(`
+    SELECT
+      SUM(CASE WHEN m.maxscore >= 75 THEN 1 ELSE 0 END) AS high,
+      SUM(CASE WHEN m.maxscore >= 50 AND m.maxscore < 75 THEN 1 ELSE 0 END) AS medium,
+      SUM(CASE WHEN m.maxscore IS NOT NULL AND m.maxscore < 50 THEN 1 ELSE 0 END) AS low,
+      SUM(CASE WHEN m.maxscore IS NULL THEN 1 ELSE 0 END) AS not_scored
+    FROM companies c
+    LEFT JOIN (
+      SELECT company_id, MAX(score) AS maxscore
+      FROM service_fit_assessments
+      GROUP BY company_id
+    ) m ON m.company_id = c.id
+    ${where}
+  `).get() as { high: number; medium: number; low: number; not_scored: number } | null;
+  return {
+    high: Number(row?.high ?? 0),
+    medium: Number(row?.medium ?? 0),
+    low: Number(row?.low ?? 0),
+    notScored: Number(row?.not_scored ?? 0),
+  };
 }
 
 function countCompanies(filters: URLSearchParams | null = null) {
@@ -5166,7 +5487,10 @@ function countCompanies(filters: URLSearchParams | null = null) {
 }
 
 function countEnrichedCompanies() {
-  const row = db.query("SELECT COUNT(*) AS count FROM companies WHERE enrichment_status = 'complete'").get() as { count: number } | null;
+  const canonicalClause = KINDLING_COMPANY_SOURCE === "canonical-api"
+    ? " AND EXISTS (SELECT 1 FROM canonical_company_cache canonical WHERE canonical.company_id = companies.id)"
+    : "";
+  const row = db.query(`SELECT COUNT(*) AS count FROM companies WHERE enrichment_status = 'complete'${canonicalClause}`).get() as { count: number } | null;
   return Number(row?.count ?? 0);
 }
 
@@ -5429,6 +5753,7 @@ const towerDefaultSchedulerSettings = {
   enrichmentEnabled: true,
   scoringEnabled: true,
   outreachEnabled: true,
+  alertsEnabled: false,
   targetPoolSize: 10000,
   enrichedFloor: 50,
   topTargetCount: 100,
@@ -5447,6 +5772,8 @@ const towerDefaultSchedulerSettings = {
     outreachMs: 10 * 60 * 1000,
     stalledSliceMs: 7 * 24 * 60 * 60 * 1000,
   },
+  agents: {},
+  models: {},
 };
 
 function towerSchedulerSettingsFromRow(row: Record<string, unknown> | null): ReturnType<typeof getSchedulerSettings> {
@@ -5460,6 +5787,7 @@ function towerSchedulerSettingsFromRow(row: Record<string, unknown> | null): Ret
     enrichmentEnabled: Boolean(Number(row.enrichment_enabled)),
     scoringEnabled: Boolean(Number(row.scoring_enabled)),
     outreachEnabled: Boolean(Number(row.outreach_enabled)),
+    alertsEnabled: Boolean(Number(row.alerts_enabled)),
     targetPoolSize: Number(row.target_pool_size),
     enrichedFloor: Number(row.enriched_floor),
     topTargetCount: Number(row.top_target_count),
@@ -5472,6 +5800,8 @@ function towerSchedulerSettingsFromRow(row: Record<string, unknown> | null): Ret
       ...towerDefaultSchedulerSettings.cooldowns,
       ...jsonParse<Record<string, number>>(row.cooldowns_json, {}),
     },
+    agents: jsonParse<Record<string, string>>(row.agents_json, {}),
+    models: jsonParse<Record<string, string>>(row.models_json, {}),
     createdAt: Number(row.created_at),
     updatedAt: Number(row.updated_at),
   };
@@ -5485,12 +5815,15 @@ function towerSchedulerSettingsRowFromSettings(settings: ReturnType<typeof getSc
     enrichment_enabled: settings.enrichmentEnabled ? 1 : 0,
     scoring_enabled: settings.scoringEnabled ? 1 : 0,
     outreach_enabled: settings.outreachEnabled ? 1 : 0,
+    alerts_enabled: settings.alertsEnabled ? 1 : 0,
     target_pool_size: settings.targetPoolSize,
     enriched_floor: settings.enrichedFloor,
     top_target_count: settings.topTargetCount,
     outreach_target_count: settings.outreachTargetCount,
     per_role_concurrency_json: JSON.stringify(settings.perRoleConcurrency),
     cooldowns_json: JSON.stringify(settings.cooldowns),
+    agents_json: JSON.stringify(settings.agents),
+    models_json: JSON.stringify(settings.models),
     created_at: settings.createdAt,
     updated_at: settings.updatedAt,
   };
@@ -6345,15 +6678,19 @@ function listCompanies(filters: URLSearchParams | null = null, options: { limit?
   const { where, values } = buildCompanyFilterQuery(filters);
   const limit = Math.max(1, Math.min(COMPANY_LIST_LIMIT, Math.floor(options.limit ?? COMPANY_LIST_LIMIT)));
   const offset = Math.max(0, Math.floor(options.offset ?? 0));
+  // Rank by best service-fit score first (highest fit at the top); companies
+  // with no assessment fall to the bottom in recently-updated order.
   const rows = db.query(`
-    SELECT *
+    SELECT
+      companies.*,
+      (SELECT MAX(sfa.score) FROM service_fit_assessments sfa WHERE sfa.company_id = companies.id) AS fit_score
     FROM companies
     ${where}
-    ORDER BY updated_at DESC, lower(name) ASC
+    ORDER BY (fit_score IS NULL) ASC, fit_score DESC, updated_at DESC, lower(name) ASC
     LIMIT ?${values.length + 1}
     OFFSET ?${values.length + 2}
   `).all(...values, limit, offset) as Record<string, unknown>[];
-  return rows.map(options.compact ? mapCompanyListItem : mapCompany);
+  return rows.map((row) => (options.compact ? mapCompanyListItem(row) : mapCompany(row)));
 }
 
 function normaliseIndustryBatchLimit(value: unknown): number {
@@ -6886,14 +7223,6 @@ function getDiscoveryJobDetail(jobId: string) {
   };
 }
 
-function upsertTargetRanking(companyId: string, reason: string, score: Record<string, unknown>) {
-  const count = Number((db.query("SELECT COUNT(*) AS count FROM target_rankings").get() as { count: number } | null)?.count ?? 0);
-  db.query(`
-    INSERT INTO target_rankings(id, company_id, rank, reason, score_json, created_at)
-    VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-  `).run(crypto.randomUUID(), companyId, count + 1, reason, JSON.stringify(score), Date.now());
-}
-
 function clampScore(value: number) {
   if (!Number.isFinite(value)) return 0;
   return Math.max(0, Math.min(1, value));
@@ -7143,7 +7472,8 @@ function initialRankingCandidateRows(limit: number | null = null) {
       ), 0) AS best_segment_confidence
     FROM companies c
     WHERE (c.data_ring IN ('enhanced', 'ranked') OR c.enrichment_status = 'complete')
-      AND c.data_ring NOT IN ('scored', 'outreach_ready', 'contacted', 'parked')
+      AND c.data_ring NOT IN ('scored', 'outreach_ready', 'contacted', 'parked', 'processed')
+      AND c.duplicate_status != 'duplicate'
     ORDER BY c.updated_at DESC, lower(c.name) ASC
     ${limitClause}
   `).all() as Record<string, unknown>[];
@@ -7236,16 +7566,11 @@ function runInitialRanking(input: { reason?: string; limit?: number | null; crea
       INSERT INTO ranking_items(id, ranking_run_id, company_id, rank, score, reason, score_json, created_at)
       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
     `);
-    const insertTargetRanking = db.query(`
-      INSERT INTO target_rankings(id, company_id, rank, reason, score_json, created_at)
-      VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-    `);
     const rankableCompanyIds: string[] = [];
     scored.forEach((item, index) => {
       const rank = index + 1;
       const scoreJson = { ...item.scoreJson, rankingRunId: runId, rankingType: "initial", rank };
       insertItem.run(crypto.randomUUID(), runId, item.companyId, rank, item.score, item.reason, JSON.stringify(scoreJson), now);
-      insertTargetRanking.run(crypto.randomUUID(), item.companyId, rank, item.reason, JSON.stringify(scoreJson), now);
       rankableCompanyIds.push(item.companyId);
     });
     if (rankableCompanyIds.length) {
@@ -7505,7 +7830,14 @@ function topTargetAssessmentRows() {
     FROM service_fit_assessments sfa
     JOIN companies c ON c.id = sfa.company_id
     JOIN service_offerings so ON so.id = sfa.service_offering_id
-    WHERE c.data_ring NOT IN ('contacted', 'parked')
+    WHERE c.data_ring NOT IN ('contacted', 'parked', 'processed')
+      -- Any company we've already engaged (contacted / rejected / meeting / on_deck
+      -- recirculation) is "Processed" and must drop off the active deck. Undo simply
+      -- deletes the outreach_results row, which returns the company here automatically.
+      AND NOT EXISTS (SELECT 1 FROM outreach_results o WHERE o.company_id = c.id)
+      -- Records marked as duplicates (same normalized name + website as the kept
+      -- record) never appear in a target list.
+      AND c.duplicate_status != 'duplicate'
     ORDER BY sfa.updated_at DESC, sfa.score DESC
   `).all() as Record<string, unknown>[];
 }
@@ -7554,10 +7886,39 @@ function mapTopTargetRun(row: Record<string, unknown>) {
   };
 }
 
+function scoreBand(score: number): "high" | "medium" | "low" {
+  if (score >= 75) return "high";
+  if (score >= 50) return "medium";
+  return "low";
+}
+
+function bandScoreClause(band: string | undefined, scoreExpr = "tli.score"): string {
+  if (band === "high") return `AND ${scoreExpr} >= 75`;
+  if (band === "medium") return `AND ${scoreExpr} >= 50 AND ${scoreExpr} < 75`;
+  if (band === "low") return `AND ${scoreExpr} < 50`;
+  return "";
+}
+
+function mapDecisionMaker(person: Record<string, unknown>) {
+  return {
+    name: String(person.name ?? "").trim(),
+    title: String(person.title ?? person.role ?? "").trim(),
+    phone: String(person.phone ?? person.mobile ?? "").trim(),
+    email: String(person.email ?? "").trim(),
+    linkedinUrl: String(person.linkedinUrl ?? person.linkedin ?? "").trim(),
+    sourceUrl: String(person.sourceUrl ?? person.source_url ?? "").trim(),
+    notes: String(person.notes ?? "").trim(),
+  };
+}
+
 function mapTopTargetItem(row: Record<string, unknown>) {
   const outreachDraftCount = Number(row.outreach_draft_count ?? 0);
   const scoreJson = jsonParse<Record<string, unknown>>(row.score_json, {});
   const assessmentScore = Number(row.assessment_score ?? scoreJson.assessmentScore ?? row.score ?? 0);
+  const companyProfile = row.profile_json ? jsonParse<Record<string, unknown>>(row.profile_json, {}) : {};
+  const decisionMakers = Array.isArray(companyProfile.decisionMakers)
+    ? (companyProfile.decisionMakers as Record<string, unknown>[]).map(mapDecisionMaker).filter((person) => person.name)
+    : [];
   return {
     id: String(row.id),
     targetListRunId: String(row.target_list_run_id),
@@ -7586,6 +7947,7 @@ function mapTopTargetItem(row: Record<string, unknown>) {
     scoreJson,
     hasOutreachDraft: outreachDraftCount > 0,
     outreachDraftCount,
+    decisionMakers,
     createdAt: Number(row.created_at ?? 0),
     company: row.name ? {
       id: String(row.company_id),
@@ -7595,18 +7957,12 @@ function mapTopTargetItem(row: Record<string, unknown>) {
       website: String(row.website ?? ""),
       dataRing: normalizeCompanyDataRing(row.data_ring),
       enrichmentStatus: normalizeCompanyExecutionStatus(row.enrichment_status),
+      decisionMakers,
     } : undefined,
   };
 }
 
-function topTargetBandSqlClause(band: string | undefined, scoreExpr = "sfa.score") {
-  if (band === "high") return `AND ${scoreExpr} >= 75`;
-  if (band === "medium") return `AND ${scoreExpr} >= 50 AND ${scoreExpr} < 75`;
-  if (band === "low") return `AND ${scoreExpr} < 50`;
-  return "";
-}
-
-function getTopTargetRunDetail(runId: string, limit = 100, offset = 0, options: { hasOutreachDraft?: boolean; band?: string } = {}) {
+function getTopTargetRunDetail(runId: string, limit = 100, offset = 0, options: { hasOutreachDraft?: boolean; band?: string; excludeOutreach?: boolean } = {}) {
   const run = db.query("SELECT * FROM target_list_runs WHERE id = ?1").get(runId) as Record<string, unknown> | null;
   if (!run) return null;
   const safeLimit = Math.max(1, Math.min(500, Math.floor(limit)));
@@ -7615,7 +7971,24 @@ function getTopTargetRunDetail(runId: string, limit = 100, offset = 0, options: 
   const draftFilter = options.hasOutreachDraft
     ? "AND EXISTS (SELECT 1 FROM outreach_drafts od WHERE od.company_id = tli.company_id)"
     : "";
-  const filters = `${draftFilter} ${topTargetBandSqlClause(band)}`;
+  // The On Deck call list hides companies already acted on (sent/dismissed), but
+  // keeps "on_deck" items (a no-answer call) so they recirculate — unless they're
+  // snoozed, in which case they stay hidden until snoozed_until passes.
+  const nowMs = Date.now();
+  const outreachFilter = options.excludeOutreach
+    ? `AND NOT EXISTS (
+         SELECT 1 FROM outreach_results r
+         WHERE r.company_id = tli.company_id
+           AND NOT (r.state = 'on_deck' AND (r.snoozed_until IS NULL OR r.snoozed_until <= ${nowMs}))
+       )`
+    : "";
+  // Push attempted (on_deck) items to the back of the deck so fresh targets lead.
+  const deckAttemptOrder = `COALESCE((SELECT CASE WHEN r.state = 'on_deck' THEN 1 ELSE 0 END FROM outreach_results r WHERE r.company_id = tli.company_id), 0) ASC,`;
+  // Band is derived from the service-fit assessment score (0-100), not the
+  // composite ranking score on target_list_items.
+  const filters = `${draftFilter} ${outreachFilter} ${bandScoreClause(band, "sfa.score")}`;
+  // Per-band counts over the whole run (ignore the draft sub-filter so tab
+  // labels stay stable as the draft toggle changes).
   const bandRow = db.query(`
     SELECT
       SUM(CASE WHEN sfa.score >= 75 THEN 1 ELSE 0 END) AS high,
@@ -7628,7 +8001,7 @@ function getTopTargetRunDetail(runId: string, limit = 100, offset = 0, options: 
   const total = db.query(`
     SELECT COUNT(*) AS count
     FROM target_list_items tli
-    LEFT JOIN service_fit_assessments sfa ON sfa.id = tli.service_fit_assessment_id
+    JOIN service_fit_assessments sfa ON sfa.id = tli.service_fit_assessment_id
     WHERE tli.target_list_run_id = ?1
       ${filters}
   `).get(runId) as { count: number } | null;
@@ -7643,13 +8016,14 @@ function getTopTargetRunDetail(runId: string, limit = 100, offset = 0, options: 
       c.website,
       c.data_ring,
       c.enrichment_status,
-      (SELECT COUNT(*) FROM outreach_drafts od WHERE od.company_id = tli.company_id) AS outreach_draft_count
+      c.profile_json,
+      (SELECT COUNT(DISTINCT COALESCE(od.source_run_id, od.id)) FROM outreach_drafts od WHERE od.company_id = tli.company_id) AS outreach_draft_count
     FROM target_list_items tli
-    LEFT JOIN service_fit_assessments sfa ON sfa.id = tli.service_fit_assessment_id
+    JOIN service_fit_assessments sfa ON sfa.id = tli.service_fit_assessment_id
     JOIN companies c ON c.id = tli.company_id
     WHERE tli.target_list_run_id = ?1
       ${filters}
-    ORDER BY tli.rank ASC
+    ORDER BY ${deckAttemptOrder} sfa.score DESC, tli.rank ASC
     LIMIT ?2
     OFFSET ?3
   `).all(runId, safeLimit, safeOffset) as Record<string, unknown>[];
@@ -7677,6 +8051,180 @@ function latestTopTargetRunId() {
     LIMIT 1
   `).get() as Record<string, unknown> | null;
   return run ? String(run.id) : null;
+}
+
+// ---- Outreach result tracking --------------------------------------------
+
+// Waiting rows older than this with no response surface under "No Response".
+const OUTREACH_NO_RESPONSE_MS = 7 * 24 * 60 * 60 * 1000;
+
+const OUTREACH_REASON_CATEGORIES = [
+  "not_appropriate",   // dismissed from call list — not worth contacting
+  "already_contacted", // already contacted outside Kindling
+  "poor_record",       // record quality too low — reason saved for a later cleanup job
+  "poor_feedback",   // negative feedback after we reached out
+  "said_no",         // they declined
+  "no_response",     // never replied
+  "other",
+] as const;
+
+function normalizeReasonCategory(value: unknown): string {
+  const v = String(value ?? "").trim().toLowerCase();
+  return (OUTREACH_REASON_CATEGORIES as readonly string[]).includes(v) ? v : "other";
+}
+
+// Best fit band/score for a company, used to tag the outreach record so the
+// Results view can group/filter by fit without re-joining assessments.
+function companyFit(companyId: string): { band: string; score: number } {
+  const row = db.query(
+    "SELECT MAX(score) AS score FROM service_fit_assessments WHERE company_id = ?1",
+  ).get(companyId) as { score: number | null } | null;
+  const score = row?.score == null ? 0 : Number(row.score);
+  return { band: row?.score == null ? "unscored" : scoreBand(score), score };
+}
+
+function mapOutreachResult(row: Record<string, unknown>) {
+  const state = String(row.state ?? "");
+  const outreachAt = row.outreach_at == null ? null : Number(row.outreach_at);
+  // Derive the No-Response view: waiting + aged past the SLA window.
+  const aged = state === "waiting" && outreachAt != null && Date.now() - outreachAt > OUTREACH_NO_RESPONSE_MS;
+  const displayState = aged ? "no_response" : state;
+  return {
+    id: String(row.id),
+    companyId: String(row.company_id),
+    state,
+    displayState,
+    channel: String(row.channel ?? ""),
+    outreachAt,
+    responseAt: row.response_at == null ? null : Number(row.response_at),
+    outcome: String(row.outcome ?? ""),
+    reason: String(row.reason ?? ""),
+    reasonCategory: String(row.reason_category ?? ""),
+    dismissedFrom: String(row.dismissed_from ?? ""),
+    notes: String(row.notes ?? ""),
+    snoozedUntil: row.snoozed_until == null ? null : Number(row.snoozed_until),
+    dayAttempts: row.day_attempts == null ? 0 : Number(row.day_attempts),
+    fitBand: String(row.fit_band ?? ""),
+    fitScore: row.fit_score == null ? null : Number(row.fit_score),
+    createdAt: Number(row.created_at ?? 0),
+    updatedAt: Number(row.updated_at ?? 0),
+    company: row.name ? {
+      id: String(row.company_id),
+      name: String(row.name),
+      location: String(row.location ?? ""),
+      industry: String(row.industry ?? ""),
+      website: String(row.website ?? ""),
+    } : undefined,
+  };
+}
+
+function upsertOutreachResult(companyId: string, patch: Record<string, unknown>) {
+  const now = Date.now();
+  const existing = db.query("SELECT * FROM outreach_results WHERE company_id = ?1").get(companyId) as Record<string, unknown> | null;
+  const fit = companyFit(companyId);
+  const str = (v: unknown): string | null => (v == null ? null : String(v));
+  const num = (v: unknown): number | null => (v == null ? null : Number(v));
+  const merged = {
+    state: String(patch.state ?? existing?.state ?? "waiting"),
+    channel: str(patch.channel ?? existing?.channel),
+    outreach_at: num(patch.outreach_at ?? existing?.outreach_at),
+    response_at: num(patch.response_at ?? existing?.response_at),
+    outcome: str(patch.outcome ?? existing?.outcome),
+    reason: str(patch.reason ?? existing?.reason),
+    reason_category: str(patch.reason_category ?? existing?.reason_category),
+    dismissed_from: str(patch.dismissed_from ?? existing?.dismissed_from),
+    notes: str(patch.notes ?? existing?.notes),
+    fit_band: String(existing?.fit_band ?? fit.band),
+    fit_score: Number(existing?.fit_score ?? fit.score),
+    // These three accept an explicit null to clear, so key off presence in the
+    // patch rather than nullish-coalescing (which would keep a stale value).
+    snoozed_until: "snoozed_until" in patch ? num(patch.snoozed_until) : num(existing?.snoozed_until),
+    day_attempts: "day_attempts" in patch ? num(patch.day_attempts) : num(existing?.day_attempts),
+    day_attempts_date: "day_attempts_date" in patch ? num(patch.day_attempts_date) : num(existing?.day_attempts_date),
+  };
+  if (existing) {
+    db.query(`
+      UPDATE outreach_results
+      SET state = ?2, channel = ?3, outreach_at = ?4, response_at = ?5, outcome = ?6,
+          reason = ?7, reason_category = ?8, dismissed_from = ?9, fit_band = ?10, fit_score = ?11, notes = ?12,
+          snoozed_until = ?14, day_attempts = ?15, day_attempts_date = ?16, updated_at = ?13
+      WHERE company_id = ?1
+    `).run(companyId, merged.state, merged.channel, merged.outreach_at, merged.response_at, merged.outcome,
+      merged.reason, merged.reason_category, merged.dismissed_from, merged.fit_band, merged.fit_score, merged.notes, now,
+      merged.snoozed_until, merged.day_attempts, merged.day_attempts_date);
+  } else {
+    db.query(`
+      INSERT INTO outreach_results (id, company_id, state, channel, outreach_at, response_at, outcome, reason, reason_category, dismissed_from, fit_band, fit_score, notes, snoozed_until, day_attempts, day_attempts_date, created_at, updated_at)
+      VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?17)
+    `).run(crypto.randomUUID(), companyId, merged.state, merged.channel, merged.outreach_at, merged.response_at, merged.outcome,
+      merged.reason, merged.reason_category, merged.dismissed_from, merged.fit_band, merged.fit_score, merged.notes,
+      merged.snoozed_until, merged.day_attempts, merged.day_attempts_date, now);
+  }
+  return db.query(`
+    SELECT r.*, c.name, c.location, c.industry, c.website
+    FROM outreach_results r JOIN companies c ON c.id = r.company_id
+    WHERE r.company_id = ?1
+  `).get(companyId) as Record<string, unknown>;
+}
+
+function outreachResultCounts() {
+  const rows = db.query("SELECT state, outreach_at, snoozed_until FROM outreach_results").all() as Record<string, unknown>[];
+  const counts = { waiting: 0, no_response: 0, meeting: 0, rejected: 0, snoozed: 0 };
+  const now = Date.now();
+  const cutoff = now - OUTREACH_NO_RESPONSE_MS;
+  for (const row of rows) {
+    const state = String(row.state);
+    if (state === "waiting") {
+      if (row.outreach_at != null && Number(row.outreach_at) < cutoff) counts.no_response += 1;
+      else counts.waiting += 1;
+    } else if (state === "meeting") counts.meeting += 1;
+    else if (state === "rejected") counts.rejected += 1;
+    else if (state === "on_deck" && row.snoozed_until != null && Number(row.snoozed_until) > now) counts.snoozed += 1;
+  }
+  return counts;
+}
+
+function listOutreachResults(params: URLSearchParams) {
+  const tab = String(params.get("tab") || "waiting").toLowerCase();
+  const q = String(params.get("q") || "").trim().toLowerCase();
+  const { limit, offset } = pagingFromParams(params, { limit: 25, max: 100 });
+  const cutoff = Date.now() - OUTREACH_NO_RESPONSE_MS;
+  const clauses: string[] = [];
+  const values: (string | number)[] = [];
+  if (tab === "waiting") {
+    clauses.push("r.state = 'waiting' AND (r.outreach_at IS NULL OR r.outreach_at >= ?" + (values.push(cutoff)) + ")");
+  } else if (tab === "no_response") {
+    clauses.push("r.state = 'waiting' AND r.outreach_at IS NOT NULL AND r.outreach_at < ?" + (values.push(cutoff)));
+  } else if (tab === "meeting") {
+    clauses.push("r.state = 'meeting'");
+  } else if (tab === "rejected") {
+    clauses.push("r.state = 'rejected'");
+  } else if (tab === "snoozed") {
+    clauses.push("r.state = 'on_deck' AND r.snoozed_until IS NOT NULL AND r.snoozed_until > ?" + (values.push(Date.now())));
+  }
+  if (q) {
+    const p1 = values.push(`%${q}%`);
+    const p2 = values.push(`%${q}%`);
+    clauses.push(`(lower(c.name) LIKE ?${p1} OR lower(r.reason) LIKE ?${p2})`);
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  const total = db.query(`SELECT COUNT(*) AS count FROM outreach_results r JOIN companies c ON c.id = r.company_id ${where}`).get(...values) as { count: number } | null;
+  const rows = db.query(`
+    SELECT r.*, c.name, c.location, c.industry, c.website
+    FROM outreach_results r JOIN companies c ON c.id = r.company_id
+    ${where}
+    ORDER BY COALESCE(r.response_at, r.outreach_at, r.updated_at) DESC
+    LIMIT ?${values.length + 1} OFFSET ?${values.length + 2}
+  `).all(...values, limit, offset) as Record<string, unknown>[];
+  return {
+    tab,
+    items: rows.map(mapOutreachResult),
+    total: Number(total?.count ?? 0),
+    returned: rows.length,
+    limit,
+    offset,
+    counts: outreachResultCounts(),
+  };
 }
 
 function runTopTargetAggregation(input: { reason?: string; limit?: number | null; createdBy?: string } = {}) {
@@ -7757,6 +8305,17 @@ function getOrBuildTopTargetDetail(limit = 100, offset = 0) {
   const rebuilt = runTopTargetAggregation({ reason: "Read-through top-target aggregation", limit: null, createdBy: "local" });
   const limitedDetail = getTopTargetRunDetail(rebuilt.run.id, limit, offset) ?? rebuilt;
   return { ...limitedDetail, rebuilt: true };
+}
+
+// Resolve the run id the deck should read from without running the full
+// band/total/items detail query. Only rebuilds (the expensive path) when no
+// completed run exists yet. Callers that need filtered detail then make a
+// single getTopTargetRunDetail call, instead of running the heavy query twice.
+function resolveTopTargetRunId(): { runId: string; rebuilt: boolean } {
+  const runId = latestTopTargetRunId();
+  if (runId) return { runId, rebuilt: false };
+  const rebuilt = runTopTargetAggregation({ reason: "Read-through top-target aggregation", limit: null, createdBy: "local" });
+  return { runId: rebuilt.run.id, rebuilt: true };
 }
 
 function markKindlingStartFailed(run: Record<string, unknown>, error: string) {
@@ -7987,6 +8546,11 @@ function normalizeKindlingCallbackRecords(roleKey: string, body: Record<string, 
     const profilePatch = objectRecord(result.profilePatch);
     const gaps = Array.isArray(result.gaps) ? result.gaps : Array.isArray(profilePatch.gaps) ? profilePatch.gaps : [];
     const fieldsUpdated = Array.isArray(result.fieldsUpdated) ? result.fieldsUpdated : [];
+    const decisionMakers = Array.isArray(result.decisionMakers)
+      ? result.decisionMakers
+      : Array.isArray(profilePatch.decisionMakers)
+        ? profilePatch.decisionMakers
+        : [];
     return {
       company: {
         id: String(result.companyId ?? ""),
@@ -7998,6 +8562,7 @@ function normalizeKindlingCallbackRecords(roleKey: string, body: Record<string, 
           ...profilePatch,
           fieldsUpdated,
           gaps,
+          ...(decisionMakers.length ? { decisionMakers } : {}),
         },
         profilePatch,
         profileVersion: objectRecord(result.profileVersion),
@@ -8050,22 +8615,22 @@ function isFailurePipelineStatus(value: unknown) {
 }
 
 function findExistingScanCompany(company: Record<string, unknown>, records: Record<string, unknown>) {
-  const website = String(company.website ?? "").trim();
-  if (website) {
-    return db.query("SELECT * FROM companies WHERE lower(website) = lower(?1) LIMIT 1").get(website) as Record<string, unknown> | null;
+  const websiteKey = normalizeWebsiteKey(company.website);
+  if (websiteKey) {
+    return db.query("SELECT * FROM companies WHERE website_key = ?1 LIMIT 1").get(websiteKey) as Record<string, unknown> | null;
   }
-  const name = String(company.name ?? "").trim();
-  if (!name) return null;
+  const nameKey = normalizeNameKey(company.name);
+  if (!nameKey) return null;
   const location = String(company.location ?? records.location ?? "").trim();
   const industry = String(company.industry ?? records.industry ?? "").trim();
   return db.query(`
     SELECT *
     FROM companies
-    WHERE lower(name) = lower(?1)
+    WHERE name_key = ?1
       AND lower(COALESCE(location, '')) = lower(?2)
       AND lower(COALESCE(industry, '')) = lower(?3)
     LIMIT 1
-  `).get(name, location, industry) as Record<string, unknown> | null;
+  `).get(nameKey, location, industry) as Record<string, unknown> | null;
 }
 
 function sourceAlreadyExists(companyId: string, url: string, summary: string) {
@@ -8138,6 +8703,9 @@ function persistScanRecords(requestId: string, records: Record<string, unknown>,
         WHERE id = ?6
       `).run(location, industry, website, confidence, now, companyId);
       recordActivity("company", companyId, "pipeline", "company_matched", `Matched by scan ${requestId}`, { requestId });
+      // The scan write may have set a website that now collides with another
+      // record of the same name - resolve the group immediately.
+      resolveDuplicateGroupForCompany(companyId, "pipeline", now);
       updatedCompanies += 1;
     } else {
       const dataRing = normalizeCompanyDataRing(company.dataRing ?? "found");
@@ -8146,7 +8714,8 @@ function persistScanRecords(requestId: string, records: Record<string, unknown>,
         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'not_started', ?8, '{}', ?9, ?9)
       `).run(companyId, name, location, industry, website, dataRing, normalizeDuplicateStatus(company.duplicateStatus), confidence, now);
       recordActivity("company", companyId, "pipeline", "company_created", `Created by scan ${requestId}`, { requestId });
-      upsertTargetRanking(companyId, "New scan target with sparse but usable data.", { fit: confidence });
+      // Belt and braces: never leave two records with the same name + website.
+      resolveDuplicateGroupForCompany(companyId, "pipeline", now);
       createdCompanies += 1;
     }
 
@@ -8306,6 +8875,17 @@ function persistCompanyEnrichment(input: {
     ...(gaps.length ? { gaps } : {}),
   };
   const companyConfidence = clampConfidence(company?.confidence, 0.75);
+  // Park companies that still have no website after enrichment. Gabe's rule: a
+  // business with no website is not sufficiently enriched for this campaign.
+  // Parking (not deleting) keeps them out of the active pool, enrichment and
+  // scoring selectors (all of which skip data_ring = 'parked') while remaining
+  // queryable so we can revisit them later.
+  const effectiveWebsite = String(company?.website ?? "").trim() || String(existing?.website ?? "").trim();
+  if (!effectiveWebsite) profile.parkedReason = "no_website";
+  else if ("parkedReason" in profile && profile.parkedReason === "no_website") delete profile.parkedReason;
+  const enrichedDataRing = effectiveWebsite
+    ? normalizeCompanyDataRing(company?.dataRing ?? "enhanced")
+    : "parked";
   db.query(`
     UPDATE companies
     SET website = COALESCE(NULLIF(?1, ''), website),
@@ -8317,13 +8897,18 @@ function persistCompanyEnrichment(input: {
     WHERE id = ?7
   `).run(
     String(company?.website ?? ""),
-    normalizeCompanyDataRing(company?.dataRing ?? "enhanced"),
+    enrichedDataRing,
     normalizeCompanyExecutionStatus(company?.enrichmentStatus ?? "complete"),
     companyConfidence,
     JSON.stringify(profile),
     now,
     companyId,
   );
+  // Enrichment canonicalizes websites (e.g. redirect targets), which can make
+  // this record collide with another copy of the same company. Resolve the
+  // group: the reached-out/enriched/original record is kept, the rest are
+  // marked duplicate and drop out of target lists.
+  resolveDuplicateGroupForCompany(companyId, "pipeline", now);
 
   completeEnrichmentQueueForRequest(input.requestId, companyId, input.response || "Enrichment complete", now);
 
@@ -8680,11 +9265,17 @@ function applyKindlingCallback(body: Record<string, unknown>, token: string) {
     } else {
       const draft = records.outreachDraft as Record<string, unknown> | undefined;
       const companyId = String(draft?.companyId ?? requestId);
-      db.query(`
-        INSERT INTO outreach_drafts(id, company_id, pitch_text, status, source_run_id, created_at, updated_at)
-        VALUES (?1, ?2, ?3, 'draft', ?4, ?5, ?5)
-      `).run(crypto.randomUUID(), companyId, String(draft?.pitchText ?? body.response ?? ""), String(run.id), now);
-      recordActivity("company", companyId, "pipeline", "outreach_drafted", String(body.response ?? "Outreach drafted"), { requestId });
+      // The pipeline returns several outreach options in one markdown blob; store
+      // each as its own row so the UI can page through them (grouped by source_run_id).
+      const variants = splitPitchVariants(String(draft?.pitchText ?? body.response ?? ""));
+      const insertDraft = db.query(`
+        INSERT INTO outreach_drafts(id, company_id, pitch_text, status, source_run_id, variant_index, variant_label, created_at, updated_at)
+        VALUES (?1, ?2, ?3, 'draft', ?4, ?5, ?6, ?7, ?7)
+      `);
+      for (const variant of variants) {
+        insertDraft.run(crypto.randomUUID(), companyId, variant.body, String(run.id), variant.index, variant.label, now);
+      }
+      recordActivity("company", companyId, "pipeline", "outreach_drafted", String(body.response ?? "Outreach drafted"), { requestId, variantCount: variants.length });
       updateSchedulerRunForRequest({
         requestId,
         roleKey: "draft_outreach",
@@ -8759,7 +9350,7 @@ function requestPublicOrigin(req: Request): string {
 }
 
 function webhookOrigin(req: Request): string {
-  return PUBLIC_ORIGIN || requestPublicOrigin(req);
+  return configuredPublicOrigin() || requestPublicOrigin(req);
 }
 
 async function runAutomatedAcquisitionLoop() {
@@ -9011,7 +9602,10 @@ async function runAutomatedEnrichmentLoop() {
   }
   const concurrency = roleConcurrencyState("enrich_company", settings);
   if (concurrency.blockedReason) return null;
-  const selection = selectEnrichmentDryRun(settings);
+  // Alert-origin work jumps the queue and bypasses the enrichedFloor gate; fall
+  // back to the normal floor-gated selection when there is no hot alert waiting.
+  const alertSelection = selectAlertEnrichmentDryRun(now);
+  const selection = alertSelection.item ? alertSelection : selectEnrichmentDryRun(settings);
   if (!selection.item) return null;
   const item = selection.item;
   const decision = {
@@ -9143,6 +9737,7 @@ async function runAutomatedOutreachLoop() {
       company,
       activeProfileVersion: getCurrentMarketProfile()?.version ?? null,
       profile: getCurrentMarketProfile(),
+      outreachVoiceGuide: readOutreachVoiceGuide(),
       scheduler: { action: "outreach", roleKey: "draft_outreach" },
     },
     webhookUrl: `${origin}/api/kindling/pipeline-webhook`,
@@ -9236,6 +9831,11 @@ export async function runAutomatedProspectingLoop() {
   if (scoring) results.push({ action: "scoring", ...scoring });
   const outreach = await runAutomatedOutreachLoop();
   if (outreach) results.push({ action: "outreach", ...outreach });
+  const alerts = await runAutomatedAlertLoop().catch((error) => {
+    console.error("automated alert loop failed", error);
+    return null;
+  });
+  if (alerts) results.push(alerts);
   if (!results.length) return null;
   if (results.length === 1) return results[0];
   return { action: "multi", count: results.length, results };
@@ -9281,7 +9881,15 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
   const { pathname } = url;
 
   if (pathname === "/api/health" && req.method === "GET") {
-    return json({ ok: true, now: new Date().toISOString() });
+    const canonicalApi = canonicalApiStatus();
+    return json({
+      ok: true,
+      ready: true,
+      dataReady: canonicalApi.companySource === "local" || canonicalApi.cachedCompanies > 0,
+      liveCurrent: canonicalApi.current,
+      now: new Date().toISOString(),
+      canonicalApi,
+    });
   }
 
   const towerNotFoundResponse = towerNotFoundRoute(req, url);
@@ -9317,6 +9925,55 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     });
   }
 
+  if (pathname === "/api/kindling/canonical-status" && req.method === "GET") {
+    const session = requireSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    return json({ canonicalApi: canonicalApiStatus() });
+  }
+
+  if (pathname === "/api/kindling/canonical-sync" && req.method === "POST") {
+    const session = requireSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    const body = await readJson(req);
+    try {
+      const syncId = String(body.syncId ?? "").trim();
+      if (!syncId) return json(prepareCanonicalSync(session.pubkey));
+      const authorization = String(body.canonicalAuthorization ?? "").trim();
+      if (!authorization) return json({ error: "canonicalAuthorization is required" }, 400);
+      return json(await continueCanonicalSync({ syncId, actorPubkey: session.pubkey, authorization }));
+    } catch (error) {
+      const status = error instanceof CanonicalSyncConflictError
+        ? 409
+        : error instanceof CanonicalApiError
+          ? error.status
+          : 502;
+      return json({ error: error instanceof Error ? error.message : String(error), canonicalApi: canonicalApiStatus() }, status);
+    }
+  }
+
+  const canonicalTargetRequestMatch = pathname.match(/^\/api\/kindling\/canonical-targets\/([^/]+)\/(request|refresh)$/);
+  if (canonicalTargetRequestMatch) {
+    const session = requireSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    const companyId = decodeURIComponent(canonicalTargetRequestMatch[1]!);
+    const action = canonicalTargetRequestMatch[2];
+    try {
+      if (action === "request" && req.method === "GET") {
+        return json({ canonicalRequest: prepareCanonicalTargetRequest(companyId), canonicalApi: canonicalApiStatus() });
+      }
+      if (action === "refresh" && req.method === "POST") {
+        const body = await readJson(req);
+        const authorization = String(body.canonicalAuthorization ?? "").trim();
+        if (!authorization) return json({ error: "canonicalAuthorization is required" }, 400);
+        const canonicalTarget = await refreshCanonicalTarget({ companyId, actorPubkey: session.pubkey, authorization });
+        return json({ canonicalTarget, canonicalApi: canonicalApiStatus() });
+      }
+    } catch (error) {
+      const status = error instanceof CanonicalApiError ? error.status : 502;
+      return json({ error: error instanceof Error ? error.message : String(error), canonicalApi: canonicalApiStatus() }, status);
+    }
+  }
+
   if (pathname === "/api/settings" && req.method === "GET") {
     const session = requireSession(req);
     if (!session) return json({ error: "unauthorized" }, 401);
@@ -9329,8 +9986,19 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     const body = await readJson(req);
     const autopilotUrl = body.autopilotUrl === undefined ? null : normalizeAutopilotUrl(body.autopilotUrl);
     const defaultPipeline = body.defaultPipeline === undefined ? null : normalizePipelineName(body.defaultPipeline);
+    // Empty string clears the override (falls back to env / localhost:PORT).
+    const publicOrigin = body.publicOrigin === undefined || body.publicOrigin === ""
+      ? (body.publicOrigin === "" ? "" : null)
+      : normalizeAutopilotUrl(body.publicOrigin);
     if (body.autopilotUrl !== undefined && !autopilotUrl) return json({ error: "autopilotUrl must be a valid http(s) URL" }, 400);
     if (body.defaultPipeline !== undefined && !defaultPipeline) return json({ error: "defaultPipeline is required" }, 400);
+    if (body.publicOrigin !== undefined && body.publicOrigin !== "" && !publicOrigin) return json({ error: "publicOrigin must be a valid http(s) URL" }, 400);
+    if (publicOrigin !== null) setSetting("publicOrigin", publicOrigin);
+    if (body.snoozeDays !== undefined) {
+      const days = Math.floor(Number(body.snoozeDays));
+      if (!Number.isFinite(days) || days < 1 || days > 365) return json({ error: "snoozeDays must be between 1 and 365" }, 400);
+      setSetting("snoozeDays", String(days));
+    }
     if (autopilotUrl) setSetting("autopilotUrl", autopilotUrl);
     if (defaultPipeline) setSetting("defaultPipeline", defaultPipeline);
     return json({ settings: getAppSettings() });
@@ -9411,7 +10079,9 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     const session = requireSession(req);
     if (!session) return json({ error: "unauthorized" }, 401);
     const compact = url.searchParams.get("compact") === "1" || url.searchParams.get("compact") === "true";
-    if (!compact) await reconcileActiveKindlingRuns();
+    if (!compact) {
+      await reconcileActiveKindlingRuns();
+    }
     const companies = compact ? [] : listCompanies(null, { limit: COMPANY_LIST_LIMIT, offset: 0 });
     const recentRuns = (db.query("SELECT * FROM kindling_pipeline_runs ORDER BY updated_at DESC LIMIT 12").all() as Record<string, unknown>[]).map(mapRun);
     const discoveryJobs = (db.query("SELECT * FROM discovery_jobs ORDER BY updated_at DESC LIMIT 8").all() as Record<string, unknown>[]).map(mapDiscoveryJob);
@@ -9449,7 +10119,14 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
         limit: COMPANY_LIST_LIMIT,
       },
       compact,
+      canonicalApi: canonicalApiStatus(),
     });
+  }
+
+  if (pathname === "/api/kindling/profile" && req.method === "GET") {
+    const session = requireSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    return json({ profile: getCurrentMarketProfile() });
   }
 
   if (pathname === "/api/kindling/enrichment-industries" && req.method === "GET") {
@@ -9636,6 +10313,9 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     if (!session) return json({ error: "edit access required" }, 403);
     const body = await readJson(req);
     const settings = updateSchedulerSettings(schedulerSettingsPatchFromBody(body));
+    // One switch: keep each pipeline role's enabled flag in lockstep with its
+    // scheduler action so automation can't be silently blocked by a disabled role.
+    syncPipelineRolesToScheduler(settings);
     recordActivity("scheduler", "default", "user", "scheduler_settings_updated", "Scheduler settings updated", { pubkey: session.pubkey });
     return json({
       settings,
@@ -10322,20 +11002,29 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
   if (pathname === "/api/kindling/companies" && req.method === "GET") {
     const session = requireSession(req);
     if (!session) return json({ error: "unauthorized" }, 401);
+    const canonicalApi = canonicalApiStatus();
     const { limit, offset } = pagingFromParams(url.searchParams);
     const companies = listCompanies(url.searchParams, { limit, offset, compact: true });
+    const withBandCounts = url.searchParams.get("withBandCounts") === "1" || url.searchParams.get("withBandCounts") === "true";
     return json({
       companies,
       total: countCompanies(url.searchParams),
       returned: companies.length,
       limit,
       offset,
+      source: canonicalApi.companySource,
+      syncCursor: canonicalApi.syncCursor,
+      canonicalApi,
+      ...(withBandCounts ? { bandCounts: companyBandCounts(url.searchParams) } : {}),
     });
   }
 
   if (pathname === "/api/kindling/companies" && req.method === "POST") {
     const session = requireEditSession(req);
     if (!session) return json({ error: "edit access required" }, 403);
+    if (KINDLING_COMPANY_SOURCE === "canonical-api") {
+      return json({ error: "Canonical companies must be created through Kindling API", companySource: KINDLING_COMPANY_SOURCE }, 409);
+    }
     const body = await readJson(req);
     const name = String(body.name ?? "").trim();
     if (!name) return json({ error: "name is required" }, 400);
@@ -10357,8 +11046,73 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
       now,
     );
     recordActivity("company", id, "user", "company_created", "Manual company created", { pubkey: session.pubkey });
+    resolveDuplicateGroupForCompany(id, "user", now);
     const company = db.query("SELECT * FROM companies WHERE id = ?1").get(id) as Record<string, unknown>;
     return json({ company: mapCompany(company) }, 201);
+  }
+
+  // Lightweight payload for the Reach Out modal: draft emails + contacts.
+  const companyOutreachMatch = pathname.match(/^\/api\/kindling\/companies\/([^/]+)\/outreach$/);
+  if (companyOutreachMatch && req.method === "GET") {
+    const session = requireSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    const companyId = decodeURIComponent(companyOutreachMatch[1]!);
+    const row = db.query("SELECT * FROM companies WHERE id = ?1").get(companyId) as Record<string, unknown> | null;
+    if (!row) return json({ error: "company not found" }, 404);
+    const drafts = (db.query("SELECT id, pitch_text, status, updated_at FROM outreach_drafts WHERE company_id = ?1 ORDER BY updated_at DESC").all(companyId) as Record<string, unknown>[])
+      .map((d) => ({ id: String(d.id), pitchText: String(d.pitch_text ?? ""), status: String(d.status ?? ""), updatedAt: Number(d.updated_at ?? 0) }));
+    const companyProfile = jsonParse<Record<string, unknown>>(row.profile_json, {});
+    const people = Array.isArray(companyProfile.decisionMakers)
+      ? (companyProfile.decisionMakers as Record<string, unknown>[]).map(mapDecisionMaker).filter((p) => p.name)
+      : [];
+    return json({
+      company: { id: String(row.id), name: String(row.name), website: String(row.website ?? ""), industry: String(row.industry ?? ""), location: String(row.location ?? "") },
+      drafts,
+      people,
+    });
+  }
+
+  // Per-company reviewer feedback: good/bad verdict + issue labels + reason.
+  const companyFeedbackMatch = pathname.match(/^\/api\/kindling\/companies\/([^/]+)\/feedback$/);
+  if (companyFeedbackMatch && req.method === "POST") {
+    const session = requireEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const companyId = decodeURIComponent(companyFeedbackMatch[1]!);
+    const company = db.query("SELECT id, name FROM companies WHERE id = ?1").get(companyId) as Record<string, unknown> | null;
+    if (!company) return json({ error: "company not found" }, 404);
+    const body = await readJson(req);
+    const verdict = normalizeVerdict(body.verdict);
+    const labels = normalizeIssueLabels(body.labels);
+    const note = String(body.note ?? "").trim();
+    if (!verdict && !labels.length && !note) return json({ error: "feedback must include a verdict, a label, or a note" }, 400);
+    const actor = `user:${session.pubkey.slice(0, 16)}`;
+    const feedback = upsertCompanyFeedback(companyId, { verdict, labels, note, actor });
+    const labelText = labels.map((k) => COMPANY_ISSUE_LABELS.find((l) => l.key === k)?.label || k).join(", ");
+    const summary = `Reviewer feedback: ${verdict || "no verdict"}${labelText ? ` — ${labelText}` : ""}`;
+    recordActivity("company", companyId, actor, "company_feedback", summary, { verdict, labels, note });
+    return json({ feedback });
+  }
+
+  // Aggregate feedback: how reviewers are scoring companies and which issues recur.
+  if (pathname === "/api/kindling/feedback/stats" && req.method === "GET") {
+    const session = requireSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    const rows = db.query("SELECT verdict, labels_json FROM company_feedback").all() as Record<string, unknown>[];
+    const verdicts: Record<string, number> = { good: 0, bad: 0, none: 0 };
+    const labelCounts: Record<string, number> = {};
+    for (const l of COMPANY_ISSUE_LABELS) labelCounts[l.key] = 0;
+    for (const row of rows) {
+      const v = row.verdict == null ? "none" : String(row.verdict);
+      verdicts[v] = (verdicts[v] || 0) + 1;
+      for (const key of jsonParse<string[]>(row.labels_json, [])) {
+        if (key in labelCounts) labelCounts[key] += 1;
+      }
+    }
+    return json({
+      total: rows.length,
+      verdicts,
+      labels: COMPANY_ISSUE_LABELS.map((l) => ({ key: l.key, label: l.label, count: labelCounts[l.key] || 0 })),
+    });
   }
 
   const companyMatch = pathname.match(/^\/api\/kindling\/companies\/([^/]+)$/);
@@ -10366,6 +11120,9 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     const session = requireSession(req);
     if (!session) return json({ error: "unauthorized" }, 401);
     const companyId = decodeURIComponent(companyMatch[1]!);
+    const canonicalTarget: CanonicalTarget | null = KINDLING_COMPANY_SOURCE === "canonical-api"
+      ? cachedCanonicalTarget(companyId)
+      : null;
     const row = db.query("SELECT * FROM companies WHERE id = ?1").get(companyId) as Record<string, unknown> | null;
     if (!row) return json({ error: "company not found" }, 404);
     const sources = (db.query("SELECT * FROM sources WHERE company_id = ?1 ORDER BY created_at DESC").all(companyId) as Record<string, unknown>[]).map(mapSource);
@@ -10384,21 +11141,35 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
       ORDER BY version_number DESC, created_at DESC
     `).all(companyId) as Record<string, unknown>[]).map(mapCustomerProfileVersion);
     const activities = (db.query("SELECT * FROM activities WHERE target_type = 'company' AND target_id = ?1 ORDER BY created_at DESC LIMIT 50").all(companyId) as Record<string, unknown>[]).map(rowJson);
-    const drafts = (db.query("SELECT * FROM outreach_drafts WHERE company_id = ?1 ORDER BY updated_at DESC").all(companyId) as Record<string, unknown>[]).map(rowJson);
+    const drafts = (db.query("SELECT * FROM outreach_drafts WHERE company_id = ?1 ORDER BY updated_at DESC, variant_index ASC").all(companyId) as Record<string, unknown>[]).map(rowJson);
     const serviceFitAssessments = listServiceFitAssessmentsForCompany(companyId);
     const segments = listCompanySegments(companyId);
+    const companyProfile = jsonParse<Record<string, unknown>>(row.profile_json, {});
+    const canonicalEnrichment = canonicalTarget?.enrichment && typeof canonicalTarget.enrichment === "object"
+      ? canonicalTarget.enrichment as Record<string, unknown>
+      : {};
+    const people = Array.isArray(companyProfile.decisionMakers)
+      ? companyProfile.decisionMakers
+      : Array.isArray(canonicalEnrichment.decisionMakers)
+        ? canonicalEnrichment.decisionMakers
+        : [];
     return json({
       company: mapCompany(row),
+      companySource: KINDLING_COMPANY_SOURCE,
+      canonicalTarget,
+      canonicalApi: canonicalApiStatus(),
       sources,
       signals,
       customerProfileVersions,
       evidence: { sources, signals },
-      people: [],
+      people,
       activities,
       serviceFitAssessments,
       drafts,
       outreachDrafts: drafts,
       segments,
+      feedback: getCompanyFeedback(companyId),
+      issueLabels: COMPANY_ISSUE_LABELS,
     });
   }
 
@@ -10411,6 +11182,21 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     const body = await readJson(req);
     const now = Date.now();
     const profile = { ...jsonParse<Record<string, unknown>>(existing.profile_json, {}), notes: String(body.notes ?? jsonParse<Record<string, unknown>>(existing.profile_json, {}).notes ?? "") };
+    if (KINDLING_COMPANY_SOURCE === "canonical-api") {
+      const canonicalFields = ["name", "location", "industry", "website", "duplicateStatus", "enrichmentStatus", "confidence"];
+      const attemptedCanonicalFields = canonicalFields.filter((field) => body[field] !== undefined);
+      if (attemptedCanonicalFields.length) {
+        return json({
+          error: "Canonical identity and enrichment facts are read-only in Kindling FE",
+          fields: attemptedCanonicalFields,
+          authority: "Kindling API",
+        }, 409);
+      }
+      db.query("UPDATE companies SET data_ring = ?1, profile_json = ?2 WHERE id = ?3")
+        .run(normalizeCompanyDataRing(body.dataRing ?? existing.data_ring), JSON.stringify(profile), companyId);
+      const row = db.query("SELECT * FROM companies WHERE id = ?1").get(companyId) as Record<string, unknown>;
+      return json({ company: mapCompany(row), companySource: KINDLING_COMPANY_SOURCE });
+    }
     db.query(`
       UPDATE companies
       SET name = ?1, location = ?2, industry = ?3, website = ?4, data_ring = ?5,
@@ -10430,6 +11216,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
       companyId,
     );
     recordActivity("company", companyId, "user", "company_updated", "Company profile edited", { pubkey: session.pubkey });
+    resolveDuplicateGroupForCompany(companyId, "user", now);
     const row = db.query("SELECT * FROM companies WHERE id = ?1").get(companyId) as Record<string, unknown>;
     return json({ company: mapCompany(row) });
   }
@@ -10559,7 +11346,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
       roleKey: "draft_outreach",
       localRequestId: requestId,
       message: `Draft outreach for ${String(company.name)}`,
-      context: { companyId, companyName: String(company.name), company: mapCompany(company), activeProfileVersion: getCurrentMarketProfile()?.version ?? null, profile: getCurrentMarketProfile() },
+      context: { companyId, companyName: String(company.name), company: mapCompany(company), activeProfileVersion: getCurrentMarketProfile()?.version ?? null, profile: getCurrentMarketProfile(), outreachVoiceGuide: readOutreachVoiceGuide() },
       webhookUrl: `${webhookOrigin(req)}/api/kindling/pipeline-webhook`,
       webhookToken,
       userPubkey: session.pubkey,
@@ -10605,15 +11392,169 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     return json(detail);
   }
 
+  if (pathname === "/api/kindling/outreach/results" && req.method === "GET") {
+    const session = requireSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    return json(listOutreachResults(url.searchParams));
+  }
+
+  // Outreach sent from the call list → company moves to the Waiting list.
+  if (pathname === "/api/kindling/outreach/sent" && req.method === "POST") {
+    const session = requireEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const body = await readJson(req);
+    const companyId = String(body.companyId ?? "").trim();
+    if (!companyId) return json({ error: "companyId is required" }, 400);
+    const company = db.query("SELECT id, name, data_ring FROM companies WHERE id = ?1").get(companyId) as Record<string, unknown> | null;
+    if (!company) return json({ error: "company not found" }, 404);
+    const channel = String(body.channel ?? "email").trim() || "email";
+    const now = Date.now();
+    const row = upsertOutreachResult(companyId, { state: "waiting", channel, outreach_at: now, response_at: null, outcome: null });
+    // Remember the ring we're moving away from so "undo" can restore it.
+    const prevRing = String(company.data_ring ?? "");
+    if (prevRing && prevRing !== "contacted") {
+      db.query("UPDATE outreach_results SET prev_data_ring = COALESCE(prev_data_ring, ?2) WHERE company_id = ?1").run(companyId, prevRing);
+    }
+    db.query("UPDATE companies SET data_ring = 'contacted', updated_at = ?2 WHERE id = ?1").run(companyId, now);
+    recordActivity("company", companyId, `user:${session.pubkey.slice(0, 16)}`, "outreach_sent", `Outreach sent via ${channel}; awaiting response`, { channel });
+    return json({ result: mapOutreachResult(row) });
+  }
+
+  // Undo: remove the outreach record so the company returns to the call list.
+  if (pathname === "/api/kindling/outreach/undo" && req.method === "POST") {
+    const session = requireEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const body = await readJson(req);
+    const companyId = String(body.companyId ?? "").trim();
+    if (!companyId) return json({ error: "companyId is required" }, 400);
+    const existing = db.query("SELECT prev_data_ring FROM outreach_results WHERE company_id = ?1").get(companyId) as Record<string, unknown> | null;
+    db.query("DELETE FROM outreach_results WHERE company_id = ?1").run(companyId);
+    // If we'd flipped the company into a terminal ring ('contacted' when sent,
+    // 'processed' when rejected/dropped), put its previous ring back so it
+    // returns to the active call list.
+    const company = db.query("SELECT data_ring FROM companies WHERE id = ?1").get(companyId) as Record<string, unknown> | null;
+    if (company && ["contacted", "processed"].includes(String(company.data_ring ?? ""))) {
+      const restore = String(existing?.prev_data_ring ?? "") || "scored";
+      db.query("UPDATE companies SET data_ring = ?2, updated_at = ?3 WHERE id = ?1").run(companyId, restore, Date.now());
+    }
+    recordActivity("company", companyId, `user:${session.pubkey.slice(0, 16)}`, "outreach_undo", "Outreach undone; returned to call list", {});
+    return json({ ok: true });
+  }
+
+  // Dismiss from the call list → Rejected, with a categorized reason.
+  if (pathname === "/api/kindling/outreach/dismiss" && req.method === "POST") {
+    const session = requireEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const body = await readJson(req);
+    const companyId = String(body.companyId ?? "").trim();
+    if (!companyId) return json({ error: "companyId is required" }, 400);
+    const company = db.query("SELECT id, name, data_ring FROM companies WHERE id = ?1").get(companyId) as Record<string, unknown> | null;
+    if (!company) return json({ error: "company not found" }, 404);
+    const reason = String(body.reason ?? "").trim();
+    const reasonCategory = normalizeReasonCategory(body.reasonCategory);
+    const row = upsertOutreachResult(companyId, {
+      state: "rejected", reason, reason_category: reasonCategory, dismissed_from: "call_list",
+    });
+    // Move to the terminal "processed" ring so it leaves the active target pool
+    // and stops inflating the loop gate counts. Remember the previous ring so
+    // "undo" can restore it.
+    const prevRing = String(company.data_ring ?? "");
+    if (prevRing && prevRing !== "processed") {
+      db.query("UPDATE outreach_results SET prev_data_ring = COALESCE(prev_data_ring, ?2) WHERE company_id = ?1").run(companyId, prevRing);
+    }
+    db.query("UPDATE companies SET data_ring = 'processed', updated_at = ?2 WHERE id = ?1").run(companyId, Date.now());
+    recordActivity("company", companyId, `user:${session.pubkey.slice(0, 16)}`, "outreach_dismissed", `Dismissed from call list (${reasonCategory})`, { reason, reasonCategory });
+    return json({ result: mapOutreachResult(row) });
+  }
+
+  // Register a response on a Waiting/No-Response item: meeting or dropped.
+  if (pathname === "/api/kindling/outreach/respond" && req.method === "POST") {
+    const session = requireEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const body = await readJson(req);
+    const companyId = String(body.companyId ?? "").trim();
+    if (!companyId) return json({ error: "companyId is required" }, 400);
+    const company = db.query("SELECT id, name FROM companies WHERE id = ?1").get(companyId) as Record<string, unknown> | null;
+    if (!company) return json({ error: "company not found" }, 404);
+    const outcome = String(body.outcome ?? "").trim().toLowerCase();
+    const channel = String(body.channel ?? "").trim().toLowerCase();
+    const notes = String(body.notes ?? "").trim();
+    const now = Date.now();
+    // A call gives instant feedback, so it may create the record directly
+    // (no prior "sent"). Stamp outreach_at on first touch.
+    const existing = db.query("SELECT outreach_at, day_attempts, day_attempts_date FROM outreach_results WHERE company_id = ?1").get(companyId) as Record<string, unknown> | null;
+    const outreachAt = existing?.outreach_at != null ? Number(existing.outreach_at) : now;
+    const base: Record<string, unknown> = { outreach_at: outreachAt };
+    if (channel) base.channel = channel;
+    if (notes) base.notes = notes;
+    if (outcome === "meeting") {
+      const row = upsertOutreachResult(companyId, { ...base, state: "meeting", outcome: "meeting", response_at: now });
+      recordActivity("company", companyId, `user:${session.pubkey.slice(0, 16)}`, "outreach_meeting", `Response received: follow-up meeting${channel ? ` (${channel})` : ""}`, { channel, notes });
+      return json({ result: mapOutreachResult(row) });
+    }
+    if (outcome === "dropped") {
+      const reason = String(body.reason ?? "").trim() || notes;
+      const reasonCategory = normalizeReasonCategory(body.reasonCategory);
+      const row = upsertOutreachResult(companyId, {
+        ...base, state: "rejected", outcome: "dropped", response_at: now, reason, reason_category: reasonCategory, dismissed_from: "waiting",
+      });
+      // Terminal: move off the active pool into the "processed" ring. The
+      // prev_data_ring was already stamped when outreach was sent (send flow),
+      // so undo can still restore it.
+      const dropRing = db.query("SELECT data_ring FROM companies WHERE id = ?1").get(companyId) as Record<string, unknown> | null;
+      const prevRing = String(dropRing?.data_ring ?? "");
+      if (prevRing && prevRing !== "processed" && prevRing !== "contacted") {
+        db.query("UPDATE outreach_results SET prev_data_ring = COALESCE(prev_data_ring, ?2) WHERE company_id = ?1").run(companyId, prevRing);
+      }
+      db.query("UPDATE companies SET data_ring = 'processed', updated_at = ?2 WHERE id = ?1").run(companyId, now);
+      recordActivity("company", companyId, `user:${session.pubkey.slice(0, 16)}`, "outreach_dropped", `Dropped after outreach (${reasonCategory})`, { reason, reasonCategory, channel, notes });
+      return json({ result: mapOutreachResult(row) });
+    }
+    // "No answer" on a call — keep the company on the deck (state "on_deck") so it
+    // recirculates to the back. After 3 no-answers in one day, snooze to tomorrow.
+    if (outcome === "no_answer") {
+      const today = startOfDay(now);
+      const sameDay = existing?.day_attempts_date != null && Number(existing.day_attempts_date) === today;
+      const dayAttempts = (sameDay ? Number(existing?.day_attempts ?? 0) : 0) + 1;
+      const snoozedUntil = dayAttempts >= 3 ? startOfDay(now) + getSnoozeDays() * DAY_MS : null;
+      const row = upsertOutreachResult(companyId, {
+        ...base, state: "on_deck", outcome: "no_answer",
+        day_attempts: dayAttempts, day_attempts_date: today, snoozed_until: snoozedUntil,
+      });
+      const detail = snoozedUntil ? ` — 3rd today, snoozed` : "";
+      recordActivity("company", companyId, `user:${session.pubkey.slice(0, 16)}`, "outreach_no_answer", `Call — no answer${channel ? ` (${channel})` : ""}${detail}`, { channel, notes, dayAttempts });
+      return json({ result: mapOutreachResult(row) });
+    }
+    return json({ error: "outcome must be 'meeting', 'dropped', or 'no_answer'" }, 400);
+  }
+
+  // Snooze a call-list item: keep it on the deck but hide it until the configured
+  // number of days have passed (reappears at the back of the deck).
+  if (pathname === "/api/kindling/outreach/snooze" && req.method === "POST") {
+    const session = requireEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const body = await readJson(req);
+    const companyId = String(body.companyId ?? "").trim();
+    if (!companyId) return json({ error: "companyId is required" }, 400);
+    const company = db.query("SELECT id, name FROM companies WHERE id = ?1").get(companyId) as Record<string, unknown> | null;
+    if (!company) return json({ error: "company not found" }, 404);
+    const now = Date.now();
+    const days = getSnoozeDays();
+    const snoozedUntil = startOfDay(now) + days * DAY_MS;
+    const row = upsertOutreachResult(companyId, { state: "on_deck", snoozed_until: snoozedUntil });
+    recordActivity("company", companyId, `user:${session.pubkey.slice(0, 16)}`, "outreach_snoozed", `Snoozed for ${days} day${days === 1 ? "" : "s"}`, { days, snoozedUntil });
+    return json({ result: mapOutreachResult(row) });
+  }
+
   if (pathname === "/api/kindling/top-targets" && req.method === "GET") {
     const session = requireSession(req);
     if (!session) return json({ error: "unauthorized" }, 401);
     const { limit, offset } = pagingFromParams(url.searchParams);
     const hasOutreachDraft = ["1", "true", "yes"].includes(String(url.searchParams.get("hasOutreachDraft") || "").toLowerCase());
     const band = normalizeTopTargetBand(url.searchParams.get("band"));
-    const baseDetail = getOrBuildTopTargetDetail(limit, 0);
-    const rebuilt = Boolean(baseDetail.rebuilt);
-    const detail = getTopTargetRunDetail(baseDetail.run.id, limit, offset, { hasOutreachDraft, band })!;
+    const excludeOutreach = ["1", "true", "yes"].includes(String(url.searchParams.get("excludeOutreach") || "").toLowerCase());
+    const { runId, rebuilt } = resolveTopTargetRunId();
+    const detail = getTopTargetRunDetail(runId, limit, offset, { hasOutreachDraft, band, excludeOutreach })!;
     return json({
       targetListRunId: detail.run.id,
       source: "top_targets",
@@ -10707,14 +11648,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
       `).all(String(latestRun.id)) as Record<string, unknown>[];
       return json({ targets: rows.map(rowJson), rankingRunId: String(latestRun.id), source: "initial_ranking" });
     }
-    const rows = db.query(`
-      SELECT tr.*, c.name, c.location, c.industry, c.website, c.enrichment_status
-      FROM target_rankings tr
-      JOIN companies c ON c.id = tr.company_id
-      ORDER BY tr.rank ASC, tr.created_at DESC
-      LIMIT 30
-    `).all() as Record<string, unknown>[];
-    return json({ targets: rows.map(rowJson), rankingRunId: null, source: "target_rankings" });
+    return json({ targets: [], rankingRunId: null, source: "none" });
   }
 
   const kindlingStartMatch = pathname.match(/^\/api\/kindling\/pipeline-runs\/([^/]+)\/start$/);
@@ -10820,6 +11754,73 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
       persisted: persisted.assessments.length === 1 ? persisted.assessment : persisted.assessments,
       assessments: persisted.assessments,
     });
+  }
+
+  if (pathname === "/api/kindling/alert-feeds" && req.method === "GET") {
+    const session = requireSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    return json({ feeds: listAlertFeeds() });
+  }
+
+  if (pathname === "/api/kindling/alert-feeds" && req.method === "POST") {
+    const session = requireEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const body = await readJson(req);
+    const feedUrl = String(body.feedUrl ?? "").trim();
+    if (!feedUrl) return json({ error: "feedUrl is required" }, 400);
+    try {
+      new URL(feedUrl);
+    } catch {
+      return json({ error: "feedUrl must be a valid URL" }, 400);
+    }
+    const feed = createAlertFeed({
+      label: String(body.label ?? "").trim() || "Untitled alert",
+      feedUrl,
+      queryNote: String(body.queryNote ?? ""),
+      signalType: body.signalType ? String(body.signalType) : undefined,
+      defaultStrength: body.defaultStrength ? String(body.defaultStrength) : undefined,
+      segmentId: body.segmentId ? String(body.segmentId) : null,
+      status: body.status ? String(body.status) as "active" | "paused" | "stalled" : undefined,
+    });
+    return json({ feed }, 201);
+  }
+
+  const alertFeedMatch = pathname.match(/^\/api\/kindling\/alert-feeds\/([^/]+)$/);
+  if (alertFeedMatch && req.method === "PATCH") {
+    const session = requireEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const id = decodeURIComponent(alertFeedMatch[1]!);
+    if (!getAlertFeed(id)) return json({ error: "alert feed not found" }, 404);
+    const body = await readJson(req);
+    const feed = updateAlertFeed(id, {
+      label: body.label !== undefined ? String(body.label) : undefined,
+      feedUrl: body.feedUrl !== undefined ? String(body.feedUrl) : undefined,
+      queryNote: body.queryNote !== undefined ? String(body.queryNote) : undefined,
+      signalType: body.signalType !== undefined ? String(body.signalType) : undefined,
+      defaultStrength: body.defaultStrength !== undefined ? String(body.defaultStrength) : undefined,
+      segmentId: body.segmentId !== undefined ? (body.segmentId ? String(body.segmentId) : null) : undefined,
+      status: body.status !== undefined ? String(body.status) as "active" | "paused" | "stalled" : undefined,
+    });
+    return json({ feed });
+  }
+
+  if (alertFeedMatch && req.method === "DELETE") {
+    const session = requireEditSession(req);
+    if (!session) return json({ error: "edit access required" }, 403);
+    const id = decodeURIComponent(alertFeedMatch[1]!);
+    const removed = deleteAlertFeed(id);
+    return removed ? json({ ok: true }) : json({ error: "alert feed not found" }, 404);
+  }
+
+  if (pathname === "/api/kindling/alert-hits" && req.method === "GET") {
+    const session = requireSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    const hits = listAlertHits({
+      feedId: url.searchParams.get("feedId") ?? undefined,
+      status: url.searchParams.get("status") ?? undefined,
+      limit: url.searchParams.get("limit") ? Number(url.searchParams.get("limit")) : undefined,
+    });
+    return json({ hits });
   }
 
   if (pathname === "/api/chats" && req.method === "GET") {
@@ -11114,6 +12115,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
       now,
     );
     recordActivity("company", id, "agent", "company_created", "Created through NIP-98 API", { pubkey: verified.pubkey });
+    resolveDuplicateGroupForCompany(id, "agent", now);
     const company = db.query("SELECT * FROM companies WHERE id = ?1").get(id) as Record<string, unknown>;
     return json({ company: mapCompany(company) }, 201);
   }
@@ -11151,6 +12153,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
       companyId,
     );
     recordActivity("company", companyId, "agent", "company_updated", "Updated through NIP-98 API", { pubkey: verified.pubkey });
+    resolveDuplicateGroupForCompany(companyId, "agent", now);
     const row = db.query("SELECT * FROM companies WHERE id = ?1").get(companyId) as Record<string, unknown>;
     return json({ company: mapCompany(row) });
   }
