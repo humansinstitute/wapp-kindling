@@ -17,9 +17,9 @@ service`, task `5ff305ee-b25d-4472-867e-e94a261eb79c`, from Pete message
 
 - `/Users/mini/code/wm/autopilot`
   - `feat/wapp-tower-request-broker`
-  - broker base commit `9d288f6`
-  - a follow-up custody-migration commit will be at branch HEAD before this
-    integration starts.
+  - WApp commits `9d288f6`, `61c2431`, `7a85c38`
+  - current shared-worktree branch head `ec97d16` also includes independently
+    completed concurrent Autopilot state that must be preserved and tested.
 - `/Users/mini/code/kindlingapi`
   - `feat/shared-kindling-service`
   - commits `858728f`, `71bbe46`
