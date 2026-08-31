@@ -108,3 +108,10 @@ Operational values, cache/health semantics, Docker assumptions, branch
 divergence, smoke commands, and the collaborative workflow are durable in
 `docs/CollaborativeDevelopment.md`; the integration prompt is in
 `docs/IntegrationAgentChecklist.md`.
+
+Read-only verification on 2026-08-31 found the configured public API origin
+returning HTTP `404` with `reason: app_not_running` and status `idle` for app
+`64765f89-035a-4832-acba-b633068ba2e0`, including `/api/v1/bootstrap`. Rick must
+restore that managed API app through its normal app lifecycle and grant the
+consumer npubs `read` before end-to-end sync can pass. This frontend task did
+not start or restart it.

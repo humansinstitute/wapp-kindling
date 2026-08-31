@@ -58,6 +58,11 @@ grant consumers its Tower app identity, database credentials, or private key.
 An API `401`/`403` is surfaced as authorization denied and is recoverable by
 fixing the actor's read grant and choosing **Authorize API sync** again.
 
+Operational observation (2026-08-31): the configured public API origin returned
+`404 app_not_running` with managed app status `idle`. Rick must restore that API
+through its normal app-card lifecycle before frontend sync or the CapRover smoke
+can become live-current; frontend operators must not bypass the managed runtime.
+
 No backend CORS change is required for this implementation: browsers call the
 same-origin Kindling FE coordinator and the FE server performs the restricted
 forward. If the design later moves to direct cross-origin browser fetches, the
