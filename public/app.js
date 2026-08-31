@@ -2465,7 +2465,9 @@ function applyCompanyList(filtered) {
     limit: Number(filtered.limit ?? 20),
     offset: Number(filtered.offset ?? Number(state.kindlingPaging[companyPageKeyFor(state.activeKindlingView)] || 0)),
   };
-  if (filtered.source || filtered.syncCursor !== undefined) {
+  if (filtered.canonicalApi) {
+    k.canonicalApi = filtered.canonicalApi;
+  } else if (filtered.source || filtered.syncCursor !== undefined) {
     k.canonicalApi = {
       ...(k.canonicalApi || {}),
       companySource: filtered.source || k.canonicalApi?.companySource,
@@ -2753,6 +2755,7 @@ function renderPager(page = {}, key) {
 
 function renderKindling() {
   const data = state.kindling || {};
+  const canonical = data.canonicalApi || {};
   const company = selectedCompany();
   const canEdit = Boolean(state.me?.access?.edit);
   if (state.activeKindlingView === "act") {
@@ -2780,14 +2783,27 @@ function renderKindling() {
           <p class="canonicalApiStatus" title="${escapeHtml(data.canonicalApi?.apiBaseUrl || "")}">
             Company source: ${escapeHtml(data.canonicalApi?.companySource || "loading")}
             · cursor ${escapeHtml(data.canonicalApi?.syncCursor ?? "not synced")}
-            ${data.canonicalApi?.signerReady === false ? " · signer unavailable" : ""}
+            · ${escapeHtml(canonical.cacheState || "unknown cache")}
           </p>
         </div>
         <div class="kindlingHeaderActions">
           <button type="button" data-action="home">Home</button>
           <button type="button" data-action="refresh-kindling">Refresh</button>
+          ${canonical.companySource === "canonical-api" ? `<button type="button" data-action="sync-canonical">${canonical.syncInProgress ? "Continue API sync" : "Authorize API sync"}</button>` : ""}
         </div>
       </header>
+      ${canonical.companySource === "canonical-api" ? `
+        <section class="canonicalCacheBanner ${canonical.current ? "current" : "stale"}" role="status">
+          <div>
+            <strong>${canonical.current ? "Company cache is current" : canonical.cacheState === "empty" ? "No canonical companies cached" : "Showing cached company data"}</strong>
+            <span>${canonical.current
+              ? `Kindling API is reachable and the last browser-authorized sync completed ${escapeHtml(formatDate(canonical.lastSyncAt))}.`
+              : `This cache is not confirmed current.${canonical.lastSyncAt ? ` Last complete sync: ${escapeHtml(formatDate(canonical.lastSyncAt))}.` : " It has not completed an authorized sync."}`}</span>
+            ${canonical.lastError ? `<small>${escapeHtml(canonical.lastError)}</small>` : ""}
+          </div>
+          ${canonical.current ? "" : "<p>Reconnect your Nostr signer and choose <strong>Authorize API sync</strong> to recover. Cached records remain readable while the API is unavailable or access is denied.</p>"}
+        </section>
+      ` : ""}
       <div class="kindlingWorkspace">
         <aside class="workflowRail" aria-label="Kindling workspace sections">
           ${views.map(([key, label, meta], index) => `
@@ -3793,7 +3809,10 @@ function renderCompanyProfileModal(canEdit) {
             <div class="eyebrow">${escapeHtml(stageLabel(company.enrichmentStatus))}</div>
             <h2>${escapeHtml(company.name)}</h2>
           </div>
-          <button type="button" data-action="close-company-profile">Close</button>
+          <div class="rowActions">
+            ${detail?.companySource === "canonical-api" ? '<button type="button" data-action="refresh-canonical-company">Refresh from API</button>' : ""}
+            <button type="button" data-action="close-company-profile">Close</button>
+          </div>
         </header>
         <div class="companyProfileGrid">
           <section>
@@ -3871,8 +3890,9 @@ function formatProfileValue(value) {
 }
 
 function formatDate(value) {
-  const timestamp = Number(value || 0);
-  if (!timestamp) return "";
+  const numeric = Number(value || 0);
+  const timestamp = Number.isFinite(numeric) && numeric > 0 ? numeric : Date.parse(String(value || ""));
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return "";
   return new Date(timestamp).toLocaleString();
 }
 
@@ -3916,6 +3936,37 @@ async function runSchedulerOnce(dryRun) {
 async function refreshKindlingSoon() {
   await new Promise((resolve) => setTimeout(resolve, 900));
   await loadKindlingScreen();
+}
+
+async function syncCanonicalCompaniesWithSigner() {
+  let step = await api("/api/kindling/canonical-sync", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+  for (let requestCount = 0; step.requiresCanonicalAuth; requestCount += 1) {
+    if (requestCount >= 100) throw new Error("Canonical sync exceeded 100 pages; retry after checking API paging");
+    const stage = step.stage === "snapshot" ? "company snapshot" : step.stage === "changes" ? "company changes" : "API bootstrap";
+    setKindlingStatus(`Authorizing ${stage}…`);
+    const canonicalAuthorization = await signNip98Request(step.canonicalRequest);
+    step = await api("/api/kindling/canonical-sync", {
+      method: "POST",
+      body: JSON.stringify({ syncId: step.syncId, canonicalAuthorization }),
+    });
+    if (state.kindling && step.canonicalApi) {
+      state.kindling.canonicalApi = step.canonicalApi;
+      renderKindling();
+    }
+  }
+  return step;
+}
+
+async function refreshCanonicalCompanyWithSigner(companyId) {
+  const prepared = await api(`/api/kindling/canonical-targets/${encodeURIComponent(companyId)}/request`);
+  const canonicalAuthorization = await signNip98Request(prepared.canonicalRequest);
+  return api(`/api/kindling/canonical-targets/${encodeURIComponent(companyId)}/refresh`, {
+    method: "POST",
+    body: JSON.stringify({ canonicalAuthorization }),
+  });
 }
 
 async function handleKindlingSubmit(event) {
@@ -4196,6 +4247,19 @@ async function handleKindlingClick(event) {
   const action = event.target.closest("[data-action]")?.dataset.action;
   if (action === "home") navigate("/");
   if (action === "refresh-kindling") await loadKindlingScreen();
+  if (action === "sync-canonical") {
+    setKindlingStatus("Preparing canonical API sync");
+    const result = await syncCanonicalCompaniesWithSigner();
+    await loadKindlingScreen();
+    setKindlingStatus(`Canonical sync complete · ${Number(result.applied || 0)} changes applied`);
+  }
+  if (action === "refresh-canonical-company" && state.selectedCompanyId) {
+    setKindlingStatus("Authorizing company refresh");
+    await refreshCanonicalCompanyWithSigner(state.selectedCompanyId);
+    state.companyDetail = await api(`/api/kindling/companies/${encodeURIComponent(state.selectedCompanyId)}`);
+    renderKindling();
+    setKindlingStatus("Company refreshed from canonical API");
+  }
   if (action === "scheduler-dry-run") {
     setKindlingStatus("Running scheduler dry run");
     await runSchedulerOnce(true);
@@ -4967,7 +5031,7 @@ function currentSigner() {
     state.signer = makeExtensionSigner();
     return state.signer;
   }
-  throw new Error("Reconnect a Nostr signer to authorize this pipeline run.");
+  throw new Error("Reconnect a Nostr signer to authorize this request.");
 }
 
 async function signNip98Request(triggerRequest) {

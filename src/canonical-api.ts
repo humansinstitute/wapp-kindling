@@ -1,7 +1,5 @@
-import { sha256 } from "@noble/hashes/sha256";
-import { bytesToHex } from "@noble/hashes/utils";
-import { finalizeEvent, getPublicKey, nip19 } from "nostr-tools";
-import { KINDLING_API_URL, KINDLING_COMPANY_SOURCE } from "./config.ts";
+import { verifyEvent, type Event as NostrEvent } from "nostr-tools";
+import { KINDLING_API_URL, KINDLING_CACHE_MAX_AGE_MS, KINDLING_COMPANY_SOURCE } from "./config.ts";
 import { db, getSetting, setSetting } from "./db.ts";
 
 export type CanonicalTarget = {
@@ -25,21 +23,65 @@ export type CanonicalTarget = {
   [key: string]: unknown;
 };
 
+export type CanonicalPreparedRequest = {
+  url: string;
+  method: "GET";
+};
+
+export type CanonicalSyncStep = {
+  source: "canonical-api" | "local";
+  syncId?: string;
+  mode: "bootstrap" | "changes" | "compatibility";
+  stage?: "bootstrap" | "snapshot" | "changes";
+  applied: number;
+  cursor: string | null;
+  complete: boolean;
+  requiresCanonicalAuth: boolean;
+  canonicalRequest?: CanonicalPreparedRequest;
+  canonicalApi: ReturnType<typeof canonicalApiStatus>;
+};
+
 type FetchLike = typeof fetch;
-type SecretInput = string | Uint8Array;
-export type CanonicalRequestOptions = {
-  method?: string;
-  body?: unknown;
-  fetchImpl?: FetchLike;
-  baseUrl?: string;
-  secretInput?: SecretInput;
-  sourceMode?: "canonical-api" | "local";
+type CanonicalSyncSession = {
+  id: string;
+  actorPubkey: string;
+  mode: "bootstrap" | "changes";
+  stage: "bootstrap" | "snapshot" | "changes";
+  request: CanonicalPreparedRequest;
+  cursor: string | null;
+  bootstrapCursor: string | null;
+  applied: number;
+  touchedAt: number;
 };
 
 const CURSOR_SETTING = "canonicalApiSyncCursor";
 const LAST_SYNC_SETTING = "canonicalApiLastSyncAt";
-let syncPromise: Promise<CanonicalSyncResult> | null = null;
-let lastSyncError = "";
+const LAST_API_ATTEMPT_SETTING = "canonicalApiLastAttemptAt";
+const API_REACHABLE_SETTING = "canonicalApiReachable";
+const AUTHORIZATION_STATE_SETTING = "canonicalApiAuthorizationState";
+const LAST_AUTHORIZED_SETTING = "canonicalApiLastAuthorizedAt";
+const LAST_ERROR_SETTING = "canonicalApiLastError";
+const SYNC_SESSION_TTL_MS = 5 * 60 * 1000;
+const NIP98_MAX_AGE_SECONDS = 5 * 60;
+
+let activeSyncSession: CanonicalSyncSession | null = null;
+
+export class CanonicalApiError extends Error {
+  status: number;
+
+  constructor(message: string, status = 502) {
+    super(message);
+    this.name = "CanonicalApiError";
+    this.status = status;
+  }
+}
+
+export class CanonicalSyncConflictError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "CanonicalSyncConflictError";
+  }
+}
 
 export function canonicalApiBaseUrl(value = KINDLING_API_URL): string {
   const parsed = new URL(value);
@@ -49,39 +91,122 @@ export function canonicalApiBaseUrl(value = KINDLING_API_URL): string {
   return parsed.toString().replace(/\/$/, "");
 }
 
-function secretKeyFromInput(input: SecretInput): Uint8Array {
-  if (input instanceof Uint8Array) return input;
-  const value = input.trim();
-  if (/^[0-9a-f]{64}$/i.test(value)) return Uint8Array.from(Buffer.from(value, "hex"));
-  if (value.startsWith("nsec1")) {
-    const decoded = nip19.decode(value);
-    if (decoded.type === "nsec") return decoded.data;
+function canonicalRequest(path: string): CanonicalPreparedRequest {
+  return { url: new URL(path, `${canonicalApiBaseUrl()}/`).toString(), method: "GET" };
+}
+
+function snapshotRequest(pageCursor: string | null, pageSize: number): CanonicalPreparedRequest {
+  const query = new URLSearchParams({ limit: String(Math.min(499, Math.max(1, pageSize))) });
+  if (pageCursor) query.set("cursor", pageCursor);
+  return canonicalRequest(`api/v1/targets?${query}`);
+}
+
+function changesRequest(cursor: string): CanonicalPreparedRequest {
+  return canonicalRequest(`api/v1/targets/changes?since=${encodeURIComponent(cursor)}&limit=499&include=summary`);
+}
+
+function settingBoolean(key: string): boolean | null {
+  const value = getSetting(key);
+  return value === "true" ? true : value === "false" ? false : null;
+}
+
+function setCanonicalRemoteState(input: {
+  reachable: boolean;
+  authorization: "authorized" | "denied" | "unknown";
+  error?: string;
+}) {
+  const now = new Date().toISOString();
+  setSetting(LAST_API_ATTEMPT_SETTING, now);
+  setSetting(API_REACHABLE_SETTING, String(input.reachable));
+  setSetting(AUTHORIZATION_STATE_SETTING, input.authorization);
+  if (input.authorization === "authorized") setSetting(LAST_AUTHORIZED_SETTING, now);
+  setSetting(LAST_ERROR_SETTING, input.error || "");
+}
+
+function clearExpiredSyncSession(now = Date.now()) {
+  if (activeSyncSession && now - activeSyncSession.touchedAt > SYNC_SESSION_TTL_MS) activeSyncSession = null;
+}
+
+function decodeAuthorization(authorization: string): NostrEvent | null {
+  const match = authorization.trim().match(/^Nostr\s+(.+)$/i);
+  if (!match?.[1]) return null;
+  try {
+    return JSON.parse(Buffer.from(match[1], "base64").toString("utf8")) as NostrEvent;
+  } catch {
+    return null;
   }
-  throw new Error("Kindling FE requires its own valid WAPP_NSEC for canonical API access");
 }
 
-function configuredSecretKey(): Uint8Array {
-  return secretKeyFromInput(process.env.WAPP_NSEC || "");
-}
-
-export function buildCanonicalNip98Authorization(
-  url: string,
-  method = "GET",
-  bodyText = "",
-  secretInput: SecretInput = configuredSecretKey(),
-  createdAt = Math.floor(Date.now() / 1000),
-): string {
-  const upperMethod = method.toUpperCase();
-  const tags: string[][] = [["u", new URL(url).toString()], ["method", upperMethod]];
-  if (["POST", "PUT", "PATCH"].includes(upperMethod)) {
-    tags.push(["payload", bytesToHex(sha256(new TextEncoder().encode(bodyText)))]);
+export function verifyCanonicalAuthorization(
+  authorization: string,
+  request: CanonicalPreparedRequest,
+  expectedPubkey: string,
+  nowSeconds = Math.floor(Date.now() / 1000),
+): { ok: true } | { ok: false; error: string } {
+  const event = decodeAuthorization(authorization);
+  if (!event) return { ok: false, error: "A browser-signed NIP-98 authorization is required" };
+  if (event.kind !== 27235) return { ok: false, error: "Invalid canonical NIP-98 event kind" };
+  if (!verifyEvent(event)) return { ok: false, error: "Invalid canonical NIP-98 signature" };
+  if (event.pubkey !== expectedPubkey) return { ok: false, error: "Canonical API authorization must use the signed-in user's identity" };
+  const eventUrl = event.tags.find((tag) => tag[0] === "u")?.[1];
+  const eventMethod = event.tags.find((tag) => tag[0] === "method")?.[1];
+  let normalizedEventUrl = "";
+  try {
+    normalizedEventUrl = eventUrl ? new URL(eventUrl).toString() : "";
+  } catch {
+    normalizedEventUrl = "";
   }
-  const event = finalizeEvent({ kind: 27235, created_at: createdAt, tags, content: "" }, secretKeyFromInput(secretInput));
-  return `Nostr ${btoa(JSON.stringify(event))}`;
+  if (!normalizedEventUrl || normalizedEventUrl !== new URL(request.url).toString()) {
+    return { ok: false, error: "Canonical NIP-98 URL mismatch" };
+  }
+  if (!eventMethod || eventMethod.toUpperCase() !== request.method) {
+    return { ok: false, error: "Canonical NIP-98 method mismatch" };
+  }
+  if (Math.abs(nowSeconds - Number(event.created_at)) > NIP98_MAX_AGE_SECONDS) {
+    return { ok: false, error: "Canonical NIP-98 authorization expired; sign the request again" };
+  }
+  return { ok: true };
 }
 
-export function canonicalSignerNpub(secretInput: SecretInput = configuredSecretKey()): string {
-  return nip19.npubEncode(getPublicKey(secretKeyFromInput(secretInput)));
+async function forwardCanonicalRequest<T>(
+  request: CanonicalPreparedRequest,
+  authorization: string,
+  expectedPubkey: string,
+  fetchImpl: FetchLike = fetch,
+): Promise<T> {
+  const verified = verifyCanonicalAuthorization(authorization, request, expectedPubkey);
+  if (!verified.ok) throw new CanonicalApiError(verified.error, 400);
+
+  let response: Response;
+  try {
+    response = await fetchImpl(request.url, {
+      method: request.method,
+      headers: { accept: "application/json", authorization },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    setCanonicalRemoteState({ reachable: false, authorization: "unknown", error: `Kindling API unreachable: ${message}` });
+    throw new CanonicalApiError(`Kindling API unreachable: ${message}`, 502);
+  }
+
+  const text = await response.text();
+  let payload: unknown = {};
+  try {
+    payload = text ? JSON.parse(text) : {};
+  } catch {
+    payload = { error: text.slice(0, 500) };
+  }
+
+  if (!response.ok) {
+    const authorizationState = response.status === 401 || response.status === 403 ? "denied" : "authorized";
+    const detail = payload && typeof payload === "object" ? JSON.stringify(payload) : String(payload);
+    const message = `Kindling API ${request.method} ${new URL(request.url).pathname} failed (${response.status}): ${detail}`;
+    setCanonicalRemoteState({ reachable: true, authorization: authorizationState, error: message });
+    throw new CanonicalApiError(message, response.status === 401 || response.status === 403 ? 424 : 502);
+  }
+
+  setCanonicalRemoteState({ reachable: true, authorization: "authorized" });
+  return payload as T;
 }
 
 export function mapCanonicalTarget(target: CanonicalTarget) {
@@ -154,154 +279,257 @@ export function upsertCanonicalTarget(target: CanonicalTarget): void {
 }
 
 export function removeCanonicalTarget(companyId: string): void {
-  // Preserve local workflow history and FK targets, but remove the company from
-  // canonical-backed reads by deleting only its authority/cache marker.
   db.query("DELETE FROM canonical_company_cache WHERE company_id = ?1").run(companyId);
 }
 
-async function canonicalRequest<T>(
-  path: string,
-  options: CanonicalRequestOptions = {},
-): Promise<T> {
-  const method = (options.method || "GET").toUpperCase();
-  const baseUrl = canonicalApiBaseUrl(options.baseUrl);
-  const url = new URL(path, `${baseUrl}/`).toString();
-  const bodyText = options.body === undefined ? "" : JSON.stringify(options.body);
-  const authorization = buildCanonicalNip98Authorization(url, method, bodyText, options.secretInput ?? configuredSecretKey());
-  const response = await (options.fetchImpl || fetch)(url, {
-    method,
-    headers: { accept: "application/json", authorization, ...(bodyText ? { "content-type": "application/json" } : {}) },
-    body: bodyText || undefined,
-  });
-  const text = await response.text();
-  let payload: unknown = {};
+export function cachedCanonicalTarget(companyId: string): CanonicalTarget | null {
+  const row = db.query("SELECT payload_json FROM canonical_company_cache WHERE company_id = ?1").get(companyId) as
+    | { payload_json: string }
+    | null;
+  if (!row?.payload_json) return null;
   try {
-    payload = text ? JSON.parse(text) : {};
+    return JSON.parse(row.payload_json) as CanonicalTarget;
   } catch {
-    payload = { error: text.slice(0, 500) };
+    return null;
   }
-  if (!response.ok) {
-    const detail = payload && typeof payload === "object" ? JSON.stringify(payload) : String(payload);
-    throw new Error(`Kindling API ${method} ${new URL(url).pathname} failed (${response.status}): ${detail}`);
-  }
-  return payload as T;
 }
 
-export async function fetchCanonicalTarget(companyId: string, options: CanonicalRequestOptions = {}): Promise<CanonicalTarget> {
-  const payload = await canonicalRequest<{ item: CanonicalTarget }>(`api/v1/targets/${encodeURIComponent(companyId)}`, options);
+function syncStep(session: CanonicalSyncSession): CanonicalSyncStep {
+  return {
+    source: "canonical-api",
+    syncId: session.id,
+    mode: session.mode,
+    stage: session.stage,
+    applied: session.applied,
+    cursor: session.cursor,
+    complete: false,
+    requiresCanonicalAuth: true,
+    canonicalRequest: session.request,
+    canonicalApi: canonicalApiStatus(),
+  };
+}
+
+export function prepareCanonicalSync(
+  actorPubkey: string,
+  sourceMode: "canonical-api" | "local" = KINDLING_COMPANY_SOURCE,
+): CanonicalSyncStep {
+  if (sourceMode === "local") {
+    return {
+      source: "local",
+      mode: "compatibility",
+      applied: 0,
+      cursor: null,
+      complete: true,
+      requiresCanonicalAuth: false,
+      canonicalApi: canonicalApiStatus(),
+    };
+  }
+
+  clearExpiredSyncSession();
+  if (activeSyncSession) {
+    if (activeSyncSession.actorPubkey !== actorPubkey) {
+      throw new CanonicalSyncConflictError("Another user is already authorizing canonical sync; retry shortly");
+    }
+    activeSyncSession.touchedAt = Date.now();
+    return syncStep(activeSyncSession);
+  }
+
+  const cursor = getSetting(CURSOR_SETTING) || null;
+  activeSyncSession = {
+    id: crypto.randomUUID(),
+    actorPubkey,
+    mode: cursor ? "changes" : "bootstrap",
+    stage: cursor ? "changes" : "bootstrap",
+    request: cursor ? changesRequest(cursor) : canonicalRequest("api/v1/bootstrap"),
+    cursor,
+    bootstrapCursor: null,
+    applied: 0,
+    touchedAt: Date.now(),
+  };
+  return syncStep(activeSyncSession);
+}
+
+export async function continueCanonicalSync(input: {
+  syncId: string;
+  actorPubkey: string;
+  authorization: string;
+  fetchImpl?: FetchLike;
+}): Promise<CanonicalSyncStep> {
+  clearExpiredSyncSession();
+  const session = activeSyncSession;
+  if (!session || session.id !== input.syncId || session.actorPubkey !== input.actorPubkey) {
+    throw new CanonicalSyncConflictError("Canonical sync session expired; start sync again");
+  }
+  session.touchedAt = Date.now();
+
+  if (session.stage === "bootstrap") {
+    const payload = await forwardCanonicalRequest<{
+      sync?: { currentCursor?: string };
+      snapshot?: { currentSeq?: number; recommendedPageSize?: number };
+    }>(session.request, input.authorization, input.actorPubkey, input.fetchImpl);
+    const bootstrapCursor = String(payload.sync?.currentCursor ?? payload.snapshot?.currentSeq ?? "").trim();
+    if (!bootstrapCursor) throw new CanonicalApiError("Kindling API bootstrap response did not include a current cursor");
+    session.bootstrapCursor = bootstrapCursor;
+    session.stage = "snapshot";
+    session.request = snapshotRequest(null, Number(payload.snapshot?.recommendedPageSize || 499));
+    session.touchedAt = Date.now();
+    return syncStep(session);
+  }
+
+  if (session.stage === "snapshot") {
+    const payload = await forwardCanonicalRequest<{
+      items?: CanonicalTarget[];
+      page?: { nextCursor?: string | null; hasMore?: boolean };
+    }>(session.request, input.authorization, input.actorPubkey, input.fetchImpl);
+    const items = Array.isArray(payload.items) ? payload.items : [];
+    for (const target of items) upsertCanonicalTarget(target);
+    session.applied += items.length;
+    if (payload.page?.hasMore) {
+      if (!payload.page.nextCursor) throw new CanonicalApiError("Kindling API snapshot page omitted its next cursor");
+      session.request = snapshotRequest(payload.page.nextCursor, 499);
+      session.touchedAt = Date.now();
+      return syncStep(session);
+    }
+    if (!session.bootstrapCursor) throw new CanonicalApiError("Canonical bootstrap cursor was lost; restart sync");
+    setSetting(CURSOR_SETTING, session.bootstrapCursor);
+    setSetting(LAST_SYNC_SETTING, new Date().toISOString());
+    setSetting(LAST_ERROR_SETTING, "");
+    const applied = session.applied;
+    const cursor = session.bootstrapCursor;
+    activeSyncSession = null;
+    const result: CanonicalSyncStep = {
+      source: "canonical-api",
+      mode: "bootstrap",
+      applied,
+      cursor,
+      complete: true,
+      requiresCanonicalAuth: false,
+      canonicalApi: canonicalApiStatus(),
+    };
+    return result;
+  }
+
+  if (!session.cursor || getSetting(CURSOR_SETTING) !== session.cursor) {
+    activeSyncSession = null;
+    throw new CanonicalSyncConflictError("Canonical sync cursor changed; restart sync from the latest committed cursor");
+  }
+  const payload = await forwardCanonicalRequest<{
+    changes?: Array<{ operation: string; companyId: string; target: CanonicalTarget | null }>;
+    sync?: { nextCursor?: string; hasMore?: boolean };
+  }>(session.request, input.authorization, input.actorPubkey, input.fetchImpl);
+  const changes = Array.isArray(payload.changes) ? payload.changes : [];
+  const nextCursor = String(payload.sync?.nextCursor ?? "").trim();
+  if (!nextCursor) throw new CanonicalApiError("Kindling API change page omitted its next cursor");
+  for (const change of changes) {
+    if (change.operation === "delete" || !change.target) removeCanonicalTarget(String(change.companyId));
+    else upsertCanonicalTarget(change.target);
+  }
+  session.applied += changes.length;
+  session.cursor = nextCursor;
+  setSetting(CURSOR_SETTING, nextCursor);
+  if (payload.sync?.hasMore) {
+    session.request = changesRequest(nextCursor);
+    session.touchedAt = Date.now();
+    return syncStep(session);
+  }
+
+  setSetting(LAST_SYNC_SETTING, new Date().toISOString());
+  setSetting(LAST_ERROR_SETTING, "");
+  const applied = session.applied;
+  activeSyncSession = null;
+  const result: CanonicalSyncStep = {
+    source: "canonical-api",
+    mode: "changes",
+    applied,
+    cursor: nextCursor,
+    complete: true,
+    requiresCanonicalAuth: false,
+    canonicalApi: canonicalApiStatus(),
+  };
+  return result;
+}
+
+export function prepareCanonicalTargetRequest(companyId: string): CanonicalPreparedRequest {
+  const id = companyId.trim();
+  if (!id) throw new CanonicalApiError("companyId is required", 400);
+  return canonicalRequest(`api/v1/targets/${encodeURIComponent(id)}`);
+}
+
+export async function refreshCanonicalTarget(input: {
+  companyId: string;
+  actorPubkey: string;
+  authorization: string;
+  fetchImpl?: FetchLike;
+}): Promise<CanonicalTarget> {
+  const request = prepareCanonicalTargetRequest(input.companyId);
+  const payload = await forwardCanonicalRequest<{ item?: CanonicalTarget }>(
+    request,
+    input.authorization,
+    input.actorPubkey,
+    input.fetchImpl,
+  );
+  if (!payload.item?.id) throw new CanonicalApiError("Kindling API target response did not include an item");
   upsertCanonicalTarget(payload.item);
   return payload.item;
 }
 
-export async function fetchCanonicalTargetsBulk(ids: string[], options: CanonicalRequestOptions = {}) {
-  return canonicalRequest<{ items: CanonicalTarget[]; missingIds: string[] }>("api/v1/targets/bulk", {
-    ...options,
-    method: "POST",
-    body: { ids, include: "detail" },
-  });
-}
-
-export type CanonicalSyncResult = {
-  source: "canonical-api" | "local";
-  mode: "bootstrap" | "changes" | "compatibility";
-  cursor: string | null;
-  applied: number;
-};
-
-async function runCanonicalSync(options: CanonicalRequestOptions = {}): Promise<CanonicalSyncResult> {
-  if ((options.sourceMode ?? KINDLING_COMPANY_SOURCE) === "local") {
-    return { source: "local", mode: "compatibility", cursor: null, applied: 0 };
-  }
-  const storedCursor = getSetting(CURSOR_SETTING);
-  let applied = 0;
-  if (!storedCursor) {
-    const bootstrap = await canonicalRequest<{
-      sync: { currentCursor: string };
-      snapshot: { recommendedPageSize?: number };
-    }>("api/v1/bootstrap", options);
-    let pageCursor: string | null = null;
-    do {
-      // Kindling API reserves one of Tower's 500 rows for cursor lookahead.
-      const query = new URLSearchParams({ limit: String(Math.min(499, bootstrap.snapshot.recommendedPageSize || 499)) });
-      if (pageCursor) query.set("cursor", pageCursor);
-      const page = await canonicalRequest<{
-        items: CanonicalTarget[];
-        page: { nextCursor: string | null; hasMore: boolean };
-      }>(`api/v1/targets?${query}`, options);
-      for (const target of page.items) upsertCanonicalTarget(target);
-      applied += page.items.length;
-      pageCursor = page.page.hasMore ? page.page.nextCursor : null;
-    } while (pageCursor);
-    setSetting(CURSOR_SETTING, bootstrap.sync.currentCursor);
-    setSetting(LAST_SYNC_SETTING, new Date().toISOString());
-    return { source: "canonical-api", mode: "bootstrap", cursor: bootstrap.sync.currentCursor, applied };
-  }
-
-  let cursor = storedCursor;
-  let hasMore = false;
-  do {
-    const payload = await canonicalRequest<{
-      changes: Array<{ operation: string; companyId: string; target: CanonicalTarget | null }>;
-      sync: { nextCursor: string; hasMore: boolean };
-    }>(`api/v1/targets/changes?since=${encodeURIComponent(cursor)}&limit=499&include=summary`, options);
-    for (const change of payload.changes) {
-      if (change.operation === "delete" || !change.target) removeCanonicalTarget(change.companyId);
-      else upsertCanonicalTarget(change.target);
-    }
-    applied += payload.changes.length;
-    cursor = payload.sync.nextCursor;
-    hasMore = payload.sync.hasMore;
-    // Cursor advances only after every change in the page is committed.
-    setSetting(CURSOR_SETTING, cursor);
-  } while (hasMore);
-  setSetting(LAST_SYNC_SETTING, new Date().toISOString());
-  return { source: "canonical-api", mode: "changes", cursor, applied };
-}
-
-export async function syncCanonicalCompanies(options: CanonicalRequestOptions = {}): Promise<CanonicalSyncResult> {
-  if (!syncPromise) {
-    syncPromise = runCanonicalSync(options)
-      .then((result) => {
-        lastSyncError = "";
-        return result;
-      })
-      .catch((error) => {
-        lastSyncError = error instanceof Error ? error.message : String(error);
-        throw error;
-      })
-      .finally(() => {
-        syncPromise = null;
-      });
-  }
-  return syncPromise;
-}
-
 export function canonicalApiStatus() {
+  clearExpiredSyncSession();
   const cache = db.query("SELECT COUNT(*) AS count, MAX(change_seq) AS max_seq FROM canonical_company_cache").get() as
     | { count: number; max_seq: number | null }
     | null;
-  let signerNpub: string | null = null;
-  try {
-    signerNpub = canonicalSignerNpub();
-  } catch {
-    // Health reports signer readiness without exposing the secret.
-  }
+  const lastSyncAt = getSetting(LAST_SYNC_SETTING) || null;
+  const lastSyncMs = lastSyncAt ? Date.parse(lastSyncAt) : Number.NaN;
+  const cacheAgeMs = Number.isFinite(lastSyncMs) ? Math.max(0, Date.now() - lastSyncMs) : null;
+  const apiReachable = settingBoolean(API_REACHABLE_SETTING);
+  const authorizationState = getSetting(AUTHORIZATION_STATE_SETTING) || "required";
+  const syncAuthorized = authorizationState === "authorized" ? true : authorizationState === "denied" ? false : null;
+  const cachedCompanies = Number(cache?.count || 0);
+  const cacheFresh = KINDLING_COMPANY_SOURCE === "local" || (cacheAgeMs !== null && cacheAgeMs <= KINDLING_CACHE_MAX_AGE_MS);
+  const current = KINDLING_COMPANY_SOURCE === "local" || (cachedCompanies > 0 && cacheFresh && apiReachable === true && syncAuthorized === true);
+  const cacheState = KINDLING_COMPANY_SOURCE === "local"
+    ? "local"
+    : cachedCompanies === 0
+      ? "empty"
+      : current
+        ? "current"
+        : "stale";
   return {
     companySource: KINDLING_COMPANY_SOURCE,
     apiBaseUrl: canonicalApiBaseUrl(),
-    syncCursor: getSetting(CURSOR_SETTING),
-    lastSyncAt: getSetting(LAST_SYNC_SETTING),
-    cachedCompanies: Number(cache?.count || 0),
+    authorizationMode: "browser-nip98-forward",
+    authorizationState,
+    syncAuthorized,
+    lastAuthorizedAt: getSetting(LAST_AUTHORIZED_SETTING) || null,
+    apiReachable,
+    lastApiAttemptAt: getSetting(LAST_API_ATTEMPT_SETTING) || null,
+    syncCursor: getSetting(CURSOR_SETTING) || null,
+    lastSyncAt,
+    cacheAgeMs,
+    cacheMaxAgeMs: KINDLING_CACHE_MAX_AGE_MS,
+    cacheFresh,
+    current,
+    cacheState,
+    cachedCompanies,
     maxCachedChangeSeq: cache?.max_seq == null ? null : Number(cache.max_seq),
-    signerReady: Boolean(signerNpub),
-    signerNpub,
-    lastError: lastSyncError || null,
+    syncInProgress: Boolean(activeSyncSession),
+    lastError: getSetting(LAST_ERROR_SETTING) || null,
   };
 }
 
 export function resetCanonicalSyncStateForTests(): void {
+  db.query(`
+    DELETE FROM app_settings
+    WHERE key IN (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+  `).run(
+    CURSOR_SETTING,
+    LAST_SYNC_SETTING,
+    LAST_API_ATTEMPT_SETTING,
+    API_REACHABLE_SETTING,
+    AUTHORIZATION_STATE_SETTING,
+    LAST_AUTHORIZED_SETTING,
+    LAST_ERROR_SETTING,
+  );
   db.query("DELETE FROM canonical_company_cache").run();
-  db.query("DELETE FROM app_settings WHERE key IN (?1, ?2)").run(CURSOR_SETTING, LAST_SYNC_SETTING);
-  lastSyncError = "";
-  syncPromise = null;
+  activeSyncSession = null;
 }

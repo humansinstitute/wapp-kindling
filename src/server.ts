@@ -20,9 +20,14 @@ import {
 } from "./auth.ts";
 import { KINDLING_COMPANY_SOURCE, PIPELINE_NAME, PORT, PUBLIC_ORIGIN, WINGMAN_URL } from "./config.ts";
 import {
+  cachedCanonicalTarget,
+  CanonicalApiError,
   canonicalApiStatus,
-  fetchCanonicalTarget,
-  syncCanonicalCompanies,
+  CanonicalSyncConflictError,
+  continueCanonicalSync,
+  prepareCanonicalSync,
+  prepareCanonicalTargetRequest,
+  refreshCanonicalTarget,
   type CanonicalTarget,
 } from "./canonical-api.ts";
 import {
@@ -7560,7 +7565,15 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
   const { pathname } = url;
 
   if (pathname === "/api/health" && req.method === "GET") {
-    return json({ ok: true, now: new Date().toISOString(), canonicalApi: canonicalApiStatus() });
+    const canonicalApi = canonicalApiStatus();
+    return json({
+      ok: true,
+      ready: true,
+      dataReady: canonicalApi.companySource === "local" || canonicalApi.cachedCompanies > 0,
+      liveCurrent: canonicalApi.current,
+      now: new Date().toISOString(),
+      canonicalApi,
+    });
   }
 
   if (pathname === "/api/auth/challenge" && req.method === "POST") {
@@ -7597,6 +7610,49 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     const session = requireSession(req);
     if (!session) return json({ error: "unauthorized" }, 401);
     return json({ canonicalApi: canonicalApiStatus() });
+  }
+
+  if (pathname === "/api/kindling/canonical-sync" && req.method === "POST") {
+    const session = requireSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    const body = await readJson(req);
+    try {
+      const syncId = String(body.syncId ?? "").trim();
+      if (!syncId) return json(prepareCanonicalSync(session.pubkey));
+      const authorization = String(body.canonicalAuthorization ?? "").trim();
+      if (!authorization) return json({ error: "canonicalAuthorization is required" }, 400);
+      return json(await continueCanonicalSync({ syncId, actorPubkey: session.pubkey, authorization }));
+    } catch (error) {
+      const status = error instanceof CanonicalSyncConflictError
+        ? 409
+        : error instanceof CanonicalApiError
+          ? error.status
+          : 502;
+      return json({ error: error instanceof Error ? error.message : String(error), canonicalApi: canonicalApiStatus() }, status);
+    }
+  }
+
+  const canonicalTargetRequestMatch = pathname.match(/^\/api\/kindling\/canonical-targets\/([^/]+)\/(request|refresh)$/);
+  if (canonicalTargetRequestMatch) {
+    const session = requireSession(req);
+    if (!session) return json({ error: "unauthorized" }, 401);
+    const companyId = decodeURIComponent(canonicalTargetRequestMatch[1]!);
+    const action = canonicalTargetRequestMatch[2];
+    try {
+      if (action === "request" && req.method === "GET") {
+        return json({ canonicalRequest: prepareCanonicalTargetRequest(companyId), canonicalApi: canonicalApiStatus() });
+      }
+      if (action === "refresh" && req.method === "POST") {
+        const body = await readJson(req);
+        const authorization = String(body.canonicalAuthorization ?? "").trim();
+        if (!authorization) return json({ error: "canonicalAuthorization is required" }, 400);
+        const canonicalTarget = await refreshCanonicalTarget({ companyId, actorPubkey: session.pubkey, authorization });
+        return json({ canonicalTarget, canonicalApi: canonicalApiStatus() });
+      }
+    } catch (error) {
+      const status = error instanceof CanonicalApiError ? error.status : 502;
+      return json({ error: error instanceof Error ? error.message : String(error), canonicalApi: canonicalApiStatus() }, status);
+    }
   }
 
   if (pathname === "/api/settings" && req.method === "GET") {
@@ -7706,11 +7762,6 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     const compact = url.searchParams.get("compact") === "1" || url.searchParams.get("compact") === "true";
     if (!compact) {
       await reconcileActiveKindlingRuns();
-      try {
-        await syncCanonicalCompanies();
-      } catch (error) {
-        return json({ error: error instanceof Error ? error.message : String(error), canonicalApi: canonicalApiStatus() }, 502);
-      }
     }
     const companies = compact ? [] : listCompanies(null, { limit: COMPANY_LIST_LIMIT, offset: 0 });
     const recentRuns = (db.query("SELECT * FROM kindling_pipeline_runs ORDER BY updated_at DESC LIMIT 12").all() as Record<string, unknown>[]).map(mapRun);
@@ -8632,12 +8683,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
   if (pathname === "/api/kindling/companies" && req.method === "GET") {
     const session = requireSession(req);
     if (!session) return json({ error: "unauthorized" }, 401);
-    let canonicalSync;
-    try {
-      canonicalSync = await syncCanonicalCompanies();
-    } catch (error) {
-      return json({ error: error instanceof Error ? error.message : String(error), canonicalApi: canonicalApiStatus() }, 502);
-    }
+    const canonicalApi = canonicalApiStatus();
     const { limit, offset } = pagingFromParams(url.searchParams);
     const companies = listCompanies(url.searchParams, { limit, offset, compact: true });
     const withBandCounts = url.searchParams.get("withBandCounts") === "1" || url.searchParams.get("withBandCounts") === "true";
@@ -8647,8 +8693,9 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
       returned: companies.length,
       limit,
       offset,
-      source: canonicalSync.source,
-      syncCursor: canonicalSync.cursor,
+      source: canonicalApi.companySource,
+      syncCursor: canonicalApi.syncCursor,
+      canonicalApi,
       ...(withBandCounts ? { bandCounts: companyBandCounts(url.searchParams) } : {}),
     });
   }
@@ -8754,14 +8801,9 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
     const session = requireSession(req);
     if (!session) return json({ error: "unauthorized" }, 401);
     const companyId = decodeURIComponent(companyMatch[1]!);
-    let canonicalTarget: CanonicalTarget | null = null;
-    if (KINDLING_COMPANY_SOURCE === "canonical-api") {
-      try {
-        canonicalTarget = await fetchCanonicalTarget(companyId);
-      } catch (error) {
-        return json({ error: error instanceof Error ? error.message : String(error), canonicalApi: canonicalApiStatus() }, 502);
-      }
-    }
+    const canonicalTarget: CanonicalTarget | null = KINDLING_COMPANY_SOURCE === "canonical-api"
+      ? cachedCanonicalTarget(companyId)
+      : null;
     const row = db.query("SELECT * FROM companies WHERE id = ?1").get(companyId) as Record<string, unknown> | null;
     if (!row) return json({ error: "company not found" }, 404);
     const sources = (db.query("SELECT * FROM sources WHERE company_id = ?1 ORDER BY created_at DESC").all(companyId) as Record<string, unknown>[]).map(mapSource);
@@ -8796,6 +8838,7 @@ export async function handleApi(req: Request, url: URL): Promise<Response | null
       company: mapCompany(row),
       companySource: KINDLING_COMPANY_SOURCE,
       canonicalTarget,
+      canonicalApi: canonicalApiStatus(),
       sources,
       signals,
       customerProfileVersions,

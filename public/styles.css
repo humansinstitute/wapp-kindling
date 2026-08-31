@@ -660,6 +660,43 @@ button[aria-busy="true"]::after {
   font-size: 12px;
 }
 
+.canonicalCacheBanner {
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 12px 14px;
+  border: 1px solid #d9a441;
+  border-radius: 8px;
+  background: #fff7df;
+  color: #5f4615;
+}
+
+.canonicalCacheBanner.current {
+  border-color: rgba(17, 107, 93, 0.35);
+  background: rgba(17, 107, 93, 0.08);
+  color: var(--ink);
+}
+
+.canonicalCacheBanner div {
+  display: grid;
+  gap: 3px;
+}
+
+.canonicalCacheBanner span,
+.canonicalCacheBanner small,
+.canonicalCacheBanner p {
+  margin: 0;
+  font-size: 12px;
+}
+
+.canonicalCacheBanner small {
+  color: #8a301f;
+}
+
+.canonicalCacheBanner p {
+  max-width: 440px;
+}
+
 .kindlingHeaderActions,
 .rowActions {
   display: flex;
@@ -2188,6 +2225,10 @@ textarea {
 
   .kindlingHeader,
   .kindlingHeaderActions {
+    display: grid;
+  }
+
+  .canonicalCacheBanner {
     display: grid;
   }
 

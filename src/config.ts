@@ -30,6 +30,10 @@ export const KINDLING_API_URL = normalizeHttpBaseUrl(
   process.env.KINDLING_API_URL || "",
   "http://127.0.0.1:41038",
 );
+const configuredCacheMaxAgeMs = Number(process.env.KINDLING_CACHE_MAX_AGE_MS || 15 * 60 * 1000);
+export const KINDLING_CACHE_MAX_AGE_MS = Number.isFinite(configuredCacheMaxAgeMs) && configuredCacheMaxAgeMs > 0
+  ? configuredCacheMaxAgeMs
+  : 15 * 60 * 1000;
 export const KINDLING_COMPANY_SOURCE = process.env.KINDLING_COMPANY_SOURCE === "local"
   ? "local"
   : "canonical-api";

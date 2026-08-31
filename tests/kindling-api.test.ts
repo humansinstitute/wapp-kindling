@@ -25,11 +25,12 @@ const {
 const { handleApi, runAutomatedProspectingLoop } = await import("../src/server.ts");
 const { runAutoEnrichNextIndustry } = await import("../src/auto-enrichment-job.ts");
 const {
-  buildCanonicalNip98Authorization,
   canonicalApiBaseUrl,
+  continueCanonicalSync,
   mapCanonicalTarget,
+  prepareCanonicalSync,
   resetCanonicalSyncStateForTests,
-  syncCanonicalCompanies,
+  verifyCanonicalAuthorization,
 } = await import("../src/canonical-api.ts");
 
 const secretKey = new Uint8Array(32).fill(7);
@@ -110,6 +111,20 @@ function nip98Headers(path: string, method = "GET", body?: unknown) {
     content: "",
   }, secretKey);
   return { authorization: `Nostr ${btoa(JSON.stringify(event))}` };
+}
+
+function canonicalAuthorization(
+  request: { url: string; method: string },
+  signingKey = secretKey,
+  createdAt = Math.floor(Date.now() / 1000),
+) {
+  const event = finalizeEvent({
+    kind: 27235,
+    created_at: createdAt,
+    tags: [["u", request.url], ["method", request.method]],
+    content: "",
+  }, signingKey);
+  return `Nostr ${btoa(JSON.stringify(event))}`;
 }
 
 function seedKindlingRun(roleKey: string, requestId: string, webhookToken: string, triggerPayload: unknown = {}) {
@@ -4576,23 +4591,44 @@ describe("Canonical Kindling API adapter", () => {
     expect(() => canonicalApiBaseUrl("file:///tmp/unsafe")).toThrow();
   });
 
-  test("prepares valid NIP-98 GET and payload-bound POST requests", () => {
-    const decode = (value: string) => JSON.parse(atob(value.replace(/^Nostr /, "")));
-    const getEvent = decode(buildCanonicalNip98Authorization(
-      "https://api.example.test/api/v1/bootstrap", "GET", "", secretKey, 1_700_000_000,
-    ));
-    expect(verifyEvent(getEvent)).toBe(true);
-    expect(getEvent.kind).toBe(27235);
-    expect(getEvent.tags).toContainEqual(["u", "https://api.example.test/api/v1/bootstrap"]);
-    expect(getEvent.tags).toContainEqual(["method", "GET"]);
-    expect(getEvent.tags.some((tag: string[]) => tag[0] === "payload")).toBe(false);
+  test("health separates process readiness from canonical cache currency without signer material", async () => {
+    const health = await api("/api/health");
+    expect(health.res.status).toBe(200);
+    expect(health.payload).toMatchObject({ ok: true, ready: true, dataReady: true, liveCurrent: true });
+    expect(health.payload.canonicalApi).toMatchObject({
+      companySource: "local",
+      authorizationMode: "browser-nip98-forward",
+      cacheState: "local",
+      current: true,
+    });
+    expect(health.payload.canonicalApi).not.toHaveProperty("signerReady");
+    expect(health.payload.canonicalApi).not.toHaveProperty("signerNpub");
+  });
 
-    const body = JSON.stringify({ ids: ["canonical-1"], include: "detail" });
-    const postEvent = decode(buildCanonicalNip98Authorization(
-      "https://api.example.test/api/v1/targets/bulk", "POST", body, secretKey, 1_700_000_000,
-    ));
-    expect(verifyEvent(postEvent)).toBe(true);
-    expect(postEvent.tags.some((tag: string[]) => tag[0] === "payload" && tag[1]?.length === 64)).toBe(true);
+  test("canonical sync coordinator is explicit and completes without signing in local compatibility mode", async () => {
+    const result = await api("/api/kindling/canonical-sync", { method: "POST", body: {} });
+    expect(result.res.status).toBe(200);
+    expect(result.payload).toMatchObject({
+      source: "local",
+      mode: "compatibility",
+      complete: true,
+      requiresCanonicalAuth: false,
+    });
+  });
+
+  test("accepts only fresh browser NIP-98 from the signed-in user for the exact canonical request", () => {
+    const step = prepareCanonicalSync(pubkey, "canonical-api");
+    const request = step.canonicalRequest!;
+    const authorization = canonicalAuthorization(request);
+    expect(verifyCanonicalAuthorization(authorization, request, pubkey)).toEqual({ ok: true });
+    expect(verifyCanonicalAuthorization(authorization, { ...request, url: `${request.url}?changed=1` }, pubkey)).toEqual({
+      ok: false,
+      error: "Canonical NIP-98 URL mismatch",
+    });
+    expect(verifyCanonicalAuthorization(authorization, request, getPublicKey(new Uint8Array(32).fill(8)))).toEqual({
+      ok: false,
+      error: "Canonical API authorization must use the signed-in user's identity",
+    });
   });
 
   test("maps canonical identity and enrichment facts without workflow fields", () => {
@@ -4638,15 +4674,18 @@ describe("Canonical Kindling API adapter", () => {
       requests.push(new URL(String(input)));
       return new Response(JSON.stringify(responses.shift()), { status: 200 });
     };
-    const result = await syncCanonicalCompanies({
-      sourceMode: "canonical-api",
-      baseUrl: "https://canonical.kindling.test",
-      fetchImpl: fetchImpl as typeof fetch,
-      secretInput: secretKey,
-    });
+    let result = prepareCanonicalSync(pubkey, "canonical-api");
+    while (result.requiresCanonicalAuth) {
+      result = await continueCanonicalSync({
+        syncId: result.syncId!,
+        actorPubkey: pubkey,
+        authorization: canonicalAuthorization(result.canonicalRequest!),
+        fetchImpl: fetchImpl as typeof fetch,
+      });
+    }
     expect(requests.slice(1).map((request) => request.searchParams.get("limit"))).toEqual(["499", "499"]);
     expect(requests[2]!.searchParams.get("cursor")).toBe("page-2");
-    expect(result).toMatchObject({ mode: "bootstrap", cursor: "2", applied: 2 });
+    expect(result).toMatchObject({ mode: "bootstrap", cursor: "2", applied: 2, complete: true });
   });
 
   test("commits each change page before advancing the sync cursor", async () => {
@@ -4667,14 +4706,17 @@ describe("Canonical Kindling API adapter", () => {
       seen.push(requestUrl.searchParams.get("since") || "");
       return new Response(JSON.stringify(responses.shift()), { status: 200 });
     };
-    const result = await syncCanonicalCompanies({
-      sourceMode: "canonical-api",
-      baseUrl: "https://canonical.kindling.test",
-      fetchImpl: fetchImpl as typeof fetch,
-      secretInput: secretKey,
-    });
+    let result = prepareCanonicalSync(pubkey, "canonical-api");
+    while (result.requiresCanonicalAuth) {
+      result = await continueCanonicalSync({
+        syncId: result.syncId!,
+        actorPubkey: pubkey,
+        authorization: canonicalAuthorization(result.canonicalRequest!),
+        fetchImpl: fetchImpl as typeof fetch,
+      });
+    }
     expect(seen).toEqual(["0", "1"]);
-    expect(result).toMatchObject({ mode: "changes", cursor: "2", applied: 2 });
+    expect(result).toMatchObject({ mode: "changes", cursor: "2", applied: 2, complete: true });
     expect((db.query("SELECT value FROM app_settings WHERE key = 'canonicalApiSyncCursor'").get() as { value: string }).value).toBe("2");
     expect((db.query("SELECT COUNT(*) AS count FROM canonical_company_cache").get() as { count: number }).count).toBe(2);
   });
