@@ -635,8 +635,10 @@ describe("Kindling API contracts", () => {
             services: [
               { key: "ai_consulting", name: "AI consulting", description: "Practical AI advisory." },
               { key: "wingman_implementations", name: "Wingman implementations" },
+              { key: "custom_wapps", name: "Custom WApps" },
+              { key: "training", name: "Training" },
             ],
-            positioningVariants: ["Succession", "Reducing owner dependence"],
+            positioningVariants: ["Succession", "Maximizing value", "Reducing owner dependence"],
           },
           changeSummary: "Changed positioning",
           rationaleNotes: ["Reason one"],
@@ -1906,6 +1908,7 @@ describe("Kindling API contracts", () => {
       enriched: 3,
       scored: 0,
       outreachReady: 1,
+      processed: 0,
       parked: 1,
       stale: 1,
     });

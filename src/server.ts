@@ -8023,7 +8023,9 @@ function getTopTargetRunDetail(runId: string, limit = 100, offset = 0, options: 
     JOIN companies c ON c.id = tli.company_id
     WHERE tli.target_list_run_id = ?1
       ${filters}
-    ORDER BY ${deckAttemptOrder} sfa.score DESC, tli.rank ASC
+    -- Preserve the composite snapshot order: tli.rank already includes caveat,
+    -- evidence, confidence, reachability, freshness, and segment adjustments.
+    ORDER BY ${deckAttemptOrder} tli.rank ASC
     LIMIT ?2
     OFFSET ?3
   `).all(runId, safeLimit, safeOffset) as Record<string, unknown>[];
