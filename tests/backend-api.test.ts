@@ -25,6 +25,21 @@ describe("Kindling SaaS backend adapter", () => {
     expect(session?.headers.get("set-cookie")).toContain("HttpOnly");
   });
 
+  test("proxies challenge and initial me without requiring a frontend workspace header", async () => {
+	  const paths: string[] = [];
+	  const fetcher = async (input: RequestInfo | URL) => {
+		  paths.push(new URL(String(input)).pathname);
+		  return Response.json(paths.length === 1
+			  ? { nonce: "nonce-1", content: "kindling-login:nonce-1", npub: "npub1test", workspaceId: "workspace-a" }
+			  : { id: "user-a", npub: "npub1test", role: "owner", workspace: { id: "workspace-a" }, organisation: { id: "org-a" }, membership: { role: "owner" } });
+	  };
+	  const challenge = await handleBackendApi(new Request("https://frontend.test/api/auth/challenge", { method: "POST", body: JSON.stringify({ pubkey: "a".repeat(64) }) }), new URL("https://frontend.test/api/auth/challenge"), fetcher as typeof fetch);
+	  expect(await challenge?.json()).toMatchObject({ nonce: "nonce-1", workspaceId: "workspace-a" });
+	  const me = await handleBackendApi(new Request("https://frontend.test/api/me", { headers: { authorization: "Bearer opaque" } }), new URL("https://frontend.test/api/me"), fetcher as typeof fetch);
+	  expect(await me?.json()).toMatchObject({ id: "user-a", role: "owner", workspace: { id: "workspace-a" }, access: { login: true, read: true, edit: true } });
+	  expect(paths).toEqual(["/api/v1/auth/challenge", "/api/v1/me"]);
+  });
+
   test("normalizes documented workspace company pages with paging and version metadata", () => {
     const url = new URL("https://frontend.test/api/kindling/companies?limit=25&offset=50&sort=name");
     const page = normalizeCompanyPage({
@@ -52,6 +67,21 @@ describe("Kindling SaaS backend adapter", () => {
       changeSeq: 9,
     });
     expect(company).toMatchObject({ id: "target-1", name: "Target One", location: "Perth, WA", industry: "Engineering", website: "https://target.test", enrichmentStatus: "complete" });
+  });
+
+  test("normalizes PostgreSQL list and detail envelopes", async () => {
+	  const list = await handleBackendApi(
+		  new Request("https://frontend.test/api/kindling/companies?limit=1", { headers: { "x-kindling-workspace-id": "workspace-a" } }),
+		  new URL("https://frontend.test/api/kindling/companies?limit=1"),
+		  async () => Response.json({ items: [{ id: "co-a", displayName: "Alpha" }], totalCount: 6832, page: { limit: 1, nextCursor: "cursor-a", hasMore: true } }),
+	  );
+	  expect(await list?.json()).toMatchObject({ total: 6832, returned: 1, nextCursor: "cursor-a", companies: [{ id: "co-a", name: "Alpha" }] });
+	  const detail = await handleBackendApi(
+		  new Request("https://frontend.test/api/kindling/companies/co-a", { headers: { "x-kindling-workspace-id": "workspace-a" } }),
+		  new URL("https://frontend.test/api/kindling/companies/co-a"),
+		  async () => Response.json({ item: { id: "co-a", displayName: "Alpha" } }),
+	  );
+	  expect(await detail?.json()).toMatchObject({ company: { id: "co-a", name: "Alpha" } });
   });
 
   test("first company render is a live backend request with no sync or cursor prerequisite", async () => {

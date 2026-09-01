@@ -89,12 +89,12 @@ export function normalizeCompanyPage(payload: unknown, requestUrl: URL, etag = "
   const offset = Number(raw.offset ?? requestUrl.searchParams.get("offset") ?? 0);
   return {
     companies,
-    total: Number(raw.total ?? raw.count ?? companies.length),
+    total: Number(raw.total ?? raw.totalCount ?? raw.count ?? companies.length),
     returned: companies.length,
     limit: Number.isFinite(limit) ? limit : companies.length,
     offset: Number.isFinite(offset) ? offset : 0,
     ...(raw.cursor ? { cursor: text(raw.cursor) } : {}),
-    ...(raw.next_cursor || raw.nextCursor ? { nextCursor: text(raw.next_cursor ?? raw.nextCursor) } : {}),
+    ...(raw.next_cursor || raw.nextCursor || object(raw.page).nextCursor ? { nextCursor: text(raw.next_cursor ?? raw.nextCursor ?? object(raw.page).nextCursor) } : {}),
     ...(etag ? { etag } : {}),
     schemaVersion: text(raw.schema_version ?? raw.schemaVersion ?? KINDLING_SCHEMA_VERSION),
     ...(raw.band_counts || raw.bandCounts ? { bandCounts: object(raw.band_counts ?? raw.bandCounts) as Record<string, number> } : {}),
@@ -167,7 +167,7 @@ async function companyResponse(request: Request, frontendUrl: URL, id: string | 
   const payload = await response.json().catch(() => ({}));
   if (id) {
     const raw = object(payload);
-    const company = normalizeBackendCompany(raw.company ?? raw.target ?? raw);
+    const company = normalizeBackendCompany(raw.company ?? raw.target ?? raw.item ?? raw);
     return Response.json({ ...raw, company, canonicalTarget: company.canonical, companySource: "kindling-be", schemaVersion: text(raw.schema_version ?? raw.schemaVersion ?? KINDLING_SCHEMA_VERSION) }, { headers });
   }
   return Response.json(normalizeCompanyPage(payload, frontendUrl, response.headers.get("etag") || ""), { headers });
