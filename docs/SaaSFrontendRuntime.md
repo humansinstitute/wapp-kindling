@@ -16,6 +16,8 @@ PORT=80
 ```text
 POST   /api/v1/auth/challenge
 POST   /api/v1/auth/session
+POST   /api/v1/auth/agent-challenge
+POST   /api/v1/auth/agent-session
 DELETE /api/v1/auth/session
 GET    /api/v1/me
 GET    /api/v1/workspaces/:workspaceId/companies
@@ -36,6 +38,8 @@ PATCH  /api/v1/targets/:companyId
 List responses may use `companies`, `targets`, or `items`, plus `total`/`count`, `limit`, `offset`, `cursor`, `next_cursor`, `schema_version`, and optional `band_counts`. Company identity accepts documented snake_case fields and current target camelCase fields. The adapter returns the existing UI shape and preserves raw canonical data under `canonical`.
 
 The backend should return an HTTP-only, Secure, same-site session cookie from `POST /api/v1/auth/session`. It must enforce membership on every request and return 401/403 immediately after logout, role loss or membership revocation. FE forwards `Cookie`, `Set-Cookie`, CSRF, ETag and request ID headers; it does not hold a signing key or backend secret.
+
+The supervised-agent aliases `/api/auth/agent-challenge` and `/api/auth/agent-session` pass the backend's kind-30078 bootstrap through unchanged. Signing remains in the policy-approved broker; the frontend receives neither a private key nor durable signing authority.
 
 `GET /healthz` is the backend reachability check used by frontend `/api/health`. Frontend health reports build, non-secret API origin/version/schema, reachability, and `serverPersistenceRequired: false`; it does not report replica rows or sync cursors.
 

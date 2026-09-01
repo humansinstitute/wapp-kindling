@@ -180,6 +180,12 @@ export async function handleBackendApi(request: Request, url: URL, fetchImpl: Fe
   if (url.pathname === "/api/auth/challenge" && request.method === "POST") {
     return proxyJson(`/api/${KINDLING_API_VERSION}/auth/challenge`, request, fetchImpl);
   }
+  if (url.pathname === "/api/auth/agent-challenge" && request.method === "POST") {
+    return proxyJson(`/api/${KINDLING_API_VERSION}/auth/agent-challenge`, request, fetchImpl);
+  }
+  if (url.pathname === "/api/auth/agent-session" && request.method === "POST") {
+    return proxyJson(`/api/${KINDLING_API_VERSION}/auth/agent-session`, request, fetchImpl);
+  }
   if (url.pathname === "/api/auth/verify" && request.method === "POST") {
     return proxyJson(`/api/${KINDLING_API_VERSION}/auth/session`, request, fetchImpl);
   }

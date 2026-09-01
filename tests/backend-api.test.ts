@@ -25,6 +25,29 @@ describe("Kindling SaaS backend adapter", () => {
     expect(session?.headers.get("set-cookie")).toContain("HttpOnly");
   });
 
+  test("passes the supervised-agent session bootstrap through unchanged", async () => {
+    const paths: string[] = [];
+    const fetcher = async (input: RequestInfo | URL) => {
+      paths.push(new URL(String(input)).pathname);
+      return paths.length === 1
+        ? Response.json({ event: { kind: 30078, tags: [["d", "kindling-agent-session"]], content: "exact" } })
+        : Response.json({ role: "owner", workspaceId: "workspace-a" }, { headers: { "set-cookie": "kindling_session=opaque; HttpOnly; Secure; SameSite=Strict" } });
+    };
+    const challenge = await handleBackendApi(
+      new Request("https://frontend.test/api/auth/agent-challenge", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ npub: "npub1agent" }) }),
+      new URL("https://frontend.test/api/auth/agent-challenge"),
+      fetcher as typeof fetch,
+    );
+    expect(await challenge?.json()).toMatchObject({ event: { kind: 30078, content: "exact" } });
+    const session = await handleBackendApi(
+      new Request("https://frontend.test/api/auth/agent-session", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ npub: "npub1agent", event: { kind: 30078 } }) }),
+      new URL("https://frontend.test/api/auth/agent-session"),
+      fetcher as typeof fetch,
+    );
+    expect(paths).toEqual(["/api/v1/auth/agent-challenge", "/api/v1/auth/agent-session"]);
+    expect(session?.headers.get("set-cookie")).toContain("SameSite=Strict");
+  });
+
   test("proxies challenge and initial me without requiring a frontend workspace header", async () => {
 	  const paths: string[] = [];
 	  const fetcher = async (input: RequestInfo | URL) => {
