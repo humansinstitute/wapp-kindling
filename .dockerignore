@@ -1,4 +1,6 @@
 .git
+._*
+**/._*
 .gitignore
 .DS_Store
 .env
