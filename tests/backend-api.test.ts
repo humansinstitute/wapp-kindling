@@ -71,6 +71,15 @@ describe("Kindling SaaS backend adapter", () => {
     expect(await response?.json()).toMatchObject({ total: 2, returned: 2 });
   });
 
+  test("the existing On Deck landing reads authoritative companies", async () => {
+    const response = await handleBackendApi(
+      new Request("https://frontend.test/api/kindling/top-targets?band=high&limit=40", { headers: { "x-kindling-workspace-id": "workspace-a" } }),
+      new URL("https://frontend.test/api/kindling/top-targets?band=high&limit=40"),
+      async () => Response.json({ companies: [{ id: "company-a", name: "Company A" }], total: 1 }),
+    );
+    expect(await response?.json()).toMatchObject({ targets: [{ companyId: "company-a", band: "high", company: { name: "Company A" } }], total: 1, companySource: "kindling-be" });
+  });
+
   test("falls back to /api/v1/targets compatibility on an unavailable workspace route", async () => {
     const paths: string[] = [];
     const response = await handleBackendApi(

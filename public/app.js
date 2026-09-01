@@ -269,7 +269,7 @@ function stopPolling() {
 
 async function renderRoute() {
   state.route = appRoute();
-  if (!state.token || !state.me) {
+  if (!state.me) {
     stopPolling();
     showOnly("login");
     return;
@@ -5451,7 +5451,7 @@ window.addEventListener("popstate", () => {
 subscribeServerState(({ path, data }) => {
   if (!data || typeof data !== "object") return;
   if (path.startsWith("/api/kindling/companies?") && Array.isArray(data.companies)) {
-    if (window.location.pathname === "/companies") {
+    if (window.location.pathname === "/companies-list") {
       state.companyListPage.companies = data.companies;
       state.companyListPage.total = Number(data.total ?? data.companies.length);
       state.companyListPage.offset = Number(data.offset ?? state.companyListPage.offset);

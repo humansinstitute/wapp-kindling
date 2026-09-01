@@ -188,13 +188,29 @@ export async function handleBackendApi(request: Request, url: URL, fetchImpl: Fe
   }
   if (url.pathname === "/api/me" && request.method === "GET") {
     return proxyJson(`/api/${KINDLING_API_VERSION}/me`, request, fetchImpl, (payload) => {
-      const me = object(payload);
+      const raw = object(payload);
+      const me = { ...raw, ...object(raw.user) };
       const role = text(me.role ?? object(me.membership).role ?? "viewer");
       return { ...me, access: me.access ?? { login: true, read: true, edit: ["owner", "admin", "contributor"].includes(role) } };
     });
   }
   const companyMatch = url.pathname.match(/^\/api\/kindling\/companies(?:\/([^/]+))?$/);
   if (companyMatch) return companyResponse(request, url, companyMatch[1] ? decodeURIComponent(companyMatch[1]) : null, fetchImpl);
+  if (url.pathname === "/api/kindling/top-targets" && request.method === "GET") {
+    const response = await companyResponse(request, url, null, fetchImpl);
+    if (!response.ok) return response;
+    const page = await response.json() as CompanyPageContract;
+    return Response.json({
+      targets: page.companies.map((company) => ({ companyId: company.id, company, band: url.searchParams.get("band") || "unscored" })),
+      total: page.total,
+      returned: page.returned,
+      limit: page.limit,
+      offset: page.offset,
+      nextCursor: page.nextCursor,
+      schemaVersion: page.schemaVersion,
+      companySource: "kindling-be",
+    });
+  }
   if (url.pathname === "/api/kindling/summary" && request.method === "GET") {
     const countUrl = new URL(url);
     countUrl.pathname = "/api/kindling/companies";
