@@ -14,7 +14,9 @@ assert(captain.dockerfilePath === "./Dockerfile", "captain-definition must point
 const dockerfile = read("Dockerfile");
 assert(dockerfile.includes("ENV PORT=80"), "Dockerfile must declare the CapRover container port");
 assert(dockerfile.includes("/api/health"), "Dockerfile must health-check /api/health");
-assert(dockerfile.includes("CHAT_WAPP_DB_PATH=/data/"), "Dockerfile must keep SQLite under the persistent /data mount");
+assert(!dockerfile.includes("VOLUME [\"/data\"]"), "frontend image must not require a persistent /data mount");
+assert(dockerfile.includes('CMD ["bun", "src/saas-server.ts"]'), "production image must use the API-only SaaS server");
+assert(!read("src/saas-server.ts").includes("bun:sqlite"), "production server must not import bun:sqlite");
 
 const dockerignore = read(".dockerignore").split(/\r?\n/).map((line) => line.trim());
 for (const required of [".env", "node_modules", "data", "*.sqlite", "*.sqlite-wal", "*.sqlite-shm", ".mcp.json"]) {
@@ -22,7 +24,7 @@ for (const required of [".env", "node_modules", "data", "*.sqlite", "*.sqlite-wa
 }
 
 const config = read("src/config.ts");
-const server = read("src/server.ts");
+const server = read("src/saas-server.ts");
 assert(config.includes("process.env.PORT"), "server port must come from runtime PORT");
 assert(config.includes("process.env.KINDLING_API_URL"), "canonical API URL must come from runtime KINDLING_API_URL");
 assert(server.includes("port: PORT"), "Bun server must honor configured PORT");
@@ -45,7 +47,7 @@ for (const file of trackedFiles) {
   assert(!nsecPattern.test(content), `${file} contains an nsec-like secret`);
 }
 
-for (const browserFile of ["public/app.js", "public/vendor/nostr-signer.js"]) {
+for (const browserFile of ["public/app.js", "public/vendor/nostr-signer.js", "public/vendor/query-runtime.js"]) {
   const content = read(browserFile);
   assert(!content.includes(signingEnvName), `${browserFile} mentions a server signing-key environment`);
   assert(!content.includes("KINDLING_API_URL"), `${browserFile} hardcodes the runtime API environment name`);

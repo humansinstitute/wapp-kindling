@@ -47,6 +47,12 @@ export const KINDLING_API_URL = normalizeHttpBaseUrl(
   process.env.KINDLING_API_URL || "",
   "http://127.0.0.1:41038",
 );
+export const KINDLING_API_VERSION = String(process.env.KINDLING_API_VERSION || "v1").trim() || "v1";
+export const KINDLING_SCHEMA_VERSION = String(process.env.KINDLING_SCHEMA_VERSION || "1").trim() || "1";
+export const KINDLING_API_COMPATIBILITY = ["auto", "workspace", "targets"].includes(String(process.env.KINDLING_API_COMPATIBILITY || "auto"))
+  ? String(process.env.KINDLING_API_COMPATIBILITY || "auto") as "auto" | "workspace" | "targets"
+  : "auto";
+export const BUILD_VERSION = String(process.env.BUILD_VERSION || process.env.SOURCE_VERSION || "development").trim() || "development";
 const configuredCacheMaxAgeMs = Number(process.env.KINDLING_CACHE_MAX_AGE_MS || 15 * 60 * 1000);
 export const KINDLING_CACHE_MAX_AGE_MS = Number.isFinite(configuredCacheMaxAgeMs) && configuredCacheMaxAgeMs > 0
   ? configuredCacheMaxAgeMs

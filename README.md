@@ -1,10 +1,12 @@
 # Kindling WApp
 
-Kindling FE is a local business-development WApp for shaping a service offering, building target lists, reviewing companies, and drafting outreach with Wingman Autopilot pipelines.
+Kindling FE is the API-driven web frontend for the hosted Kindling service. It retains the existing business-development navigation for shaping a service offering, building target lists, reviewing companies, and drafting outreach.
 
-Kindling API `/api/v1` is authoritative for company identity and enrichment facts. Kindling FE keeps offer-specific scores, notes, lists, outreach, campaigns, and other workflow state locally, keyed by the canonical API company ID. A separate `canonical_company_cache` table marks the compatibility projection explicitly; legacy local-company authority is available only with `KINDLING_COMPANY_SOURCE=local`.
+`kindling-be` `/api/v1` is the sole authority for company list, detail, count and new SaaS records. Kindling FE does not require a server-side company replica, snapshot or sync cursor. `KINDLING_COMPANY_SOURCE=local` remains only as an explicit test/debug compatibility mode.
 
-Canonical reads use browser-mediated NIP-98. Kindling FE prepares an exact API URL, the active browser signer authorizes it as the signed-in user, and the frontend server forwards only that short-lived signed event to Kindling API. No raw signing key is configured in the frontend server, image, or browser bundle. The managed app card injects the runtime-only `KINDLING_API_URL`, which defaults to the local API WApp at `http://127.0.0.1:41038` for isolated development.
+The browser uses a secure Kindling human session through a same-origin proxy. The frontend server forwards cookies and short-lived request proof but never receives or stores a raw Nostr private key. The managed runtime injects the non-secret `KINDLING_API_URL`; it is not compiled into the browser bundle.
+
+Server state uses TanStack Query Core for request deduplication, paging and background refetch. Eligible company pages/details and target lists may be persisted in IndexedDB only after user and workspace resolution. Persistence is disposable and bounded to 64 entries / 4 MiB, with list pages over 100 companies excluded. Keys include user, organisation, workspace, API/schema, membership/role and normalized query parameters. Logout, authorization/membership loss and incompatible schema changes make cached values unreadable or purge them. No session token, NIP-98 event, credential or mutation queue is persisted there.
 
 ## Product Flow
 
@@ -46,7 +48,7 @@ Repo-local bootstrap assets live in `bootstrap/`:
 - `bootstrap/pipelines/definitions/` contains Kindling pipeline definitions.
 - `bootstrap/pipelines/functions/` contains Kindling pipeline functions.
 
-The SQLite database is runtime state and is migrated separately. Use `bun scripts/export-migration.ts` to create a private migration bundle with a sanitized SQLite backup plus the repo-local bootstrap assets.
+Legacy SQLite migration/export helpers remain for compatibility and historical recovery; they are not part of the SaaS company read path or production persistence model.
 
 ## Running As A WApp
 
@@ -67,18 +69,18 @@ Each Wingman machine needs its own clone and Autopilot app card. The durable Pet
 
 ```bash
 bun install
-PORT=4317 WINGMAN_URL=https://<autopilot-public-host> bun src/server.ts
+PORT=4317 KINDLING_API_URL=https://<kindling-backend-host> bun src/saas-server.ts
 ```
 
 Use a direct run only for isolated development/debugging outside the WApp card runner. When testing the product flow, use the Kindling app card URL assigned by Wingman.
 
 You need a Nostr browser signer for login and for NIP-98 requests to Autopilot. Until access rules exist, the first signed-in user can bootstrap settings. After that, only configured read/edit npubs can use the app, and only edit users can change admin settings or role mappings.
 
-The company cache never syncs silently. Choose **Authorize API sync** in the Kindling header. Current, stale, offline/denied, and empty cache states are shown explicitly; a stale cache remains readable but is never labelled as current.
+Eligible cached pages can paint immediately after authentication/workspace resolution, then always revalidate against `kindling-be`. Empty, disabled or deleted IndexedDB falls back to the live API without data loss.
 
-## Local Data And Database Runtime
+## Runtime Data
 
-SQLite remains the default for tests and direct local fallback. The default SQLite path is `data/chat-wapp.sqlite`. The environment variable is still `CHAT_WAPP_DB_PATH` because this repo grew from the chat WApp starter.
+Company reads and writes do not use SQLite or Tower storage. The production entry point is `src/saas-server.ts`, which has no database runtime or background replica jobs, and the image declares no persistent volume. The inherited `src/server.ts` workflow/chat implementation is retained only behind `bun run start:legacy` for explicit compatibility tests/debugging.
 
 When Autopilot starts Kindling with Tower-backed local workflow storage, it injects an installation-scoped loopback broker contract:
 
@@ -93,16 +95,17 @@ Tower mode is enabled by `WAPP_DB_MODE=tower-api` or a complete broker URL/capab
 
 Tower v1 exposes provision, migrations, and constrained per-table CRUD/query APIs. Kindling keeps browser auth, user/session/access checks, pipeline webhooks, and domain routes inside the WApp backend; browsers and agents should call Kindling APIs, not Tower DB directly.
 
-In Tower mode, `CHAT_WAPP_DB_PATH` is not used as authoritative app storage. Auth challenge/verify/session/access-rule/settings flows, target segments, companies, reporting/dashboard routes, work queue, scheduler settings/preview/run-once, coverage, top-target/today views, chats, pipeline run bookkeeping, pipeline webhook/write handlers, enrichment, scoring, target scan, outreach, and service-offering workflows use Tower WApp DB APIs. Unknown API paths return HTTP 404 in Tower mode instead of falling back to SQLite. Startup automation also runs through the Tower-backed scheduler path and starts queued Tower pipeline work when scheduler settings are enabled.
+The default SaaS server forwards company list/detail/count and new workspace resources to `kindling-be`. The separate `start:legacy` command retains inherited Tower/SQLite compatibility handlers for isolated debugging.
 
 Important Kindling routes:
 
 ```txt
 GET  /api/kindling/summary
-GET  /api/kindling/canonical-status
-POST /api/kindling/canonical-sync
 GET  /api/kindling/companies
 POST /api/kindling/companies
+GET  /api/kindling/companies/:companyId
+PATCH /api/kindling/companies/:companyId
+GET  /api/kindling/target-lists
 POST /api/kindling/service-offering
 POST /api/kindling/target-scans
 POST /api/kindling/companies/:companyId/enrich

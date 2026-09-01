@@ -5,12 +5,14 @@
   "type": "module",
   "scripts": {
     "setup": "bun install",
-    "build": "bun run build:signer",
-    "start": "bun src/server.ts",
-    "dev": "bun --watch src/server.ts",
+    "build": "bun run build:signer && bun run build:query",
+    "start": "bun src/saas-server.ts",
+    "dev": "bun --watch src/saas-server.ts",
+    "start:legacy": "KINDLING_COMPANY_SOURCE=local bun src/server.ts",
     "export:pipelines": "bun scripts/export-kindling-pipelines.ts",
     "seed:found-companies": "bun scripts/seed-found-companies-to-tower.ts",
     "build:signer": "bun scripts/build-nostr-signer.ts",
+    "build:query": "bun build src/browser-query-runtime.ts --target=browser --format=esm --minify --outfile=public/vendor/query-runtime.js",
     "check": "tsc --noEmit",
     "test": "bun test",
     "test:canonical": "bun test tests/kindling-api.test.ts --test-name-pattern 'Canonical Kindling API adapter'",
@@ -19,6 +21,7 @@
   },
   "dependencies": {
     "@noble/hashes": "^1.8.0",
+    "@tanstack/query-core": "^5.102.8",
     "nostr-tools": "^2.17.2"
   },
   "devDependencies": {

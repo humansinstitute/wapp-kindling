@@ -1,4 +1,5 @@
 import { nip19, getPublicKey, finalizeEvent } from "/vendor/nostr-signer.js";
+import { configureServerState, invalidateServerState, purgeServerState, queryServerState, subscribeServerState } from "/vendor/query-runtime.js";
 
 const PROFILE_CACHE_KEY = "chat_wapp_profiles_v1";
 const PIPELINES_CACHE_KEY = "chat_wapp_pipelines_v1";
@@ -10,8 +11,9 @@ const PROFILE_RELAYS = [
 ];
 
 const state = {
-  token: localStorage.getItem("chat_wapp_token") || "",
+  token: sessionStorage.getItem("chat_wapp_token") || "",
   me: null,
+  runtimeConfig: null,
   chats: [],
   settings: null,
   accessRules: [],
@@ -59,19 +61,47 @@ const state = {
 
 const $ = (id) => document.getElementById(id);
 
-function api(path, options = {}) {
-  return fetch(path, {
+async function fetchApi(path, options = {}) {
+  const workspaceId = state.me?.workspace?.id || state.me?.workspaceId || state.me?.workspace_id || "";
+  const res = await fetch(path, {
     ...options,
+    credentials: "same-origin",
     headers: {
       "content-type": "application/json",
       ...(state.token ? { authorization: `Bearer ${state.token}` } : {}),
+      ...(workspaceId ? { "x-kindling-workspace-id": workspaceId } : {}),
       ...(options.headers || {}),
     },
-  }).then(async (res) => {
-    const payload = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(payload.error || res.statusText);
-    return payload;
   });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const error = new Error(payload.error || res.statusText);
+    error.status = res.status;
+    throw error;
+  }
+  const responseSchema = payload?.schemaVersion || payload?.schema_version;
+  if (state.me && state.runtimeConfig?.schemaVersion && responseSchema && responseSchema !== state.runtimeConfig.schemaVersion) {
+    setTimeout(() => void purgeServerState("schema", true), 0);
+    const error = new Error(`Kindling API schema changed from ${state.runtimeConfig.schemaVersion} to ${responseSchema}; cached data was cleared`);
+    error.status = 409;
+    throw error;
+  }
+  return payload;
+}
+
+function cacheEligible(path, options) {
+  const method = String(options.method || "GET").toUpperCase();
+  if (method !== "GET" || !state.me) return false;
+  return /^\/api\/kindling\/(companies(?:[/?]|$)|target-lists(?:[/?]|$)|summary(?:\?|$))/.test(path);
+}
+
+async function api(path, options = {}) {
+  if (cacheEligible(path, options)) return queryServerState(path, () => fetchApi(path, options));
+  const payload = await fetchApi(path, options);
+  if (String(options.method || "GET").toUpperCase() !== "GET" && path.startsWith("/api/kindling/")) {
+    await invalidateServerState("/api/kindling");
+  }
+  return payload;
 }
 
 function setStatus(text) {
@@ -2158,9 +2188,10 @@ async function completeLoginWithSigner(signer) {
     body: JSON.stringify({ event }),
   });
   state.signer = signer;
-  state.token = result.token;
+  state.token = result.token || "";
   state.me = result;
-  localStorage.setItem("chat_wapp_token", result.token);
+  localStorage.removeItem("chat_wapp_token");
+  if (result.token) sessionStorage.setItem("chat_wapp_token", result.token);
   await bootApp();
 }
 
@@ -2246,6 +2277,18 @@ function setLoginMethod(method) {
 async function bootApp() {
   try {
     state.me = await api("/api/me");
+    const runtime = await fetchApi("/api/runtime-config").catch(() => ({ apiVersion: "v1", schemaVersion: "1" }));
+    state.runtimeConfig = runtime;
+    const workspace = state.me.workspace || state.me.workspaces?.[0] || {};
+    await configureServerState({
+      userId: state.me.id || state.me.pubkey || state.me.npub,
+      organisationId: state.me.organisationId || state.me.organizationId || workspace.organisationId || workspace.organizationId || "legacy",
+      workspaceId: state.me.workspaceId || state.me.workspace_id || workspace.id || "legacy-default",
+      apiVersion: runtime.apiVersion || "v1",
+      schemaVersion: runtime.schemaVersion || "1",
+      membershipVersion: state.me.membershipVersion || state.me.membership_version || "",
+      role: state.me.role || (state.me.access?.edit ? "edit" : "read"),
+    });
     const npubEl = $("npub");
     if (npubEl) npubEl.textContent = state.me.npub;
     syncAccessUi();
@@ -2257,11 +2300,14 @@ async function bootApp() {
 }
 
 function logout() {
+  void fetchApi("/api/auth/session", { method: "DELETE" }).catch(() => undefined);
+  void purgeServerState("logout");
   clearSigner();
   state.token = "";
   state.me = null;
   state.activeChatId = "";
   localStorage.removeItem("chat_wapp_token");
+  sessionStorage.removeItem("chat_wapp_token");
   localStorage.removeItem("chat_wapp_chat");
   stopPolling();
   showOnly("login");
@@ -2781,9 +2827,9 @@ function renderKindling() {
           </div>
           <h1>Business development workspace</h1>
           <p class="canonicalApiStatus" title="${escapeHtml(data.canonicalApi?.apiBaseUrl || "")}">
-            Company source: ${escapeHtml(data.canonicalApi?.companySource || "loading")}
-            · cursor ${escapeHtml(data.canonicalApi?.syncCursor ?? "not synced")}
-            · ${escapeHtml(canonical.cacheState || "unknown cache")}
+            Company source: ${escapeHtml(data.companySource || data.canonicalApi?.companySource || "kindling-be")}
+            · API schema ${escapeHtml(data.schemaVersion || "runtime")}
+            · live API with disposable browser cache
           </p>
         </div>
         <div class="kindlingHeaderActions">
@@ -5402,5 +5448,32 @@ window.addEventListener("popstate", () => {
   void renderRoute();
 });
 
-if (state.token) bootApp();
-else showOnly("login");
+subscribeServerState(({ path, data }) => {
+  if (!data || typeof data !== "object") return;
+  if (path.startsWith("/api/kindling/companies?") && Array.isArray(data.companies)) {
+    if (window.location.pathname === "/companies") {
+      state.companyListPage.companies = data.companies;
+      state.companyListPage.total = Number(data.total ?? data.companies.length);
+      state.companyListPage.offset = Number(data.offset ?? state.companyListPage.offset);
+      if (data.bandCounts) state.companyListPage.bandCounts = data.bandCounts;
+      state.companyListPage.loaded = true;
+      renderCompanyListPage();
+    } else if (state.kindling) {
+      applyCompanyList(data);
+      renderKindling();
+    }
+    return;
+  }
+  const detailMatch = path.match(/^\/api\/kindling\/companies\/([^?]+)$/);
+  if (detailMatch && data.company) {
+    const companyId = decodeURIComponent(detailMatch[1]);
+    if (state.companyModal.open && state.companyModal.companyId === companyId) {
+      state.companyModal.detail = data;
+      state.companyModal.company = data.company;
+      renderCompanyModal();
+    }
+    if (state.selectedCompanyId === companyId) state.companyDetail = data;
+  }
+});
+
+void bootApp();

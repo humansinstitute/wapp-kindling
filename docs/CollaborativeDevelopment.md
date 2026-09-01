@@ -16,14 +16,13 @@ browser signer and there is no frontend server signing-key environment.
 
 ## Runtime values
 
-| Runtime | Source checkout / process | `KINDLING_API_URL` | `PORT` | SQLite |
+| Runtime | Source checkout / process | `KINDLING_API_URL` | `PORT` | Frontend persistence |
 | --- | --- | --- | --- | --- |
-| Pete local | `/Users/mini/code/kindling-fe`; Autopilot app `Kindling FE` / `honest-ivory-thicket-app-kindling-fe` | `https://late-cup-crab.rick.runwingman.com` | Autopilot-assigned `41039` | Machine-local path injected by the app card |
-| Andy local | Andy's own clone and separately registered Autopilot app card | `https://late-cup-crab.rick.runwingman.com` | A distinct Autopilot-assigned port | Andy-machine-local path injected by his app card |
-| CapRover | reviewed `deployed` commit | `https://late-cup-crab.rick.runwingman.com` | `80` inside the container | `/data/kindling-fe.sqlite` on a persistent volume |
+| Pete local | `/Users/mini/code/kindling-fe`; Autopilot app `Kindling FE` / `honest-ivory-thicket-app-kindling-fe` | `https://late-cup-crab.rick.runwingman.com` | Autopilot-assigned `41039` | none required; browser cache is disposable |
+| Andy local | Andy's own clone and separately registered Autopilot app card | `https://late-cup-crab.rick.runwingman.com` | A distinct Autopilot-assigned port | none required; browser cache is disposable |
+| CapRover | reviewed `deployed` commit | hosted `kindling-be` origin | `80` inside the container | none; browser cache is disposable |
 
-All three use `KINDLING_COMPANY_SOURCE=canonical-api` and normally
-`KINDLING_CACHE_MAX_AGE_MS=900000`. Set `CHAT_WAPP_PUBLIC_ORIGIN` to each app
+All three use `KINDLING_COMPANY_SOURCE=canonical-api`. Set `CHAT_WAPP_PUBLIC_ORIGIN` to each app
 card's public URL or the CapRover HTTPS URL. Configure frontend owner/allowed
 npubs and webhook secrets in that runtime, not in Git. Do not configure a raw
 canonical API signing key.
@@ -73,24 +72,19 @@ workaround.
 
 ## Cache and health contract
 
-Sync is explicit; page loads never attempt hidden server-signed synchronization.
-Bootstrap stores the API cursor only after every snapshot page is applied.
-Incremental sync commits each change page before advancing the cursor. Failed
-or denied sync leaves cached records readable and labelled stale.
+There is no frontend snapshot or sync cursor. After authentication and workspace
+resolution, bounded IndexedDB entries may paint immediately and TanStack Query
+revalidates them with the backend. A denied request purges the applicable cache.
 
-`GET /api/health` always reports process health separately from data readiness:
+`GET /api/health` reports frontend/build/API configuration and backend
+reachability: `ok`, `ready`, `frontend.buildVersion`, the non-secret `api`
+origin/version/schema/status, `companySource: kindling-be`, and
+`serverPersistenceRequired: false`. It never reports replicated row counts or a
+sync cursor.
 
-- `ok` / `ready`: the frontend process can serve requests;
-- `dataReady`: local mode or at least one cached canonical company exists;
-- `liveCurrent`: API reachable, latest NIP-98 authorization accepted, and the
-  completed cache sync is within `KINDLING_CACHE_MAX_AGE_MS`;
-- `canonicalApi.apiReachable`, `syncAuthorized`, `cacheState`, `lastSyncAt`,
-  `cachedCompanies`, `syncCursor`, and `lastError`: dependency detail without
-  a credential or signed event.
-
-CapRover should health-check `/api/health` for process readiness and alert on
-`liveCurrent=false`; it should not restart a healthy frontend merely because
-the upstream API is temporarily offline or awaits a user signature.
+CapRover should health-check `/api/health` for frontend process readiness. An
+upstream reachability failure is diagnostic and does not imply that restarting
+the healthy frontend will repair the backend.
 
 ## Collaborative branch workflow
 
@@ -165,7 +159,6 @@ docker run --rm -d --name kindling-fe-collaborative-smoke \
   -p 127.0.0.1:43179:80 \
   -e KINDLING_API_URL=https://late-cup-crab.rick.runwingman.com \
   -e KINDLING_COMPANY_SOURCE=canonical-api \
-  -e CHAT_WAPP_DB_PATH=/data/kindling-fe.sqlite \
   kindling-fe:collaborative
 curl -fsS http://127.0.0.1:43179/api/health
 docker stop kindling-fe-collaborative-smoke
@@ -173,6 +166,7 @@ docker stop kindling-fe-collaborative-smoke
 
 Use another isolated host port if `43179` is occupied. This container smoke is
 not the live app-card process and must never bind the WApp-owned port `41039`.
-For CapRover use one instance and a persistent `/data` mapping; local databases,
+CapRover does not need a persistent volume for Kindling FE. Browser query data is
+bounded IndexedDB state and the backend remains authoritative. Local databases,
 WAL/SHM files, `.env`, Git metadata, dependencies, logs, and MCP config are
 excluded from the Docker context.
