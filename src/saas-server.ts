@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { backendReachability, handleBackendApi } from "./backend-api.ts";
+import { backendReachability, handleBackendApi, requestBackendTarget } from "./backend-api.ts";
 import { BUILD_VERSION, KINDLING_API_URL, KINDLING_API_VERSION, KINDLING_SCHEMA_VERSION, PORT } from "./config.ts";
 
 const PUBLIC_DIR = join(import.meta.dir, "..", "public");
@@ -18,20 +18,29 @@ async function serveStatic(pathname: string): Promise<Response> {
 export async function handleSaasRequest(request: Request, fetchImpl: typeof fetch = fetch): Promise<Response> {
   const url = new URL(request.url);
   if (url.pathname === "/api/health" && request.method === "GET") {
-    const backend = await backendReachability(fetchImpl);
+    let backend;
+    try {
+      backend = await backendReachability(request, fetchImpl);
+    } catch (error) {
+      return json({ error: error instanceof Error ? error.message : "Backend URL is invalid" }, 400);
+    }
     return json({
       ok: true,
       ready: true,
       now: new Date().toISOString(),
       frontend: { buildVersion: BUILD_VERSION },
-      api: { baseUrl: KINDLING_API_URL, version: KINDLING_API_VERSION, schemaVersion: KINDLING_SCHEMA_VERSION, ...backend },
+      api: { baseUrl: requestBackendTarget(request), managedDefaultUrl: KINDLING_API_URL, version: KINDLING_API_VERSION, schemaVersion: KINDLING_SCHEMA_VERSION, ...backend },
       companySource: "kindling-be",
       serverPersistenceRequired: false,
     });
   }
   if (url.pathname.startsWith("/api/")) {
-    const response = await handleBackendApi(request, url, fetchImpl);
-    return response ?? json({ error: "backend route is not available in the SaaS frontend contract" }, 404);
+    try {
+      const response = await handleBackendApi(request, url, fetchImpl);
+      return response ?? json({ error: "backend route is not available in the SaaS frontend contract" }, 404);
+    } catch (error) {
+      return json({ error: error instanceof Error ? error.message : "Backend URL is invalid" }, 400);
+    }
   }
   return serveStatic(url.pathname);
 }

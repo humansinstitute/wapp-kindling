@@ -27,6 +27,8 @@ const config = read("src/config.ts");
 const server = read("src/saas-server.ts");
 assert(config.includes("process.env.PORT"), "server port must come from runtime PORT");
 assert(config.includes("process.env.KINDLING_API_URL"), "canonical API URL must come from runtime KINDLING_API_URL");
+assert(config.includes("process.env.KINDLING_API_ALLOWED_URLS"), "trusted API origins must come from runtime KINDLING_API_ALLOWED_URLS");
+assert(server.includes("requestBackendTarget(request)"), "health and proxy requests must enforce the selected trusted backend origin");
 assert(server.includes("port: PORT"), "Bun server must honor configured PORT");
 
 const tracked = Bun.spawnSync(["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"], { cwd: root });

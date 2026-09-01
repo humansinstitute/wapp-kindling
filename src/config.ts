@@ -47,6 +47,33 @@ export const KINDLING_API_URL = normalizeHttpBaseUrl(
   process.env.KINDLING_API_URL || "",
   "http://127.0.0.1:41038",
 );
+
+const kindlingApi = new URL(KINDLING_API_URL);
+if (kindlingApi.protocol !== "https:" && !["localhost", "127.0.0.1", "[::1]"].includes(kindlingApi.hostname)) {
+  throw new Error("KINDLING_API_URL must use HTTPS unless it targets loopback development");
+}
+
+function trustedApiOrigins(value: string, defaultUrl: string): string[] {
+  const origins = new Set<string>([new URL(defaultUrl).origin]);
+  for (const candidate of value.split(",")) {
+    const trimmed = candidate.trim();
+    if (!trimmed) continue;
+    try {
+      const parsed = new URL(trimmed);
+      if (parsed.protocol !== "https:" || parsed.username || parsed.password || parsed.pathname !== "/" || parsed.search || parsed.hash) continue;
+      origins.add(parsed.origin);
+    } catch {
+      // Invalid allow-list entries are ignored. Requests still fail closed against
+      // the resulting trusted set.
+    }
+  }
+  return [...origins];
+}
+
+export const KINDLING_API_ALLOWED_URLS = trustedApiOrigins(
+  process.env.KINDLING_API_ALLOWED_URLS || "https://kindling-be.a.otherstuff.ai",
+  KINDLING_API_URL,
+);
 export const KINDLING_API_VERSION = String(process.env.KINDLING_API_VERSION || "v1").trim() || "v1";
 export const KINDLING_SCHEMA_VERSION = String(process.env.KINDLING_SCHEMA_VERSION || "1").trim() || "1";
 export const KINDLING_API_COMPATIBILITY = ["auto", "workspace", "targets"].includes(String(process.env.KINDLING_API_COMPATIBILITY || "auto"))

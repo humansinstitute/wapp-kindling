@@ -102,6 +102,18 @@
             <button id="settingsHomeButton" type="button">Home</button>
           </header>
           <section class="settingsGrid">
+            <div class="settingsPanel" id="backendSettingsPanel">
+              <h2>Kindling backend</h2>
+              <p class="muted">Requests remain same-origin and can only use a server-approved backend.</p>
+              <label>
+                <span>Backend URL</span>
+                <select id="backendUrlInput"></select>
+              </label>
+              <div class="settingsActions">
+                <button id="saveBackendButton" type="button">Use backend</button>
+              </div>
+              <p class="status" id="backendSettingsStatus"></p>
+            </div>
             <div class="settingsPanel">
               <h2>Autopilot</h2>
               <label>

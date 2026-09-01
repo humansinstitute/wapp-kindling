@@ -2839,6 +2839,34 @@ textarea {
   color: var(--muted);
 }
 
+.offeringPicker,
+.offeringEditor label {
+  display: grid;
+  gap: 7px;
+}
+
+.offeringPicker span,
+.offeringEditor label span {
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.offeringEditor {
+  display: grid;
+  gap: 14px;
+}
+
+.offeringEditor h2,
+.offeringEditor p {
+  margin: 0;
+}
+
+.fieldError {
+  color: #a33b28;
+  font-weight: 650;
+}
+
 .companyListRows {
   display: grid;
   gap: 6px;

@@ -1,6 +1,7 @@
 import {
   BUILD_VERSION,
   KINDLING_API_COMPATIBILITY,
+  KINDLING_API_ALLOWED_URLS,
   KINDLING_API_URL,
   KINDLING_API_VERSION,
   KINDLING_SCHEMA_VERSION,
@@ -38,6 +39,40 @@ export interface CompanyPageContract {
 
 type FetchLike = typeof fetch;
 type JsonObject = Record<string, unknown>;
+export const BACKEND_TARGET_HEADER = "x-kindling-backend-url";
+
+export interface BackendTargetPolicy {
+  defaultOrigin: string;
+  allowedOrigins: readonly string[];
+}
+
+const configuredBackendPolicy: BackendTargetPolicy = {
+  defaultOrigin: new URL(KINDLING_API_URL).origin,
+  allowedOrigins: KINDLING_API_ALLOWED_URLS,
+};
+
+export function canonicalBackendTarget(value: string | null | undefined, policy: BackendTargetPolicy = configuredBackendPolicy): string {
+  if (!value?.trim()) return policy.defaultOrigin;
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    throw new Error("Backend URL must be a valid trusted HTTPS origin");
+  }
+  if (parsed.username || parsed.password || parsed.pathname !== "/" || parsed.search || parsed.hash) {
+    throw new Error("Backend URL must be an origin without credentials, path, query, or fragment");
+  }
+  if (parsed.protocol !== "https:" && parsed.origin !== policy.defaultOrigin) {
+    throw new Error("Backend URL must use HTTPS");
+  }
+  const canonical = parsed.origin;
+  if (!policy.allowedOrigins.includes(canonical)) throw new Error("Backend URL is not trusted");
+  return canonical;
+}
+
+export function requestBackendTarget(request: Request): string {
+  return canonicalBackendTarget(request.headers.get(BACKEND_TARGET_HEADER));
+}
 
 function object(value: unknown): JsonObject {
   return value && typeof value === "object" && !Array.isArray(value) ? value as JsonObject : {};
@@ -103,7 +138,7 @@ export function normalizeCompanyPage(payload: unknown, requestUrl: URL, etag = "
 
 function proxyHeaders(request: Request): Headers {
   const headers = new Headers({ accept: "application/json" });
-  for (const name of ["cookie", "authorization", "content-type", "if-none-match", "x-csrf-token", "x-request-id"]) {
+  for (const name of ["cookie", "authorization", "content-type", "if-none-match", "origin", "referer", "x-csrf-token", "x-request-id"]) {
     const value = request.headers.get(name);
     if (value) headers.set(name, value);
   }
@@ -112,7 +147,7 @@ function proxyHeaders(request: Request): Headers {
 
 function responseHeaders(response: Response): Headers {
   const headers = new Headers({ "content-type": response.headers.get("content-type") || "application/json; charset=utf-8", "cache-control": "no-store" });
-  for (const name of ["etag", "set-cookie", "vary", "x-kindling-schema-version", "x-request-id"]) {
+  for (const name of ["etag", "set-cookie", "vary", "x-csrf-token", "x-kindling-schema-version", "x-request-id"]) {
     const value = response.headers.get(name);
     if (value) headers.set(name, value);
   }
@@ -125,7 +160,7 @@ async function call(url: URL, request: Request, fetchImpl: FetchLike): Promise<R
 }
 
 async function proxyJson(path: string, request: Request, fetchImpl: FetchLike, transform?: (payload: unknown) => unknown): Promise<Response> {
-  const response = await call(new URL(path, `${KINDLING_API_URL}/`), request, fetchImpl);
+  const response = await call(new URL(path, `${requestBackendTarget(request)}/`), request, fetchImpl);
   const headers = responseHeaders(response);
   if (!transform || !response.ok) return new Response(await response.arrayBuffer(), { status: response.status, headers });
   const payload = await response.json().catch(() => ({}));
@@ -145,8 +180,8 @@ function companyPaths(id: string | null, workspace: string): string[] {
   return workspacePath ? [workspacePath, targetsPath] : [targetsPath];
 }
 
-function backendUrl(path: string, frontendUrl: URL): URL {
-  const target = new URL(path, `${KINDLING_API_URL}/`);
+function backendUrl(path: string, frontendUrl: URL, request: Request): URL {
+  const target = new URL(path, `${requestBackendTarget(request)}/`);
   target.search = frontendUrl.search;
   target.searchParams.delete("workspaceId");
   target.searchParams.delete("workspace_id");
@@ -158,7 +193,7 @@ async function companyResponse(request: Request, frontendUrl: URL, id: string | 
   if (!paths.length) return Response.json({ error: "workspace is required" }, { status: 400 });
   let response: Response | null = null;
   for (const path of paths) {
-    response = await call(backendUrl(path, frontendUrl), request, fetchImpl);
+    response = await call(backendUrl(path, frontendUrl, request), request, fetchImpl);
     if (![404, 405].includes(response.status) || path === paths.at(-1)) break;
   }
   if (!response) return Response.json({ error: "backend route unavailable" }, { status: 502 });
@@ -175,7 +210,7 @@ async function companyResponse(request: Request, frontendUrl: URL, id: string | 
 
 export async function handleBackendApi(request: Request, url: URL, fetchImpl: FetchLike = fetch): Promise<Response | null> {
   if (url.pathname === "/api/runtime-config" && request.method === "GET") {
-    return Response.json({ apiVersion: KINDLING_API_VERSION, schemaVersion: KINDLING_SCHEMA_VERSION, buildVersion: BUILD_VERSION, companySource: "kindling-be", persistence: "bounded-indexeddb" });
+    return Response.json({ apiVersion: KINDLING_API_VERSION, schemaVersion: KINDLING_SCHEMA_VERSION, buildVersion: BUILD_VERSION, companySource: "kindling-be", persistence: "bounded-indexeddb", defaultBackendOrigin: configuredBackendPolicy.defaultOrigin, allowedBackendOrigins: [...configuredBackendPolicy.allowedOrigins] });
   }
   if (url.pathname === "/api/auth/challenge" && request.method === "POST") {
     return proxyJson(`/api/${KINDLING_API_VERSION}/auth/challenge`, request, fetchImpl);
@@ -232,15 +267,41 @@ export async function handleBackendApi(request: Request, url: URL, fetchImpl: Fe
     if (!workspace) return Response.json({ error: "workspace is required" }, { status: 400 });
     const resource = workspaceResource[1];
     const suffix = workspaceResource[2] ?? "";
-    return call(backendUrl(`/api/${KINDLING_API_VERSION}/workspaces/${encodeURIComponent(workspace)}/${resource}${suffix}`, url), request, fetchImpl);
+    return call(backendUrl(`/api/${KINDLING_API_VERSION}/workspaces/${encodeURIComponent(workspace)}/${resource}${suffix}`, url, request), request, fetchImpl);
+  }
+  if (url.pathname === "/api/kindling/profile" && request.method === "GET") {
+    const workspace = workspaceId(request, url);
+    if (!workspace) return Response.json({ error: "workspace is required" }, { status: 400 });
+    return proxyJson(`/api/${KINDLING_API_VERSION}/workspaces/${encodeURIComponent(workspace)}/value-propositions`, request, fetchImpl, (payload) => {
+      const raw = object(payload);
+      const offerings = Array.isArray(raw.items) ? raw.items : [];
+      const selected = offerings.find((item) => object(item).active !== false) ?? offerings[0] ?? null;
+      return { ...raw, offerings, profile: selected };
+    });
+  }
+  if (url.pathname === "/api/kindling/service-offering" && request.method === "POST") {
+    const workspace = workspaceId(request, url);
+    if (!workspace) return Response.json({ error: "workspace is required" }, { status: 400 });
+    const body = object(await request.clone().json().catch(() => ({})));
+    const id = text(body.id ?? body.valuePropositionId).trim();
+    const path = `/api/${KINDLING_API_VERSION}/workspaces/${encodeURIComponent(workspace)}/value-propositions${id ? `/${encodeURIComponent(id)}` : ""}`;
+    const forwarded = new Request(request, { method: id ? "PATCH" : "POST" });
+    return proxyJson(path, forwarded, fetchImpl);
+  }
+  const outreach = url.pathname.match(/^\/api\/kindling\/outreach\/(results|sent|undo|dismiss|respond|snooze)$/);
+  if (outreach && ((outreach[1] === "results" && request.method === "GET") || (outreach[1] !== "results" && request.method === "POST"))) {
+    const workspace = workspaceId(request, url);
+    if (!workspace) return Response.json({ error: "workspace is required" }, { status: 400 });
+    return call(backendUrl(`/api/${KINDLING_API_VERSION}/workspaces/${encodeURIComponent(workspace)}/outreach/${outreach[1]}`, url, request), request, fetchImpl);
   }
   return null;
 }
 
-export async function backendReachability(fetchImpl: FetchLike = fetch): Promise<{ reachable: boolean; status: number | null; checkedAt: string }> {
+export async function backendReachability(request?: Request, fetchImpl: FetchLike = fetch): Promise<{ reachable: boolean; status: number | null; checkedAt: string }> {
   const checkedAt = new Date().toISOString();
+  const origin = request ? requestBackendTarget(request) : configuredBackendPolicy.defaultOrigin;
   try {
-    const response = await fetchImpl(new URL("/healthz", `${KINDLING_API_URL}/`), { signal: AbortSignal.timeout(1500), headers: { accept: "application/json" } });
+    const response = await fetchImpl(new URL("/healthz", `${origin}/`), { signal: AbortSignal.timeout(1500), headers: { accept: "application/json" } });
     return { reachable: response.ok, status: response.status, checkedAt };
   } catch {
     return { reachable: false, status: null, checkedAt };

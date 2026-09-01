@@ -6,6 +6,7 @@ export interface QueryScope {
   workspaceId: string;
   apiVersion: string;
   schemaVersion: string;
+  backendOrigin: string;
   membershipVersion?: string;
   role?: string;
 }
@@ -127,12 +128,12 @@ function stableParams(url: URL): string {
 }
 
 export function scopeId(scope: QueryScope): string {
-  return [scope.userId, scope.organisationId, scope.workspaceId, scope.apiVersion, scope.schemaVersion, scope.membershipVersion ?? "", scope.role ?? ""].map(encodeURIComponent).join("|");
+  return [scope.userId, scope.organisationId, scope.workspaceId, scope.backendOrigin, scope.apiVersion, scope.schemaVersion, scope.membershipVersion ?? "", scope.role ?? ""].map(encodeURIComponent).join("|");
 }
 
 export function serverQueryKey(scope: QueryScope, requestPath: string): readonly unknown[] {
   const url = new URL(requestPath, "https://kindling.invalid");
-  return ["kindling", scope.userId, scope.organisationId, scope.workspaceId, scope.apiVersion, scope.schemaVersion, scope.membershipVersion ?? "", scope.role ?? "", url.pathname, stableParams(url)];
+  return ["kindling", scope.userId, scope.organisationId, scope.workspaceId, scope.backendOrigin, scope.apiVersion, scope.schemaVersion, scope.membershipVersion ?? "", scope.role ?? "", url.pathname, stableParams(url)];
 }
 
 function queryId(key: readonly unknown[]): string { return JSON.stringify(key); }
@@ -223,7 +224,7 @@ export class KindlingServerState {
   }
 
   async invalidate(pathPrefix = "/api/kindling"): Promise<void> {
-    await this.queryClient.invalidateQueries({ predicate: (query) => String(query.queryKey[8] ?? "").startsWith(pathPrefix) });
+    await this.queryClient.invalidateQueries({ predicate: (query) => String(query.queryKey[9] ?? "").startsWith(pathPrefix) });
     if (this.scope) await this.persister.deleteScope(scopeId(this.scope));
   }
 

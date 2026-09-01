@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { handleBackendApi, normalizeBackendCompany, normalizeCompanyPage } from "../src/backend-api.ts";
+import { canonicalBackendTarget, handleBackendApi, normalizeBackendCompany, normalizeCompanyPage } from "../src/backend-api.ts";
 import { handleSaasRequest } from "../src/saas-server.ts";
 
 describe("Kindling SaaS backend adapter", () => {
@@ -157,5 +157,125 @@ describe("Kindling SaaS backend adapter", () => {
     );
     expect(response?.ok).toBeTrue();
     expect(JSON.parse(received)).toEqual({ dataRing: "active" });
+  });
+
+  test("proxies value proposition list, create, detail and immutable version update", async () => {
+    const calls: Array<{ method: string; url: URL; body: string }> = [];
+    const fetcher = async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ method: init?.method || "GET", url: new URL(String(input)), body: init?.body ? await new Response(init.body).text() : "" });
+      return Response.json({ items: [], total: 0 });
+    };
+    const headers = { "x-kindling-workspace-id": "workspace-a", "x-kindling-backend-url": "https://kindling-be.a.otherstuff.ai", "content-type": "application/json" };
+    for (const [path, method, body] of [
+      ["/api/kindling/value-propositions", "GET", undefined],
+      ["/api/kindling/value-propositions", "POST", { name: "Advisory", specification: { summary: "Brief" } }],
+      ["/api/kindling/value-propositions/vp-1", "GET", undefined],
+      ["/api/kindling/value-propositions/vp-1", "PATCH", { specification: { summary: "Version two" } }],
+    ] as const) {
+      const request = new Request(`https://frontend.test${path}`, { method, headers, ...(body ? { body: JSON.stringify(body) } : {}) });
+      expect((await handleBackendApi(request, new URL(request.url), fetcher as typeof fetch))?.status).toBe(200);
+    }
+    expect(calls.map(({ method, url }) => [method, url.origin + url.pathname])).toEqual([
+      ["GET", "https://kindling-be.a.otherstuff.ai/api/v1/workspaces/workspace-a/value-propositions"],
+      ["POST", "https://kindling-be.a.otherstuff.ai/api/v1/workspaces/workspace-a/value-propositions"],
+      ["GET", "https://kindling-be.a.otherstuff.ai/api/v1/workspaces/workspace-a/value-propositions/vp-1"],
+      ["PATCH", "https://kindling-be.a.otherstuff.ai/api/v1/workspaces/workspace-a/value-propositions/vp-1"],
+    ]);
+    expect(JSON.parse(calls[3]!.body)).toEqual({ specification: { summary: "Version two" } });
+  });
+
+  test("keeps legacy service offering adapters compatible without fabricating a profile", async () => {
+    const offering = { id: "vp-1", name: "Advisory", active: true, currentVersion: 1, version: { version: 1, specification: { summary: "Brief" }, approvalState: "draft" } };
+    const listRequest = new Request("https://frontend.test/api/kindling/profile", { headers: { "x-kindling-workspace-id": "workspace-a" } });
+    const list = await handleBackendApi(listRequest, new URL(listRequest.url), async () => Response.json({ items: [offering], total: 1 }));
+    expect(await list?.json()).toMatchObject({ offerings: [offering], profile: offering, total: 1 });
+
+    const updateRequest = new Request("https://frontend.test/api/kindling/service-offering", { method: "POST", headers: { "content-type": "application/json", "x-kindling-workspace-id": "workspace-a" }, body: JSON.stringify({ id: "vp-1", specification: { summary: "Next" } }) });
+    let method = "";
+    let path = "";
+    await handleBackendApi(updateRequest, new URL(updateRequest.url), async (input, init) => { method = init?.method || ""; path = new URL(String(input)).pathname; return Response.json(offering); });
+    expect([method, path]).toEqual(["PATCH", "/api/v1/workspaces/workspace-a/value-propositions/vp-1"]);
+  });
+
+  test("proxies empty outreach results and every existing action with paging and auth headers", async () => {
+    const calls: Array<{ path: string; search: string; headers: Headers }> = [];
+    const fetcher = async (input: RequestInfo | URL, init?: RequestInit) => {
+      const target = new URL(String(input));
+      calls.push({ path: target.pathname, search: target.search, headers: new Headers(init?.headers) });
+      return Response.json(target.pathname.endsWith("/results") ? { tab: "waiting", items: [], total: 0, returned: 0, limit: 25, offset: 0, counts: { waiting: 0, no_response: 0, meeting: 0, rejected: 0, snoozed: 0 } } : { ok: true }, { headers: { "set-cookie": "kindling_session=rotated; HttpOnly", "x-csrf-token": "csrf-2", "x-request-id": "request-1" } });
+    };
+    const baseHeaders = { "x-kindling-workspace-id": "workspace-a", cookie: "kindling_session=opaque", "x-csrf-token": "csrf-1", authorization: "Nostr signed" };
+    const resultRequest = new Request("https://frontend.test/api/kindling/outreach/results?tab=waiting&q=Acme&limit=25&offset=0", { headers: baseHeaders });
+    const results = await handleBackendApi(resultRequest, new URL(resultRequest.url), fetcher as typeof fetch);
+    expect(await results?.json()).toMatchObject({ items: [], total: 0, counts: { waiting: 0 } });
+    for (const action of ["sent", "undo", "dismiss", "respond", "snooze"]) {
+      const request = new Request(`https://frontend.test/api/kindling/outreach/${action}`, { method: "POST", headers: { ...baseHeaders, "content-type": "application/json" }, body: JSON.stringify({ companyId: "co-1" }) });
+      const response = await handleBackendApi(request, new URL(request.url), fetcher as typeof fetch);
+      expect(response?.headers.get("set-cookie")).toContain("HttpOnly");
+      expect(response?.headers.get("x-csrf-token")).toBe("csrf-2");
+      expect(response?.headers.get("x-request-id")).toBe("request-1");
+    }
+    expect(calls.map((call) => call.path)).toEqual(["results", "sent", "undo", "dismiss", "respond", "snooze"].map((suffix) => `/api/v1/workspaces/workspace-a/outreach/${suffix}`));
+    expect(calls[0]?.search).toBe("?tab=waiting&q=Acme&limit=25&offset=0");
+    expect(calls[0]?.headers.get("cookie")).toBe("kindling_session=opaque");
+    expect(calls[0]?.headers.get("x-csrf-token")).toBe("csrf-1");
+    expect(calls[0]?.headers.get("authorization")).toBe("Nostr signed");
+  });
+
+  test("requires a workspace on all workspace-scoped frontend adapters", async () => {
+    for (const [path, method] of [
+      ["/api/kindling/value-propositions", "GET"],
+      ["/api/kindling/profile", "GET"],
+      ["/api/kindling/service-offering", "POST"],
+      ["/api/kindling/outreach/results", "GET"],
+      ["/api/kindling/outreach/sent", "POST"],
+    ]) {
+      const request = new Request(`https://frontend.test${path}`, { method });
+      expect((await handleBackendApi(request, new URL(request.url), async () => { throw new Error("must not fetch"); }))?.status).toBe(400);
+    }
+  });
+
+  test("canonicalizes only exact allow-listed backend origins", () => {
+    const policy = { defaultOrigin: "http://127.0.0.1:41038", allowedOrigins: ["http://127.0.0.1:41038", "https://trusted.test"] };
+    expect(canonicalBackendTarget(undefined, policy)).toBe("http://127.0.0.1:41038");
+    expect(canonicalBackendTarget("https://trusted.test:443/", policy)).toBe("https://trusted.test");
+    for (const target of [
+      "https://user:pass@trusted.test",
+      "https://trusted.test/api",
+      "https://trusted.test?next=x",
+      "https://trusted.test#fragment",
+      "http://trusted.test",
+      "https://evil.test",
+      "file:///etc/passwd",
+      "//trusted.test",
+      "not a url",
+    ]) expect(() => canonicalBackendTarget(target, policy)).toThrow();
+  });
+
+  test("SSRF boundary rejects untrusted target headers before any network request", async () => {
+    for (const target of [
+      "http://169.254.169.254",
+      "http://127.0.0.1:1",
+      "https://kindling-be.a.otherstuff.ai/private",
+      "https://admin@kindling-be.a.otherstuff.ai",
+      "https://kindling-be.a.otherstuff.ai?url=https://evil.test",
+      "https://evil.test",
+    ]) {
+      let fetches = 0;
+      const response = await handleSaasRequest(new Request("https://frontend.test/api/me", { headers: { "x-kindling-backend-url": target } }), async () => { fetches += 1; return Response.json({}); });
+      expect(response.status).toBe(400);
+      expect(fetches).toBe(0);
+    }
+  });
+
+  test("selected trusted target is used consistently for auth, company and health requests", async () => {
+    const urls: URL[] = [];
+    const fetcher = async (input: RequestInfo | URL) => { urls.push(new URL(String(input))); return Response.json({ items: [], total: 0 }); };
+    for (const path of ["/api/me", "/api/kindling/companies?limit=1", "/api/health"]) {
+      const request = new Request(`https://frontend.test${path}`, { headers: { "x-kindling-backend-url": "https://kindling-be.a.otherstuff.ai", "x-kindling-workspace-id": "workspace-a" } });
+      expect((await handleSaasRequest(request, fetcher as typeof fetch)).status).toBe(200);
+    }
+    expect(urls.map((url) => url.origin)).toEqual(Array(3).fill("https://kindling-be.a.otherstuff.ai"));
+    expect(urls[2]?.pathname).toBe("/healthz");
   });
 });

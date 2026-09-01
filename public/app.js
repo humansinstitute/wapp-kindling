@@ -1,5 +1,6 @@
 import { nip19, getPublicKey, finalizeEvent } from "/vendor/nostr-signer.js";
 import { configureServerState, invalidateServerState, purgeServerState, queryServerState, subscribeServerState } from "/vendor/query-runtime.js";
+import { BACKEND_SELECTION_STORAGE_KEY, canAdminBackend, canEditOfferings, normalizeOfferings, normalizeResults, offeringMutationRequest, readBackendSelections, selectedBackendForWorkspace, updateBackendSelections, validateOfferingInput, workspaceIdentity } from "/ui-contract.js";
 
 const PROFILE_CACHE_KEY = "chat_wapp_profiles_v1";
 const PIPELINES_CACHE_KEY = "chat_wapp_pipelines_v1";
@@ -14,6 +15,7 @@ const state = {
   token: sessionStorage.getItem("chat_wapp_token") || "",
   me: null,
   runtimeConfig: null,
+  backendOrigin: "",
   chats: [],
   settings: null,
   accessRules: [],
@@ -46,7 +48,7 @@ const state = {
   // Companies list. `target` carries the scored-assessment context when we have
   // it (On Deck); from the plain Companies list it stays null.
   companyModal: { open: false, companyId: "", company: null, target: null, detail: null, loading: false, draftIndex: 0 },
-  servicePage: { profile: null, loaded: false, loading: false, error: "" },
+  servicePage: { offerings: [], selectedId: "", loaded: false, loading: false, saving: false, error: "", formErrors: {} },
   companyListPage: { companies: [], total: 0, offset: 0, band: "high", bandCounts: null, hideProcessed: false, loaded: false, loading: false, error: "" },
   resultsPage: { tab: "waiting", items: [], total: 0, offset: 0, q: "", counts: null, loaded: false, loading: false, error: "" },
   alertsPage: { feeds: [], hits: [], scheduler: null, loaded: false, loading: false, error: "", saving: false },
@@ -70,6 +72,7 @@ async function fetchApi(path, options = {}) {
       "content-type": "application/json",
       ...(state.token ? { authorization: `Bearer ${state.token}` } : {}),
       ...(workspaceId ? { "x-kindling-workspace-id": workspaceId } : {}),
+      ...(state.backendOrigin ? { "x-kindling-backend-url": state.backendOrigin } : {}),
       ...(options.headers || {}),
     },
   });
@@ -92,7 +95,7 @@ async function fetchApi(path, options = {}) {
 function cacheEligible(path, options) {
   const method = String(options.method || "GET").toUpperCase();
   if (method !== "GET" || !state.me) return false;
-  return /^\/api\/kindling\/(companies(?:[/?]|$)|target-lists(?:[/?]|$)|summary(?:\?|$))/.test(path);
+  return /^\/api\/kindling\/(companies(?:[/?]|$)|target-lists(?:[/?]|$)|value-propositions(?:[/?]|$)|outreach\/results(?:\?|$)|summary(?:\?|$))/.test(path);
 }
 
 async function api(path, options = {}) {
@@ -983,8 +986,7 @@ function navCountFor(key) {
     return Number(counts.high || 0) + Number(counts.medium || 0) + Number(counts.low || 0) + Number(counts.notScored || 0);
   }
   if (key === "service") {
-    const services = state.servicePage.profile?.version?.structured?.services;
-    return Array.isArray(services) ? services.length : null;
+    return state.servicePage.loaded ? state.servicePage.offerings.length : null;
   }
   if (key === "results") {
     const counts = state.resultsPage.counts;
@@ -1066,7 +1068,7 @@ function toggleNavCollapsed() {
   }
 }
 
-// ---- Service Offering page (read-only profile) ----------------------------
+// ---- Service Offering page ------------------------------------------------
 
 let servicePageSeq = 0;
 async function loadServicePage({ force = false } = {}) {
@@ -1079,11 +1081,15 @@ async function loadServicePage({ force = false } = {}) {
   state.servicePage.error = "";
   renderServicePage();
   try {
-    const data = await api("/api/kindling/profile");
+    const data = await api("/api/kindling/value-propositions");
     if (seq !== servicePageSeq) return;
-    state.servicePage.profile = data.profile || null;
+    state.servicePage.offerings = normalizeOfferings(data);
+    if (!state.servicePage.offerings.some((item) => item.id === state.servicePage.selectedId)) {
+      state.servicePage.selectedId = state.servicePage.offerings.find((item) => item.active !== false)?.id || state.servicePage.offerings[0]?.id || "";
+    }
     state.servicePage.loaded = true;
     state.servicePage.loading = false;
+    state.servicePage.saving = false;
     renderServicePage();
     if (!$("appNav").classList.contains("hidden")) renderAppNav("service");
   } catch (err) {
@@ -1092,6 +1098,56 @@ async function loadServicePage({ force = false } = {}) {
     state.servicePage.error = err?.message || String(err);
     renderServicePage();
   }
+}
+
+function selectedServiceOffering() {
+  return state.servicePage.offerings.find((item) => item.id === state.servicePage.selectedId) || null;
+}
+
+function offeringBrief(offering) {
+  const specification = offering?.version?.specification || {};
+  return String(specification.sourcePrompt || specification.summary || "");
+}
+
+function renderOfferingVersion(offering) {
+  if (!offering?.version) return `<p class="pageEmpty">This offering has no current version.</p>`;
+  const version = offering.version;
+  const specification = version.specification && typeof version.specification === "object" ? version.specification : {};
+  const isUserDraft = specification.source === "user_draft" || specification.sourcePrompt;
+  if (isUserDraft) {
+    return `<section class="aboutAdapt">
+      <div class="aboutAdaptTop"><span class="aboutEyebrow">Draft brief</span><span class="aboutVersion">Version ${escapeHtml(version.version || offering.currentVersion || "1")}</span></div>
+      <h2>${escapeHtml(offering.name)}</h2>
+      <p class="aboutSummary">${escapeHtml(specification.summary || specification.sourcePrompt || "No brief recorded.")}</p>
+      <p class="muted">This is user-authored draft input. It has not been presented as AI-enriched output.</p>
+    </section>`;
+  }
+  return `<section class="aboutAdapt">
+      <div class="aboutAdaptTop"><span class="aboutEyebrow">Current specification</span><span class="aboutVersion">Version ${escapeHtml(version.version || offering.currentVersion || "1")}</span></div>
+      <h2>${escapeHtml(offering.name)}</h2>
+      <p class="muted">${escapeHtml(version.approvalState || "draft")} · ${escapeHtml(formatDate(version.createdAt) || "date unavailable")}</p>
+    </section>
+    ${renderProfileGroup("Specification", specification)}`;
+}
+
+function renderOfferingForm(offering) {
+  const canEdit = canEditOfferings(state.me);
+  const errors = state.servicePage.formErrors || {};
+  return `<form class="kindlingPanel offeringEditor" data-offering-form>
+    <h2>${offering ? "Save a new version" : "Create a service offering"}</h2>
+    <p class="muted">A saved edit creates an immutable version. A plain brief remains labelled as a user-authored draft.</p>
+    <label><span>Offering name</span>
+      <input id="offeringNameInput" maxlength="160" value="${escapeHtml(offering?.name || "")}" ${canEdit ? "" : "disabled"} />
+      ${errors.name ? `<small class="fieldError">${escapeHtml(errors.name)}</small>` : ""}
+    </label>
+    <label><span>Offering brief</span>
+      <textarea id="offeringBriefInput" rows="8" maxlength="20000" ${canEdit ? "" : "disabled"}>${escapeHtml(offeringBrief(offering))}</textarea>
+      ${errors.brief ? `<small class="fieldError">${escapeHtml(errors.brief)}</small>` : ""}
+    </label>
+    ${errors.submit ? `<p class="pageError">${escapeHtml(errors.submit)}</p>` : ""}
+    <div class="formActions"><button type="submit" ${canEdit && !state.servicePage.saving ? "" : "disabled"}>${state.servicePage.saving ? "Saving…" : offering ? "Save new version" : "Create offering"}</button></div>
+    ${canEdit ? "" : `<p class="muted">Viewer access is read-only. Ask a workspace owner, admin, or contributor to make changes.</p>`}
+  </form>`;
 }
 
 function renderServicePage() {
@@ -1104,12 +1160,43 @@ function renderServicePage() {
     body = `<p class="pageError">Couldn't load the service offering: ${escapeHtml(state.servicePage.error)}</p>
       <button type="button" data-page-action="retry-service">Retry</button>`;
   } else {
-    body = `<div class="kindlingPanel serviceProfilePanel">${renderServiceProfile(state.servicePage.profile?.version)}</div>`;
+    const offering = selectedServiceOffering();
+    const picker = state.servicePage.offerings.length > 1
+      ? `<label class="offeringPicker"><span>Current offering</span><select data-offering-select>${state.servicePage.offerings.map((item) => `<option value="${escapeHtml(item.id)}" ${item.id === state.servicePage.selectedId ? "selected" : ""}>${escapeHtml(item.name)}${item.active === false ? " (inactive)" : ""}</option>`).join("")}</select></label>`
+      : "";
+    body = `${picker}${offering ? `<div class="kindlingPanel serviceProfilePanel">${renderOfferingVersion(offering)}</div>` : `<div class="kindlingPanel"><h2>No service offerings yet</h2><p class="pageEmpty">Create the first offering to describe what this workspace takes to market.</p></div>`}${renderOfferingForm(offering)}`;
   }
   el.innerHTML = `<div class="pageInner serviceOfferingInner">
     <header class="pageTopHeader"><h1>Service Offering</h1></header>
     ${body}
   </div>`;
+}
+
+async function saveServiceOffering(form) {
+  if (!canEditOfferings(state.me) || state.servicePage.saving) return;
+  const offering = selectedServiceOffering();
+  const name = form.querySelector("#offeringNameInput")?.value.trim() || "";
+  const brief = form.querySelector("#offeringBriefInput")?.value.trim() || "";
+  const errors = validateOfferingInput(name, brief);
+  if (Object.keys(errors).length) {
+    state.servicePage.formErrors = errors;
+    renderServicePage();
+    return;
+  }
+  state.servicePage.saving = true;
+  state.servicePage.formErrors = {};
+  renderServicePage();
+  try {
+    const mutation = offeringMutationRequest(offering, name, brief);
+    const saved = await api(mutation.path, { method: mutation.method, body: JSON.stringify(mutation.body) });
+    state.servicePage.selectedId = saved.id || saved.item?.id || offering?.id || "";
+    state.servicePage.loaded = false;
+    await loadServicePage({ force: true });
+  } catch (error) {
+    state.servicePage.saving = false;
+    state.servicePage.formErrors = { submit: error?.message || String(error) };
+    renderServicePage();
+  }
 }
 
 // ---- Company List page (fast full list) -----------------------------------
@@ -1266,13 +1353,16 @@ const RESULTS_PAGE_SIZE = 25;
 
 function shortDate(ts) {
   if (!ts) return "";
-  const d = new Date(Number(ts));
+  const numeric = Number(ts);
+  const d = new Date(Number.isFinite(numeric) ? numeric : String(ts));
   return d.toLocaleDateString(undefined, { day: "numeric", month: "short" });
 }
 
 function daysSince(ts) {
   if (!ts) return null;
-  return Math.floor((Date.now() - Number(ts)) / (24 * 60 * 60 * 1000));
+  const numeric = Number(ts);
+  const parsed = Number.isFinite(numeric) ? numeric : Date.parse(String(ts));
+  return Number.isFinite(parsed) ? Math.floor((Date.now() - parsed) / (24 * 60 * 60 * 1000)) : null;
 }
 
 let resultsSeq = 0;
@@ -1293,7 +1383,7 @@ async function loadResultsPage({ force = false } = {}) {
       offset: String(Math.max(0, Number(page.offset) || 0)),
     });
     if (page.q) query.set("q", page.q);
-    const data = await api(`/api/kindling/outreach/results?${query}`);
+    const data = normalizeResults(await api(`/api/kindling/outreach/results?${query}`), { tab: page.tab, limit: RESULTS_PAGE_SIZE, offset: page.offset });
     if (seq !== resultsSeq) return;
     page.items = data.items || [];
     page.total = Number(data.total ?? page.items.length ?? 0);
@@ -1348,12 +1438,13 @@ function renderResultRow(item, tab) {
 
   let timing = "";
   let actions = "";
+  const canEdit = canEditOfferings(state.me);
   if (tab === "waiting" || tab === "no_response") {
     const d = daysSince(item.outreachAt);
     timing = `<span class="resultTiming">Sent ${escapeHtml(shortDate(item.outreachAt))}${d != null ? ` · ${d}d waiting` : ""}</span>`;
     actions = `
-      <button type="button" class="resultBtn resultBtnGood" data-result-meeting="${escapeHtml(item.companyId)}">Got a meeting</button>
-      <button type="button" class="resultBtn" data-result-drop="${escapeHtml(item.companyId)}">Dropped…</button>`;
+      <button type="button" class="resultBtn resultBtnGood" data-result-meeting="${escapeHtml(item.companyId)}" ${canEdit ? "" : "disabled"}>Got a meeting</button>
+      <button type="button" class="resultBtn" data-result-drop="${escapeHtml(item.companyId)}" ${canEdit ? "" : "disabled"}>Dropped…</button>`;
   } else if (tab === "meeting") {
     timing = `<span class="resultTiming">Meeting · responded ${escapeHtml(shortDate(item.responseAt))}</span>`;
   } else if (tab === "rejected") {
@@ -1374,7 +1465,7 @@ function renderResultRow(item, tab) {
     <div class="resultMenu">
       <button type="button" class="resultMenuToggle" data-result-menu aria-label="More actions" aria-haspopup="true">⋮</button>
       <div class="resultMenuList" role="menu">
-        <button type="button" class="resultMenuItem" role="menuitem" data-result-undo="${escapeHtml(item.companyId)}">${undoLabel}</button>
+        <button type="button" class="resultMenuItem" role="menuitem" data-result-undo="${escapeHtml(item.companyId)}" ${canEdit ? "" : "disabled"}>${undoLabel}</button>
       </div>
     </div>`;
 
@@ -2279,16 +2370,24 @@ async function bootApp() {
     state.me = await api("/api/me");
     const runtime = await fetchApi("/api/runtime-config").catch(() => ({ apiVersion: "v1", schemaVersion: "1" }));
     state.runtimeConfig = runtime;
-    const workspace = state.me.workspace || state.me.workspaces?.[0] || {};
-    await configureServerState({
-      userId: state.me.id || state.me.pubkey || state.me.npub,
-      organisationId: state.me.organisationId || state.me.organizationId || workspace.organisationId || workspace.organizationId || "legacy",
-      workspaceId: state.me.workspaceId || state.me.workspace_id || workspace.id || "legacy-default",
-      apiVersion: runtime.apiVersion || "v1",
-      schemaVersion: runtime.schemaVersion || "1",
-      membershipVersion: state.me.membershipVersion || state.me.membership_version || "",
-      role: state.me.role || (state.me.access?.edit ? "edit" : "read"),
-    });
+    const initialWorkspaceId = workspaceIdentity(state.me);
+    const selected = selectedBackendForWorkspace(
+      localStorage.getItem(BACKEND_SELECTION_STORAGE_KEY),
+      initialWorkspaceId,
+      runtime.allowedBackendOrigins || [],
+      runtime.defaultBackendOrigin || "",
+    );
+    state.backendOrigin = selected;
+    if (selected && selected !== runtime.defaultBackendOrigin) {
+      try {
+        const selectedMe = await fetchApi("/api/me");
+        if (workspaceIdentity(selectedMe) !== initialWorkspaceId) throw new Error("workspace mismatch");
+        state.me = selectedMe;
+      } catch {
+        state.backendOrigin = runtime.defaultBackendOrigin || "";
+      }
+    }
+    await configureQueryScope();
     const npubEl = $("npub");
     if (npubEl) npubEl.textContent = state.me.npub;
     syncAccessUi();
@@ -2299,12 +2398,29 @@ async function bootApp() {
   }
 }
 
+async function configureQueryScope() {
+  const workspace = state.me.workspace || state.me.workspaces?.[0] || {};
+  await configureServerState({
+    userId: state.me.id || state.me.pubkey || state.me.npub,
+    organisationId: state.me.organisationId || state.me.organizationId || workspace.organisationId || workspace.organizationId || "legacy",
+    workspaceId: state.me.workspaceId || state.me.workspace_id || workspace.id || "legacy-default",
+    backendOrigin: state.backendOrigin || state.runtimeConfig?.defaultBackendOrigin || "managed-default",
+    apiVersion: state.runtimeConfig?.apiVersion || "v1",
+    schemaVersion: state.runtimeConfig?.schemaVersion || "1",
+    membershipVersion: state.me.membershipVersion || state.me.membership_version || "",
+    role: state.me.role || (state.me.access?.edit ? "edit" : "read"),
+  });
+}
+
 function logout() {
   void fetchApi("/api/auth/session", { method: "DELETE" }).catch(() => undefined);
   void purgeServerState("logout");
   clearSigner();
   state.token = "";
   state.me = null;
+  state.backendOrigin = "";
+  state.servicePage = { offerings: [], selectedId: "", loaded: false, loading: false, saving: false, error: "", formErrors: {} };
+  state.resultsPage = { tab: "waiting", items: [], total: 0, offset: 0, q: "", counts: null, loaded: false, loading: false, error: "" };
   state.activeChatId = "";
   localStorage.removeItem("chat_wapp_token");
   sessionStorage.removeItem("chat_wapp_token");
@@ -2342,8 +2458,8 @@ async function loadChats() {
 
 async function loadSettings() {
   const [payload, roles, scheduler] = await Promise.all([
-    api("/api/settings"),
-    api("/api/kindling/pipeline-roles"),
+    api("/api/settings").catch(() => ({ settings: {}, accessRules: [] })),
+    api("/api/kindling/pipeline-roles").catch(() => ({ pipelineRoles: [] })),
     api("/api/kindling/scheduler-settings").catch(() => ({ settings: null })),
   ]);
   state.settings = payload.settings;
@@ -4413,6 +4529,53 @@ function renderSettings() {
   for (const id of ["autopilotUrlInput", "publicOriginInput", "pipelineInput", "snoozeDaysInput", "pipelineSelect", "loadPipelinesButton", "saveSettingsButton", "researchDeskButton", "accessNpubInput", "accessRoleSelect", "addAccessButton"]) {
     $(id).disabled = !canEdit;
   }
+  renderBackendSettings();
+}
+
+function renderBackendSettings() {
+  const select = $("backendUrlInput");
+  const save = $("saveBackendButton");
+  if (!select || !save) return;
+  const runtime = state.runtimeConfig || {};
+  const origins = Array.isArray(runtime.allowedBackendOrigins) && runtime.allowedBackendOrigins.length
+    ? runtime.allowedBackendOrigins
+    : [runtime.defaultBackendOrigin].filter(Boolean);
+  select.innerHTML = origins.map((origin) => `<option value="${escapeHtml(origin)}" ${origin === (state.backendOrigin || runtime.defaultBackendOrigin) ? "selected" : ""}>${escapeHtml(origin)}${origin === runtime.defaultBackendOrigin ? " (managed default)" : ""}</option>`).join("");
+  const allowed = canAdminBackend(state.me);
+  select.disabled = !allowed;
+  save.disabled = !allowed;
+  $("backendSettingsStatus").textContent = allowed ? "" : "Only workspace owners and admins can change this setting.";
+}
+
+async function saveBackendSelection() {
+  if (!canAdminBackend(state.me)) return;
+  const workspaceId = workspaceIdentity(state.me);
+  const origin = $("backendUrlInput")?.value || state.runtimeConfig?.defaultBackendOrigin || "";
+  const allowed = state.runtimeConfig?.allowedBackendOrigins || [];
+  if (!workspaceId || !allowed.includes(origin)) {
+    $("backendSettingsStatus").textContent = "Choose a server-approved backend URL.";
+    return;
+  }
+  const previous = state.backendOrigin || state.runtimeConfig.defaultBackendOrigin;
+  state.backendOrigin = origin;
+  try {
+    const verified = await fetchApi("/api/me");
+    if (workspaceIdentity(verified) !== workspaceId) throw new Error("The selected backend does not resolve to this workspace.");
+    state.me = verified;
+    const selections = readBackendSelections(localStorage.getItem(BACKEND_SELECTION_STORAGE_KEY), allowed);
+    localStorage.setItem(BACKEND_SELECTION_STORAGE_KEY, JSON.stringify(updateBackendSelections(selections, workspaceId, origin)));
+    await configureQueryScope();
+    state.servicePage.loaded = false;
+    state.companyListPage.loaded = false;
+    state.resultsPage.loaded = false;
+    state.focus.loaded = false;
+    $("backendSettingsStatus").textContent = "Backend selection saved for this workspace.";
+    renderBackendSettings();
+  } catch (error) {
+    state.backendOrigin = previous;
+    $("backendSettingsStatus").textContent = error?.message || String(error);
+    renderBackendSettings();
+  }
 }
 
 function pipelineSlug(pipeline) {
@@ -5203,6 +5366,19 @@ $("appNav").addEventListener("click", (event) => {
 $("servicePage").addEventListener("click", (event) => {
   if (event.target.closest('[data-page-action="retry-service"]')) void loadServicePage({ force: true });
 });
+$("servicePage").addEventListener("change", (event) => {
+  const select = event.target.closest("[data-offering-select]");
+  if (!select) return;
+  state.servicePage.selectedId = select.value;
+  state.servicePage.formErrors = {};
+  renderServicePage();
+});
+$("servicePage").addEventListener("submit", (event) => {
+  const form = event.target.closest("[data-offering-form]");
+  if (!form) return;
+  event.preventDefault();
+  void saveServiceOffering(form);
+});
 $("companyListPage").addEventListener("click", (event) => {
   if (event.target.closest('[data-page-action="retry-companies"]')) {
     void loadCompanyListPage({ force: true });
@@ -5412,6 +5588,11 @@ $("saveSettingsButton").addEventListener("click", (event) => {
   const btn = event.currentTarget;
   setBusyElement(btn, true);
   void saveSettings().finally(() => setBusyElement(btn, false));
+});
+$("saveBackendButton")?.addEventListener("click", (event) => {
+  const btn = event.currentTarget;
+  setBusyElement(btn, true);
+  void saveBackendSelection().finally(() => setBusyElement(btn, false));
 });
 $("saveAutomationButton")?.addEventListener("click", (event) => {
   const btn = event.currentTarget;

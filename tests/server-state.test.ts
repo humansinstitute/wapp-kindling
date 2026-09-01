@@ -5,6 +5,7 @@ const scope = (userId = "user-a", workspaceId = "workspace-a", schemaVersion = "
   userId,
   organisationId: "org-a",
   workspaceId,
+  backendOrigin: "https://api-a.test",
   apiVersion: "v1",
   schemaVersion,
   membershipVersion: "membership-1",
@@ -21,6 +22,7 @@ describe("bounded tenant query state", () => {
     expect(a).not.toEqual(serverQueryKey(scope("user-b"), "/api/kindling/companies?sort=name&limit=25"));
     expect(a).not.toEqual(serverQueryKey(scope("user-a", "workspace-b"), "/api/kindling/companies?sort=name&limit=25"));
     expect(a).not.toEqual(serverQueryKey(scope("user-a", "workspace-a", "2"), "/api/kindling/companies?sort=name&limit=25"));
+    expect(a).not.toEqual(serverQueryKey({ ...scope(), backendOrigin: "https://api-b.test" }, "/api/kindling/companies?sort=name&limit=25"));
   });
 
   test("a cached page renders immediately and revalidates in the background", async () => {
@@ -50,6 +52,16 @@ describe("bounded tenant query state", () => {
     await state.setScope(scope("user-a", "workspace-b"));
     const result = await state.query("/api/kindling/companies?limit=25", async () => ({ companies: [{ id: "tenant-b" }] }));
     expect(result).toMatchObject({ companies: [{ id: "tenant-b" }] });
+  });
+
+  test("backend switch makes another origin cache unreadable", async () => {
+    const persister = new MemoryQueryPersister();
+    const state = new KindlingServerState(persister);
+    await state.setScope(scope());
+    await state.query("/api/kindling/outreach/results?tab=waiting", async () => ({ items: [{ companyId: "backend-a" }] }));
+    await state.setScope({ ...scope(), backendOrigin: "https://api-b.test" });
+    const result = await state.query("/api/kindling/outreach/results?tab=waiting", async () => ({ items: [{ companyId: "backend-b" }] }));
+    expect(result).toMatchObject({ items: [{ companyId: "backend-b" }] });
   });
 
   test("logout, membership and schema changes purge the appropriate cache", async () => {
